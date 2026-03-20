@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LeanEcon — Architecture Spec</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,300;8..60,400;8..60,600;8..60,700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0c0e12;
+  --bg-card: #13161c;
+  --bg-card-hover: #191d25;
+  --border: #252a35;
+  --text: #c9cdd5;
+  --text-dim: #6b7280;
+  --text-bright: #e8ebf0;
+  --accent: #f05e48;
+  --accent-dim: #f05e4830;
+  --green: #34d399;
+  --green-dim: #34d39920;
+  --yellow: #fbbf24;
+  --yellow-dim: #fbbf2420;
+  --blue: #60a5fa;
+  --blue-dim: #60a5fa20;
+  --orange: #fb923c;
+  --purple: #a78bfa;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 16px;
+  line-height: 1.72;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 60px 32px 120px;
+}
+
+/* Header */
+.doc-header {
+  margin-bottom: 64px;
+  padding-bottom: 40px;
+  border-bottom: 1px solid var(--border);
+}
+
+.doc-header .label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+
+h1 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 42px;
+  font-weight: 700;
+  color: var(--text-bright);
+  line-height: 1.18;
+  margin-bottom: 16px;
+}
+
+.subtitle {
+  font-size: 18px;
+  color: var(--text-dim);
+  max-width: 600px;
+}
+
+.meta {
+  margin-top: 20px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Headings */
+h2 {
+  font-family: 'Source Serif 4', serif;
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-top: 72px;
+  margin-bottom: 20px;
+  line-height: 1.25;
+}
+
+h3 {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-bright);
+  margin-top: 40px;
+  margin-bottom: 12px;
+}
+
+p { margin-bottom: 16px; }
+
+/* Diagrams */
+.diagram-wrap {
+  margin: 32px 0;
+  padding: 32px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow-x: auto;
+}
+
+.diagram-wrap .caption {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 20px;
+}
+
+svg text {
+  font-family: 'DM Sans', sans-serif;
+}
+
+svg .mono {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Callout boxes */
+.callout {
+  margin: 28px 0;
+  padding: 20px 24px;
+  border-radius: 8px;
+  border-left: 3px solid;
+  font-size: 15px;
+}
+
+.callout.insight {
+  background: var(--blue-dim);
+  border-color: var(--blue);
+}
+
+.callout.warning {
+  background: var(--yellow-dim);
+  border-color: var(--yellow);
+}
+
+.callout.success {
+  background: var(--green-dim);
+  border-color: var(--green);
+}
+
+.callout .callout-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  color: var(--text-bright);
+}
+
+/* Code */
+code {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  background: var(--bg-card);
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: var(--accent);
+}
+
+pre {
+  margin: 20px 0;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+/* Tables */
+table {
+  width: 100%;
+  margin: 24px 0;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  text-align: left;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+td:first-child { color: var(--text-bright); }
+
+/* Emphasis */
+strong { color: var(--text-bright); font-weight: 600; }
+em { color: var(--text-dim); font-style: italic; }
+
+/* Section dividers */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 64px 0;
+}
+
+/* Numbered sections */
+.section-num {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  margin-right: 8px;
+}
+
+/* Lean code highlighting (basic) */
+.lean-kw { color: var(--blue); }
+.lean-type { color: var(--green); }
+.lean-tactic { color: var(--orange); }
+.lean-comment { color: var(--text-dim); }
+
+/* Trust model badges */
+.trust-badge {
+  display: inline-block;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+}
+
+.trust-badge.stochastic { background: var(--yellow-dim); color: var(--yellow); }
+.trust-badge.deterministic { background: var(--green-dim); color: var(--green); }
+.trust-badge.human { background: var(--blue-dim); color: var(--blue); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- HEADER -->
+<div class="doc-header">
+  <div class="label">Technical Architecture Specification</div>
+  <h1>LeanEcon: From Proof of Concept to Prototype</h1>
+  <p class="subtitle">A formal verification pipeline for mathematical claims in economics, built on Lean 4, Mathlib, and Leanstral.</p>
+  <p class="meta">v0.4 · March 19, 2026 · Internal working document</p>
+</div>
+
+<!-- SECTION 1: THE CORE IDEA -->
+<h2><span class="section-num">01</span> The Core Idea</h2>
+
+<p>An economist writes a paper claiming: <em>"Under CRRA utility, relative risk aversion is constant and equal to γ."</em> This claim has a mathematical proof — but the proof lives in the author's head, the referee's trust, and perhaps a few lines of algebra in an appendix. Nobody machine-checks it.</p>
+
+<p>LeanEcon changes this. The system takes the claim, translates it into a formal theorem in <strong>Lean 4</strong> (a dependently typed proof assistant), generates a machine-checkable proof, and verifies it against Lean's kernel. If the kernel accepts the proof, the claim is <strong>mathematically certified from axioms</strong>. Not LLM confidence. Not statistical likelihood. Certainty.</p>
+
+<div class="callout insight">
+  <div class="callout-label">The Curry-Howard Correspondence</div>
+  In Lean 4, proofs are programs and propositions are types. A theorem statement is a type; a proof is a value inhabiting that type. When <code>lake build</code> succeeds with no errors and no <code>sorry</code>, Lean's type checker has verified that the proof term correctly inhabits the proposition type — every logical step checked from the axioms of dependent type theory. This is the same foundational principle that makes compilers reject ill-typed programs. The verification is <strong>deterministic</strong> and <strong>independent</strong> of the model that generated the proof.
+</div>
+
+<p>The system has three trust layers, each with a fundamentally different reliability model:</p>
+
+<div class="diagram-wrap">
+  <div class="caption">Figure 1 — Trust Model</div>
+  <svg viewBox="0 0 780 200" width="100%" height="200">
+    <!-- Stochastic layer -->
+    <rect x="20" y="20" width="230" height="160" rx="8" fill="#fbbf2410" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6,3"/>
+    <text x="135" y="52" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600" class="mono" letter-spacing="0.08em">STOCHASTIC</text>
+    <text x="135" y="80" text-anchor="middle" fill="#c9cdd5" font-size="14" font-weight="500">Leanstral</text>
+    <text x="135" y="102" text-anchor="middle" fill="#6b7280" font-size="12">Formalization</text>
+    <text x="135" y="120" text-anchor="middle" fill="#6b7280" font-size="12">Proof generation</text>
+    <text x="135" y="146" text-anchor="middle" fill="#6b7280" font-size="11" font-style="italic">May fail. May need retries.</text>
+    <text x="135" y="164" text-anchor="middle" fill="#6b7280" font-size="11" font-style="italic">Output quality varies.</text>
+
+    <!-- Arrow 1 -->
+    <line x1="260" y1="100" x2="290" y2="100" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- Human layer -->
+    <rect x="295" y="20" width="180" height="160" rx="8" fill="#60a5fa10" stroke="#60a5fa" stroke-width="1.5" stroke-dasharray="6,3"/>
+    <text x="385" y="52" text-anchor="middle" fill="#60a5fa" font-size="11" font-weight="600" class="mono" letter-spacing="0.08em">HUMAN-IN-THE-LOOP</text>
+    <text x="385" y="80" text-anchor="middle" fill="#c9cdd5" font-size="14" font-weight="500">Economist</text>
+    <text x="385" y="102" text-anchor="middle" fill="#6b7280" font-size="12">Reviews theorem</text>
+    <text x="385" y="120" text-anchor="middle" fill="#6b7280" font-size="12">Edits if needed</text>
+    <text x="385" y="146" text-anchor="middle" fill="#6b7280" font-size="11" font-style="italic">Confirms: "yes, that's</text>
+    <text x="385" y="164" text-anchor="middle" fill="#6b7280" font-size="11" font-style="italic">what I meant"</text>
+
+    <!-- Arrow 2 -->
+    <line x1="485" y1="100" x2="515" y2="100" stroke="#6b7280" stroke-width="1.5" marker-end="url(#arr)"/>
+
+    <!-- Deterministic layer -->
+    <rect x="520" y="20" width="240" height="160" rx="8" fill="#34d39910" stroke="#34d399" stroke-width="1.5"/>
+    <text x="640" y="52" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600" class="mono" letter-spacing="0.08em">DETERMINISTIC</text>
+    <text x="640" y="80" text-anchor="middle" fill="#c9cdd5" font-size="14" font-weight="500">Lean 4 Kernel</text>
+    <text x="640" y="102" text-anchor="middle" fill="#6b7280" font-size="12">Type checks proof</text>
+    <text x="640" y="120" text-anchor="middle" fill="#6b7280" font-size="12">Verifies from axioms</text>
+    <text x="640" y="146" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">If it passes, it's correct.</text>
+    <text x="640" y="164" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">No trust required.</text>
+
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#6b7280"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<p>This separation is the architectural invariant. Leanstral generates candidate proofs (stochastic, may fail). The economist validates the claim is correctly stated (human judgment). Lean's kernel verifies the proof (deterministic, infallible within its axiom system). <strong>No component trusts another.</strong></p>
+
+<div class="divider"></div>
+
+<!-- SECTION 2: ARCHITECTURAL EVOLUTION -->
+<h2><span class="section-num">02</span> Architectural Evolution</h2>
+
+<h3>Phase 1: Proof of Concept (Sessions 1–4)</h3>
+
+<p>The POC asked a minimal question: <em>can we get Lean 4 to verify a claim from an economics paper, end-to-end?</em> The answer was yes — for claims we already knew how to formalize.</p>
+
+<div class="diagram-wrap">
+  <div class="caption">Figure 2 — POC Architecture (template-based)</div>
+  <svg viewBox="0 0 780 120" width="100%" height="120">
+    <!-- Nodes -->
+    <rect x="10" y="35" width="120" height="50" rx="6" fill="var(--bg-card)" stroke="var(--border)" stroke-width="1.5"/>
+    <text x="70" y="56" text-anchor="middle" fill="var(--text-dim)" font-size="10" class="mono">INPUT</text>
+    <text x="70" y="72" text-anchor="middle" fill="var(--text-bright)" font-size="13" font-weight="500">LaTeX claim</text>
+
+    <line x1="135" y1="60" x2="165" y2="60" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr2)"/>
+
+    <rect x="170" y="35" width="120" height="50" rx="6" fill="var(--yellow-dim)" stroke="var(--yellow)" stroke-width="1.2"/>
+    <text x="230" y="56" text-anchor="middle" fill="var(--yellow)" font-size="10" class="mono">TEMPLATE</text>
+    <text x="230" y="72" text-anchor="middle" fill="var(--text-bright)" font-size="13" font-weight="500">Hardcoded Lean</text>
+
+    <line x1="295" y1="60" x2="325" y2="60" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr2)"/>
+
+    <rect x="330" y="35" width="130" height="50" rx="6" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="1.2"/>
+    <text x="395" y="56" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">LEANSTRAL</text>
+    <text x="395" y="72" text-anchor="middle" fill="var(--text-bright)" font-size="13" font-weight="500">Prove (pass@5)</text>
+
+    <line x1="465" y1="60" x2="495" y2="60" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr2)"/>
+
+    <rect x="500" y="35" width="130" height="50" rx="6" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1.2"/>
+    <text x="565" y="56" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">LEAN 4</text>
+    <text x="565" y="72" text-anchor="middle" fill="var(--text-bright)" font-size="13" font-weight="500">lake build</text>
+
+    <line x1="635" y1="60" x2="665" y2="60" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr2)"/>
+
+    <rect x="670" y="35" width="95" height="50" rx="6" fill="var(--bg-card)" stroke="var(--green)" stroke-width="1.5"/>
+    <text x="717" y="56" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">OUTPUT</text>
+    <text x="717" y="72" text-anchor="middle" fill="var(--green)" font-size="13" font-weight="600">✓ / ✗</text>
+
+    <defs>
+      <marker id="arr2" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+        <polygon points="0 0, 7 2.5, 0 5" fill="var(--text-dim)"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<p><strong>Bottleneck:</strong> the template stage. Each claim type (CRRA, elasticity, bifurcation) had a hand-written Python function that produced the Lean theorem. The tool could only verify claims it already knew how to formalize — making it a demo, not a tool.</p>
+
+<p><strong>Verified:</strong> CRRA constant RRA, Stone-Geary constant ΔV. <strong>Skipped:</strong> bifurcation (Mathlib coverage gap).</p>
+
+<h3>Phase 2: Prototype — Current Architecture</h3>
+
+<p>Templates replaced with LLM-based formalization. Leanstral handles both translation (claim → Lean theorem) and proving (theorem → tactic proof). A pre-classification step screens unformalizable claims before wasting API calls.</p>
+
+<div class="diagram-wrap">
+  <div class="caption">Figure 3 — Prototype Architecture (Leanstral-based)</div>
+  <svg viewBox="0 0 780 340" width="100%" height="340">
+    <!-- Input -->
+    <rect x="20" y="20" width="150" height="50" rx="6" fill="var(--bg-card)" stroke="var(--border)" stroke-width="1.5"/>
+    <text x="95" y="40" text-anchor="middle" fill="var(--text-dim)" font-size="10" class="mono">INPUT</text>
+    <text x="95" y="56" text-anchor="middle" fill="var(--text-bright)" font-size="13" font-weight="500">LaTeX / text / Lean</text>
+
+    <!-- Auto-detect -->
+    <line x1="175" y1="45" x2="205" y2="45" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+    <rect x="210" y="15" width="130" height="60" rx="6" fill="var(--bg-card)" stroke="var(--border)" stroke-width="1.2"/>
+    <text x="275" y="36" text-anchor="middle" fill="var(--text-dim)" font-size="10" class="mono">DETECT</text>
+    <text x="275" y="52" text-anchor="middle" fill="var(--text-bright)" font-size="12">Raw Lean?</text>
+    <text x="275" y="66" text-anchor="middle" fill="var(--text-dim)" font-size="10">skip to review ↓</text>
+
+    <!-- Classify -->
+    <line x1="345" y1="45" x2="375" y2="45" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+    <rect x="380" y="15" width="160" height="60" rx="6" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="1.2"/>
+    <text x="460" y="36" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">CLASSIFY</text>
+    <text x="460" y="52" text-anchor="middle" fill="var(--text-bright)" font-size="12">Algebraic or</text>
+    <text x="460" y="66" text-anchor="middle" fill="var(--text-bright)" font-size="12">Requires definitions?</text>
+
+    <!-- Reject path -->
+    <line x1="545" y1="45" x2="610" y2="45" stroke="var(--yellow)" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr-y)"/>
+    <rect x="615" y="20" width="145" height="50" rx="6" fill="var(--yellow-dim)" stroke="var(--yellow)" stroke-width="1.2"/>
+    <text x="687" y="40" text-anchor="middle" fill="var(--yellow)" font-size="10" class="mono">REJECTED</text>
+    <text x="687" y="56" text-anchor="middle" fill="var(--text)" font-size="11">"Requires definitions</text>
+    <text x="687" y="68" text-anchor="middle" fill="var(--text)" font-size="11">not in Mathlib"</text>
+
+    <!-- Formalize -->
+    <line x1="460" y1="80" x2="460" y2="105" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+    <rect x="355" y="110" width="210" height="55" rx="6" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="1.2"/>
+    <text x="460" y="131" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">FORMALIZE — LEANSTRAL</text>
+    <text x="460" y="150" text-anchor="middle" fill="var(--text-bright)" font-size="12">Claim → Lean 4 theorem + sorry</text>
+
+    <!-- Sorry-validate loop -->
+    <line x1="460" y1="170" x2="460" y2="195" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+    <rect x="355" y="200" width="210" height="55" rx="6" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1.2"/>
+    <text x="460" y="221" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">SORRY-VALIDATE — LEAN 4</text>
+    <text x="460" y="240" text-anchor="middle" fill="var(--text-bright)" font-size="12">lake build (sorry OK, errors not)</text>
+
+    <!-- Repair loop arrow -->
+    <path d="M 350 228 C 310 228, 310 138, 350 138" fill="none" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr-r)"/>
+    <text x="295" y="180" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">REPAIR</text>
+    <text x="295" y="192" text-anchor="middle" fill="var(--text-dim)" font-size="10">up to 3×</text>
+
+    <!-- Human review -->
+    <line x1="460" y1="260" x2="460" y2="285" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+    <rect x="355" y="290" width="210" height="40" rx="6" fill="var(--blue-dim)" stroke="var(--blue)" stroke-width="1.2"/>
+    <text x="460" y="315" text-anchor="middle" fill="var(--blue)" font-size="12" font-weight="500">👤 Economist reviews / edits</text>
+
+    <!-- Right column: Prove -->
+    <line x1="570" y1="310" x2="640" y2="310" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+
+    <!-- Prove box -->
+    <rect x="645" y="110" width="125" height="130" rx="6" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="1.2"/>
+    <text x="707" y="133" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">PROVE</text>
+    <text x="707" y="148" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">LEANSTRAL</text>
+    <text x="707" y="172" text-anchor="middle" fill="var(--text-bright)" font-size="12">Strategy →</text>
+    <text x="707" y="188" text-anchor="middle" fill="var(--text-bright)" font-size="12">Tactics</text>
+    <text x="707" y="210" text-anchor="middle" fill="var(--text-dim)" font-size="11">pass@5</text>
+    <text x="707" y="226" text-anchor="middle" fill="var(--text-dim)" font-size="11">with feedback ↻</text>
+
+    <!-- Verify -->
+    <rect x="645" y="255" width="125" height="50" rx="6" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1.5"/>
+    <text x="707" y="276" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">VERIFY — LEAN 4</text>
+    <text x="707" y="293" text-anchor="middle" fill="var(--green)" font-size="13" font-weight="600">lake build</text>
+
+    <line x1="707" y1="245" x2="707" y2="250" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+
+    <!-- Feedback loop from verify to prove -->
+    <path d="M 775 265 C 795 265, 795 180, 775 180" fill="none" stroke="var(--accent)" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arr-r2)"/>
+    <text x="802" y="218" fill="var(--accent)" font-size="9" class="mono">errors +</text>
+    <text x="802" y="230" fill="var(--accent)" font-size="9" class="mono">goal state</text>
+
+    <!-- Result -->
+    <rect x="645" y="315" width="125" height="25" rx="4" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1"/>
+    <text x="707" y="332" text-anchor="middle" fill="var(--green)" font-size="12" font-weight="600">✓ Verified</text>
+
+    <line x1="707" y1="308" x2="707" y2="312" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr3)"/>
+
+    <defs>
+      <marker id="arr3" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+        <polygon points="0 0, 7 2.5, 0 5" fill="var(--text-dim)"/>
+      </marker>
+      <marker id="arr-y" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+        <polygon points="0 0, 7 2.5, 0 5" fill="var(--yellow)"/>
+      </marker>
+      <marker id="arr-r" markerWidth="7" markerHeight="5" refX="0" refY="2.5" orient="auto">
+        <polygon points="7 0, 0 2.5, 7 5" fill="var(--accent)"/>
+      </marker>
+      <marker id="arr-r2" markerWidth="7" markerHeight="5" refX="0" refY="2.5" orient="auto">
+        <polygon points="7 0, 0 2.5, 7 5" fill="var(--accent)"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<p>Key improvements over the POC:</p>
+
+<table>
+  <tr><th>Dimension</th><th>POC</th><th>Prototype</th></tr>
+  <tr><td>Formalization</td><td>3 hardcoded templates</td><td>Leanstral generates from any claim</td></tr>
+  <tr><td>Statement validation</td><td>None</td><td>Sorry-validation + repair loop (up to 3×)</td></tr>
+  <tr><td>Unformalizable claims</td><td>Generic fallback</td><td>Pre-classification with explanation</td></tr>
+  <tr><td>User review</td><td>None</td><td>Editable theorem before proving</td></tr>
+  <tr><td>Error feedback</td><td>Independent attempts</td><td>Lean errors fed to next attempt</td></tr>
+  <tr><td>Failure taxonomy</td><td>"Pass" or "Fail"</td><td>4 distinct modes with specific messages</td></tr>
+</table>
+
+<div class="divider"></div>
+
+<!-- SECTION 3: PIPELINE INTERNALS -->
+<h2><span class="section-num">03</span> Pipeline Internals</h2>
+
+<h3>File Responsibilities</h3>
+
+<pre>
+src/
+├── app.py              ← Streamlit UI. Thin wrapper. No pipeline logic.
+├── formalizer.py        ← Claim → Lean 4 theorem. Classification + sorry-validation.
+├── leanstral_client.py  ← Mistral API wrapper. Two-stage prompting. Feedback-aware.
+├── lean_verifier.py     ← Writes .lean files, runs lake build, parses diagnostics.
+├── pipeline.py          ← Orchestration: formalize → prove → verify. Pass@N loop.
+└── eval_logger.py       ← Structured JSONL logging for every pipeline run.
+</pre>
+
+<h3>The Feedback-Augmented Proving Loop</h3>
+
+<p>The critical improvement in the prototype. Instead of 5 independent attempts, each failed attempt feeds its error context forward:</p>
+
+<div class="diagram-wrap">
+  <div class="caption">Figure 4 — Proving loop with error feedback</div>
+  <svg viewBox="0 0 780 280" width="100%" height="280">
+    <!-- Attempt 1 -->
+    <rect x="20" y="30" width="160" height="70" rx="6" fill="var(--bg-card)" stroke="var(--accent)" stroke-width="1.2"/>
+    <text x="100" y="52" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">ATTEMPT 1</text>
+    <text x="100" y="72" text-anchor="middle" fill="var(--text)" font-size="12">Strategy → Proof</text>
+    <text x="100" y="88" text-anchor="middle" fill="var(--text-dim)" font-size="11">No prior context</text>
+
+    <line x1="185" y1="65" x2="215" y2="65" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr4)"/>
+
+    <!-- Verify 1 -->
+    <rect x="220" y="40" width="100" height="50" rx="6" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1.2"/>
+    <text x="270" y="60" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">LEAN 4</text>
+    <text x="270" y="76" text-anchor="middle" fill="var(--text)" font-size="12">lake build</text>
+
+    <!-- Fail -->
+    <text x="270" y="112" text-anchor="middle" fill="var(--accent)" font-size="20">✗</text>
+    <text x="270" y="128" text-anchor="middle" fill="var(--text-dim)" font-size="10">unsolved goals:</text>
+    <text x="270" y="141" text-anchor="middle" fill="var(--text-dim)" font-size="10" class="mono">K ^ α * K ^ (-1) * K = K ^ α</text>
+
+    <!-- Error flows down -->
+    <path d="M 270 150 L 270 170 L 500 170 L 500 55" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arr4)"/>
+    <text x="385" y="164" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">error + goal state</text>
+
+    <!-- Attempt 2 -->
+    <rect x="430" y="30" width="200" height="70" rx="6" fill="var(--bg-card)" stroke="var(--accent)" stroke-width="1.2"/>
+    <text x="530" y="52" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">ATTEMPT 2</text>
+    <text x="530" y="72" text-anchor="middle" fill="var(--text)" font-size="12">Strategy (informed by error)</text>
+    <text x="530" y="88" text-anchor="middle" fill="var(--text-bright)" font-size="11">Targets residual goal ↑</text>
+
+    <line x1="635" y1="65" x2="660" y2="65" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr4)"/>
+
+    <!-- Verify 2 -->
+    <rect x="665" y="40" width="100" height="50" rx="6" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1.5"/>
+    <text x="715" y="60" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">LEAN 4</text>
+    <text x="715" y="76" text-anchor="middle" fill="var(--text)" font-size="12">lake build</text>
+
+    <!-- Pass -->
+    <text x="715" y="112" text-anchor="middle" fill="var(--green)" font-size="20">✓</text>
+    <text x="715" y="130" text-anchor="middle" fill="var(--green)" font-size="11" font-weight="600">Verified</text>
+
+    <!-- Bottom: what changed -->
+    <rect x="20" y="195" width="745" height="70" rx="6" fill="var(--bg-card)" stroke="var(--border)" stroke-width="1"/>
+    <text x="40" y="218" fill="var(--text-dim)" font-size="10" class="mono">WHY THIS WORKS</text>
+    <text x="40" y="238" fill="var(--text)" font-size="13">Attempt 1 applies <tspan class="mono" fill="var(--orange)" font-size="12">field_simp</tspan> which clears fractions but leaves rpow terms. Leanstral's proof targets the</text>
+    <text x="40" y="254" fill="var(--text)" font-size="13">pre-<tspan class="mono" fill="var(--orange)" font-size="12">field_simp</tspan> goal and fails. Attempt 2 <tspan fill="var(--text-bright)">sees the actual residual goal</tspan> and writes tactics for <tspan fill="var(--text-bright)">that</tspan>.</text>
+
+    <defs>
+      <marker id="arr4" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+        <polygon points="0 0, 7 2.5, 0 5" fill="var(--text-dim)"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<h3>Error Taxonomy</h3>
+
+<p>The prototype distinguishes four failure modes, each with distinct user-facing messaging:</p>
+
+<table>
+  <tr><th>Mode</th><th>What failed</th><th>Signal</th><th>User message</th></tr>
+  <tr>
+    <td><span style="color:var(--yellow)">●</span> Formalization</td>
+    <td>Sonnet/Leanstral can't produce valid Lean</td>
+    <td>Sorry-validation fails 3×</td>
+    <td>"Could not formalize. Try rephrasing."</td>
+  </tr>
+  <tr>
+    <td><span style="color:var(--yellow)">●</span> Unformalizable</td>
+    <td>Claim needs definitions not in Mathlib</td>
+    <td>Classifier returns REQUIRES_DEFINITIONS</td>
+    <td>"Requires defining [X] — not in Mathlib."</td>
+  </tr>
+  <tr>
+    <td><span style="color:var(--orange)">●</span> Proving</td>
+    <td>Valid theorem, no proof found</td>
+    <td>5/5 attempts fail</td>
+    <td>"Statement is valid but no proof found."</td>
+  </tr>
+  <tr>
+    <td><span style="color:var(--green)">●</span> Verified</td>
+    <td>Nothing — success</td>
+    <td>lake build passes, no sorry</td>
+    <td>"Mathematically certified by Lean 4."</td>
+  </tr>
+</table>
+
+<div class="divider"></div>
+
+<!-- SECTION 4: TARGET ARCHITECTURE -->
+<h2><span class="section-num">04</span> Target Architecture: lean-lsp-mcp Integration</h2>
+
+<p>The current prototype uses Leanstral as a <strong>one-shot proof generator</strong> via the Mistral chat completions API. This works, but it's not how Leanstral was designed to operate. Per Mistral's documentation, Leanstral was "specifically trained to achieve maximal performance with the frequently used lean-lsp-mcp" — a Model Context Protocol server that gives the model <strong>live access to Lean's compiler during proof generation</strong>.</p>
+
+<div class="callout warning">
+  <div class="callout-label">The Performance Gap</div>
+  Leanstral's benchmark scores (FLTEval) were measured WITH lean-lsp-mcp providing real-time feedback. Our one-shot architecture is leaving performance on the table. The feedback loop in the current prototype is a budget approximation of what lean-lsp-mcp provides natively.
+</div>
+
+<div class="diagram-wrap">
+  <div class="caption">Figure 5 — Target Architecture (lean-lsp-mcp integration)</div>
+  <svg viewBox="0 0 780 360" width="100%" height="360">
+    <!-- Left: Formalization (unchanged) -->
+    <rect x="20" y="20" width="200" height="150" rx="8" fill="var(--bg-card)" stroke="var(--border)" stroke-width="1"/>
+    <text x="120" y="45" text-anchor="middle" fill="var(--text-dim)" font-size="10" class="mono">FORMALIZATION (SAME)</text>
+    <text x="120" y="70" text-anchor="middle" fill="var(--text)" font-size="12">Classify → Formalize</text>
+    <text x="120" y="88" text-anchor="middle" fill="var(--text)" font-size="12">→ Sorry-validate</text>
+    <text x="120" y="106" text-anchor="middle" fill="var(--text)" font-size="12">→ Human review</text>
+    <text x="120" y="135" text-anchor="middle" fill="var(--text-dim)" font-size="11" font-style="italic">Produces theorem</text>
+    <text x="120" y="150" text-anchor="middle" fill="var(--text-dim)" font-size="11" font-style="italic">with sorry</text>
+
+    <line x1="225" y1="95" x2="260" y2="95" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr5)"/>
+
+    <!-- Center: Agentic proving loop -->
+    <rect x="265" y="10" width="310" height="270" rx="8" fill="var(--accent-dim)" stroke="var(--accent)" stroke-width="1.5"/>
+    <text x="420" y="36" text-anchor="middle" fill="var(--accent)" font-size="11" class="mono" font-weight="600">AGENTIC PROVING LOOP (NEW)</text>
+
+    <!-- Leanstral agent -->
+    <rect x="290" y="55" width="130" height="60" rx="6" fill="var(--bg)" stroke="var(--accent)" stroke-width="1"/>
+    <text x="355" y="75" text-anchor="middle" fill="var(--accent)" font-size="10" class="mono">LEANSTRAL</text>
+    <text x="355" y="93" text-anchor="middle" fill="var(--text-bright)" font-size="12">Write next tactic</text>
+
+    <!-- Arrow down to LSP -->
+    <line x1="355" y1="120" x2="355" y2="145" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr5)"/>
+
+    <!-- lean-lsp-mcp -->
+    <rect x="285" y="150" width="140" height="70" rx="6" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1.2"/>
+    <text x="355" y="172" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">LEAN-LSP-MCP</text>
+    <text x="355" y="192" text-anchor="middle" fill="var(--text)" font-size="11">lean_goal()</text>
+    <text x="355" y="207" text-anchor="middle" fill="var(--text)" font-size="11">lean_diagnostic()</text>
+
+    <!-- Arrow: goal state back up -->
+    <path d="M 430 175 C 480 175, 480 85, 425 85" fill="none" stroke="var(--green)" stroke-width="1.5" marker-end="url(#arr-g)"/>
+    <text x="490" y="120" fill="var(--green)" font-size="10" class="mono">goal state</text>
+    <text x="490" y="133" fill="var(--green)" font-size="10" class="mono">after tactic</text>
+
+    <!-- Arrow: multi-attempt -->
+    <rect x="445" y="55" width="110" height="60" rx="6" fill="var(--bg)" stroke="var(--border)" stroke-width="1"/>
+    <text x="500" y="75" text-anchor="middle" fill="var(--text-dim)" font-size="10" class="mono">MULTI-ATTEMPT</text>
+    <text x="500" y="93" text-anchor="middle" fill="var(--text)" font-size="11">Screen tactics</text>
+
+    <!-- Connection multi-attempt to lsp -->
+    <line x1="500" y1="120" x2="500" y2="145" stroke="var(--text-dim)" stroke-width="1" stroke-dasharray="3,2"/>
+    <rect x="440" y="150" width="120" height="70" rx="6" fill="var(--bg)" stroke="var(--border)" stroke-width="1"/>
+    <text x="500" y="172" text-anchor="middle" fill="var(--text-dim)" font-size="10" class="mono">PREMISE SEARCH</text>
+    <text x="500" y="192" text-anchor="middle" fill="var(--text)" font-size="11">leansearch()</text>
+    <text x="500" y="207" text-anchor="middle" fill="var(--text)" font-size="11">loogle()</text>
+
+    <!-- Done check -->
+    <rect x="330" y="240" width="180" height="28" rx="4" fill="var(--bg)" stroke="var(--green)" stroke-width="1"/>
+    <text x="420" y="259" text-anchor="middle" fill="var(--green)" font-size="11" class="mono">lean_proofs_complete()?</text>
+
+    <line x1="355" y1="225" x2="355" y2="236" stroke="var(--text-dim)" stroke-width="1" marker-end="url(#arr5)"/>
+
+    <!-- Final verify -->
+    <line x1="580" y1="145" x2="615" y2="145" stroke="var(--text-dim)" stroke-width="1.2" marker-end="url(#arr5)"/>
+    <rect x="620" y="110" width="140" height="70" rx="8" fill="var(--green-dim)" stroke="var(--green)" stroke-width="1.5"/>
+    <text x="690" y="135" text-anchor="middle" fill="var(--green)" font-size="10" class="mono">FINAL VERIFY</text>
+    <text x="690" y="155" text-anchor="middle" fill="var(--text-bright)" font-size="13" font-weight="500">lake build</text>
+    <text x="690" y="172" text-anchor="middle" fill="var(--green)" font-size="11">Clean build, no sorry</text>
+
+    <!-- Bottom annotation -->
+    <rect x="20" y="300" width="745" height="50" rx="6" fill="var(--bg-card)" stroke="var(--border)" stroke-width="1"/>
+    <text x="40" y="320" fill="var(--text-dim)" font-size="10" class="mono">KEY DIFFERENCE</text>
+    <text x="40" y="338" fill="var(--text)" font-size="13">Leanstral sees the <tspan fill="var(--green)">live goal state after each tactic</tspan>, not just the initial theorem. It can search for relevant lemmas,</text>
+
+    <defs>
+      <marker id="arr5" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+        <polygon points="0 0, 7 2.5, 0 5" fill="var(--text-dim)"/>
+      </marker>
+      <marker id="arr-g" markerWidth="7" markerHeight="5" refX="0" refY="2.5" orient="auto">
+        <polygon points="7 0, 0 2.5, 7 5" fill="var(--green)"/>
+      </marker>
+    </defs>
+  </svg>
+</div>
+
+<div class="callout success">
+  <div class="callout-label">Status Update</div>
+  The MCP-first agentic prover described here is now operational in the repo. This section remains as the architecture rationale for the implementation now shipping in LeanEcon.
+</div>
+
+<p>The target architecture replaces the batch prove-then-verify pattern with an <strong>agentic loop</strong> where Leanstral interacts with Lean's compiler via MCP tools on every tactic step. This is how Leanstral achieves its benchmark results — and it's how human Lean users work too, constantly checking the goal state after each tactic in the Lean InfoView panel in VSCode.</p>
+
+<p>Available MCP tools that would integrate into the loop:</p>
+
+<table>
+  <tr><th>Tool</th><th>Purpose</th><th>When used</th></tr>
+  <tr><td><code>lean_goal</code></td><td>Get proof goal at a file location</td><td>After each tactic, to see what remains</td></tr>
+  <tr><td><code>lean_diagnostic_messages</code></td><td>Get errors, warnings, infos</td><td>After each tactic, to catch failures immediately</td></tr>
+  <tr><td><code>lean_multi_attempt</code></td><td>Screen multiple tactic snippets</td><td>When choosing between approaches (rpow_add vs simp)</td></tr>
+  <tr><td><code>lean_leansearch</code></td><td>Natural language search for Mathlib lemmas</td><td>When stuck — "how to simplify rpow expressions"</td></tr>
+  <tr><td><code>lean_proofs_complete</code></td><td>Check if all proofs in a file are done</td><td>After each tactic, to know when to stop</td></tr>
+  <tr><td><code>lean_completions</code></td><td>Code autocompletion for tactics/terms</td><td>When constructing tactic sequences</td></tr>
+</table>
+
+<div class="callout insight">
+  <div class="callout-label">Implementation Path</div>
+  lean-lsp-mcp is a Python package (<code>uvx lean-lsp-mcp</code>) that runs as an MCP server. Leanstral already supports MCP via function calling in the Mistral API. The integration requires: (1) running lean-lsp-mcp pointed at our lean_workspace, (2) registering the MCP tools in our Leanstral API calls, (3) replacing the one-shot prove→verify loop with an agentic loop that calls tools between tactic steps. This is a substantial architectural change — estimated at 2–3 build sessions — but the components exist and are documented.
+</div>
+
+<div class="divider"></div>
+
+<!-- SECTION 5: CURRENT STATUS -->
+<h2><span class="section-num">05</span> Verification Results and Known Boundaries</h2>
+
+<table>
+  <tr><th>Claim</th><th>Domain</th><th>Formalization</th><th>Verification</th><th>Notes</th></tr>
+  <tr>
+    <td>CRRA constant RRA</td>
+    <td>Micro</td>
+    <td style="color:var(--green)">✓ 1 attempt</td>
+    <td style="color:var(--green)">✓ 1 attempt</td>
+    <td>Field arithmetic. Clean.</td>
+  </tr>
+  <tr>
+    <td>Stone-Geary constant ΔV</td>
+    <td>Macro/Culture</td>
+    <td style="color:var(--text-dim)">— (raw Lean)</td>
+    <td style="color:var(--green)">✓ 1 attempt</td>
+    <td>Log terms cancel via ring_nf.</td>
+  </tr>
+  <tr>
+    <td>Budget constraint</td>
+    <td>Micro</td>
+    <td style="color:var(--green)">✓ 1 attempt</td>
+    <td style="color:var(--green)">✓ 1 attempt</td>
+    <td>Biconditional with existential. Elegant.</td>
+  </tr>
+  <tr>
+    <td>Cobb-Douglas elasticity</td>
+    <td>Macro</td>
+    <td style="color:var(--green)">✓ 1 attempt</td>
+    <td style="color:var(--yellow)">⚠ 0/5</td>
+    <td>rpow residual goal. Feedback loop expected to fix.</td>
+  </tr>
+  <tr>
+    <td>Second welfare theorem</td>
+    <td>Micro/GE</td>
+    <td style="color:var(--yellow)">Rejected</td>
+    <td style="color:var(--text-dim)">—</td>
+    <td>Correctly classified as REQUIRES_DEFINITIONS.</td>
+  </tr>
+</table>
+
+<h3>What works well</h3>
+<p>Claims that reduce to <strong>field arithmetic</strong> (involving +, -, *, /, ⁻¹) or <strong>ring arithmetic with Real.log</strong> formalize and verify reliably, often on the first attempt. The sorry-validation loop catches bad formalizations before they waste proving attempts. The pre-classifier prevents unformalizable claims from entering the pipeline at all.</p>
+
+<h3>What doesn't work yet</h3>
+<p>Claims involving <strong>Real.rpow with variable exponents</strong> (K^α, c^(-γ)) formalize correctly but fail at the proving stage because Leanstral can't see the post-tactic goal state. The error feedback loop (currently being implemented) is the direct fix. Claims requiring <strong>definitions not in Mathlib</strong> (welfare theorems, Nash equilibrium, Arrow's theorem) are correctly rejected but cannot be verified — this is a fundamental Mathlib coverage constraint, not a LeanEcon limitation.</p>
+
+<h3>Boundaries of the approach</h3>
+<p>Lean 4 can verify any constructive mathematical statement, but Mathlib's current coverage determines what's <em>practically</em> verifiable. The strongest results will come from algebraic economics: utility theory, production functions, demand systems, budget constraints, elasticities, comparative statics. Claims requiring measure theory, stochastic calculus, fixed-point theorems, or game-theoretic solution concepts are beyond current scope — not because Lean can't express them, but because the supporting library infrastructure doesn't exist yet.</p>
+
+<div class="divider"></div>
+
+<!-- SECTION 6: TECH STACK -->
+<h2><span class="section-num">06</span> Technology Stack</h2>
+
+<table>
+  <tr><th>Component</th><th>Technology</th><th>Role</th></tr>
+  <tr><td>Proof assistant</td><td>Lean 4 v4.28.0</td><td>Type checking, verification kernel</td></tr>
+  <tr><td>Math library</td><td>Mathlib v4.28.0</td><td>8,000+ formalized theorems, tactics</td></tr>
+  <tr><td>LLM (formalize + prove)</td><td>Leanstral (labs-leanstral-2603)</td><td>119B params, 6.5B active, MoE, Apache 2.0</td></tr>
+  <tr><td>LLM API</td><td>Mistral API (chat completions)</td><td>Free endpoint during labs period</td></tr>
+  <tr><td>Frontend</td><td>Streamlit</td><td>Multi-page app with pipeline transparency</td></tr>
+  <tr><td>Build system</td><td>Lake (Lean's build tool)</td><td>Compiles .lean files, manages Mathlib dependency</td></tr>
+  <tr><td>Logging</td><td>Append-only JSONL</td><td>Evaluation dataset for formalization quality</td></tr>
+</table>
+
+<p class="meta" style="margin-top: 64px; text-align: center;">LeanEcon Architecture Spec · v0.4 · March 2026</p>
+
+</div>
+</body>
+</html>

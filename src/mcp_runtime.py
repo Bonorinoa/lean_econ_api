@@ -1,0 +1,194 @@
+"""
+mcp_runtime.py
+
+Helpers for LeanEcon's MCP-backed prover work.
+
+This module centralizes the local lean-lsp-mcp stdio launch recipe,
+Mistral RunContext setup, and shared MCP query helpers.
+"""
+
+from __future__ import annotations
+
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, TYPE_CHECKING, AsyncIterator
+
+from dotenv import load_dotenv
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import get_default_environment, stdio_client
+from mistralai.extra.mcp.stdio import MCPClientSTDIO
+
+if TYPE_CHECKING:
+    from mistralai.extra.run.context import RunContext
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LEAN_WORKSPACE = PROJECT_ROOT / "lean_workspace"
+LEAN_LSP_MCP_COMMAND = "uvx"
+LEAN_LSP_MCP_ARGS = ["lean-lsp-mcp", "--transport", "stdio"]
+LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
+
+# Match the existing repo convention of loading .env from the project root.
+load_dotenv(PROJECT_ROOT / ".env")
+
+
+def build_lean_lsp_stdio_params() -> StdioServerParameters:
+    """
+    Build the stdio launch configuration for the local Lean MCP server.
+
+    The server must start from the Lean project root. Passing
+    `--lean-project-path` caused the installed server to crash in this repo, so
+    we rely on `cwd=lean_workspace/` instead.
+    """
+    if not LEAN_WORKSPACE.is_dir():
+        raise FileNotFoundError(f"Lean workspace not found: {LEAN_WORKSPACE}")
+    env = get_default_environment()
+    env.update(os.environ)
+    return StdioServerParameters(
+        command=LEAN_LSP_MCP_COMMAND,
+        args=list(LEAN_LSP_MCP_ARGS),
+        cwd=str(LEAN_WORKSPACE),
+        env=env,
+    )
+
+
+def lean_workspace_relative_path(path: Path) -> str:
+    """Convert an absolute or relative path under `lean_workspace/` to MCP form."""
+    resolved_path = path.resolve()
+    resolved_workspace = LEAN_WORKSPACE.resolve()
+    try:
+        return str(resolved_path.relative_to(resolved_workspace))
+    except ValueError as exc:
+        raise ValueError(f"Path is outside lean_workspace/: {path}") from exc
+
+
+@asynccontextmanager
+async def open_lean_mcp_session() -> AsyncIterator[ClientSession]:
+    """Open an initialized raw MCP client session for lean-lsp-mcp."""
+    params = build_lean_lsp_stdio_params()
+    async with stdio_client(params) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            yield session
+
+
+def build_mistral_mcp_client() -> MCPClientSTDIO:
+    """Build the Mistral MCP client wrapper for the local Lean MCP server."""
+    return MCPClientSTDIO(
+        stdio_params=build_lean_lsp_stdio_params(),
+        name=LEAN_MCP_CLIENT_NAME,
+    )
+
+
+def _missing_run_context_hint(exc: ModuleNotFoundError) -> str:
+    missing_name = exc.name or "an optional dependency"
+    return (
+        "Mistral RunContext is unavailable because "
+        f"`{missing_name}` is not installed in the project venv. "
+        "Run `./econProver_venv/bin/python -m pip install -r requirements.txt` "
+        "and retry."
+    )
+
+
+@asynccontextmanager
+async def open_mistral_run_context(
+    model: str | None = None,
+) -> AsyncIterator["RunContext"]:
+    """
+    Open a Mistral RunContext with lean-lsp-mcp already registered.
+
+    The RunContext import is intentionally lazy so Phase 0-1 can surface a
+    clear install hint if the optional agents dependencies are incomplete.
+    """
+    try:
+        from mistralai.extra.run.context import RunContext
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(_missing_run_context_hint(exc)) from exc
+
+    async with RunContext(model=model) as run_ctx:
+        await run_ctx.register_mcp_client(build_mistral_mcp_client())
+        yield run_ctx
+
+
+# ---------------------------------------------------------------------------
+# MCP query helpers
+# ---------------------------------------------------------------------------
+
+def parse_diagnostics(diagnostics_structured: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """
+    Parse structured MCP diagnostics into (errors, warnings) string lists.
+
+    Each item is formatted as "line N: message" when a line number is present.
+    """
+    result = diagnostics_structured.get("result", {})
+    items = result.get("items", [])
+    errors: list[str] = []
+    warnings: list[str] = []
+    for item in items:
+        message = item.get("message", "")
+        line = item.get("line")
+        prefix = f"line {line}: " if line else ""
+        if item.get("severity") == "error":
+            errors.append(prefix + message)
+        elif item.get("severity") == "warning":
+            warnings.append(prefix + message)
+    return errors, warnings
+
+
+def has_sorry_warning(warnings: list[str]) -> bool:
+    """Check if any warning mentions sorry."""
+    return any("sorry" in w.lower() for w in warnings)
+
+
+async def query_lean_state(file_path: str, goal_line: int) -> dict[str, Any]:
+    """
+    Query diagnostics and goal state for a Lean file via a fresh MCP session.
+
+    Opens a temporary MCP session, queries both diagnostics and goals,
+    parses the results, and returns a structured dict.
+
+    Args:
+        file_path: Lean file path relative to lean_workspace/ (e.g. "LeanEcon/AgenticProof.lean")
+        goal_line: Line number to query goals at (1-indexed, typically the `:= by` line)
+
+    Returns:
+        dict with keys:
+          - errors (list[str]): Parsed error messages
+          - warnings (list[str]): Parsed warning messages
+          - goals_after (list[str]): Remaining goals (empty if proof is complete)
+          - has_sorry (bool): True if any warning mentions sorry
+          - raw_diagnostics (dict): Raw structured diagnostics payload
+          - raw_goal (dict): Raw structured goal payload
+    """
+    async with open_lean_mcp_session() as session:
+        diagnostics = await session.call_tool(
+            "lean_diagnostic_messages",
+            {"file_path": file_path},
+        )
+        if getattr(diagnostics, "isError", False):
+            raise RuntimeError("lean_diagnostic_messages returned an MCP error")
+
+        goal = await session.call_tool(
+            "lean_goal",
+            {"file_path": file_path, "line": goal_line},
+        )
+        if getattr(goal, "isError", False):
+            raise RuntimeError("lean_goal returned an MCP error")
+
+    diag_structured = getattr(diagnostics, "structuredContent", None) or {}
+    goal_structured = getattr(goal, "structuredContent", None) or {}
+    goals_after = goal_structured.get("goals_after", [])
+    if not isinstance(goals_after, list):
+        goals_after = []
+
+    errors, warnings = parse_diagnostics(diag_structured)
+
+    return {
+        "errors": errors,
+        "warnings": warnings,
+        "goals_after": goals_after,
+        "has_sorry": has_sorry_warning(warnings),
+        "raw_diagnostics": diag_structured,
+        "raw_goal": goal_structured,
+    }

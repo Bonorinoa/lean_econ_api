@@ -1,0 +1,16 @@
+.env
+econProver_venv/
+leanEconAPI_venv/
+.venv/
+__pycache__/
+*.pyc
+outputs/
+logs/
+lean_workspace/.lake/
+lean_workspace/LeanEcon/AgenticProof.lean
+.claude/
+.vscode/
+.DS_Store
+*.egg-info/
+.mypy_cache/
+.pytest_cache/

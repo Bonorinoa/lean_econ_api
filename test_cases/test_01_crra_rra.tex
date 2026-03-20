@@ -1,0 +1,26 @@
+% Test Case 01: CRRA Relative Risk Aversion (Sanity Check)
+% Difficulty: Easy — algebraic simplification only
+%
+% Claim: Under CRRA utility u(c) = c^{1-γ}/(1-γ), the coefficient of
+% relative risk aversion is constant and equal to γ.
+%
+% The coefficient of relative risk aversion is defined as:
+%   RRA(c) = -c · u''(c) / u'(c)
+%
+% Given u(c) = c^{1-γ}/(1-γ):
+%   u'(c)  = c^{-γ}
+%   u''(c) = -γ · c^{-γ-1}
+%
+% Therefore:
+%   RRA(c) = -c · (-γ · c^{-γ-1}) / c^{-γ}
+%           = γ · c^{-γ} / c^{-γ}
+%           = γ
+
+\begin{claim}
+Under CRRA utility $u(c) = \frac{c^{1-\gamma}}{1-\gamma}$ where $\gamma > 0$ and
+$\gamma \neq 1$, the coefficient of relative risk aversion is constant and equal to
+$\gamma$. Formally, for all $c > 0$:
+\[
+  -c \cdot \frac{u''(c)}{u'(c)} = \gamma
+\]
+\end{claim}

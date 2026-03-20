@@ -1,0 +1,2 @@
+-- LeanEcon: Formal verification workspace for economics theorems.
+-- Generated proof files appear in this directory as Proof.lean.

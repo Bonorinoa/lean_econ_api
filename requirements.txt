@@ -1,0 +1,7 @@
+mistralai
+python-dotenv
+mcp
+griffe>=1.7.3,<2.0
+fastapi
+uvicorn
+httpx
