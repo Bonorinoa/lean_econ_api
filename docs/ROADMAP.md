@@ -12,6 +12,8 @@ This sprint is nearly complete. The core backend MVP is in place:
 - [x] SSE job streaming for long-running verify calls
 - [x] Verification concurrency fix via isolated per-run Lean temp files
 - [x] `ProverBackend` abstraction for swappable proving engines
+- [x] Deep-trace observability in `runs.jsonl`
+- [x] Offline evaluation harness for trace analysis, semantic grading, and uncharted pass@k runs
 
 ## Remaining before sprint close
 
@@ -24,5 +26,6 @@ This sprint is nearly complete. The core backend MVP is in place:
 
 - [ ] Document-processing microservice for extracting candidate claims from papers
 - [ ] Second prover backend, starting with Claude
+- [ ] Feed offline evaluation metrics into release and regression gates
 - [ ] Pedagogical tutor frontend for explanation and guided interaction
 - [ ] LeanEcon / EconLib community contributions and reusable theorem-library work

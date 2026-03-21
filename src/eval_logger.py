@@ -19,6 +19,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 LOGS_DIR = PROJECT_ROOT / "logs"
 LOG_FILE = LOGS_DIR / "runs.jsonl"
+LOG_SCHEMA_VERSION = 2
 
 
 def log_run(run_data: dict) -> None:
@@ -37,6 +38,7 @@ def log_run(run_data: dict) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": str(uuid.uuid4()),
+            "log_schema_version": LOG_SCHEMA_VERSION,
             **run_data,
         }
         with LOG_FILE.open("a", encoding="utf-8") as f:

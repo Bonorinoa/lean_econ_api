@@ -21,10 +21,11 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 from dotenv import load_dotenv
@@ -51,6 +52,7 @@ STOP_TIMEOUT = "timeout"
 RETRYABLE_STATUS_CODES = {429, 503}
 BACKOFF_DELAYS_SECONDS = (2, 4, 8, 16)
 MAX_CONSECUTIVE_APPLY_WITHOUT_DIAGNOSTICS = 5
+TRACE_SCHEMA_VERSION = 2
 CIRCUIT_BREAKER_WARNING = (
     "CIRCUIT BREAKER TRIGGERED: You must use lean_diagnostic_messages to check your work "
     "before applying more tactics."
@@ -95,6 +97,116 @@ class AgenticToolTracker:
         self.circuit_breaker_hits += 1
 
 
+@dataclass
+class TraceRecorder:
+    """Capture rich tool-call traces and tactic-attempt outcomes."""
+
+    entries: list[dict[str, Any]] = field(default_factory=list)
+    sequence_id: int = 0
+    latest_kernel_errors: list[str] = field(default_factory=list)
+    latest_kernel_warnings: list[str] = field(default_factory=list)
+    pending_tactic_log_index: int | None = None
+
+    def append_message_output(self, *, request_index: int, content: Any) -> None:
+        text = _truncate_text(content, limit=1000)
+        if not text:
+            return
+        self.entries.append(
+            {
+                "sequence_id": self._next_sequence_id(),
+                "request_index": request_index,
+                "type": "message.output",
+                "content": text,
+            }
+        )
+
+    def append_tool_call(
+        self,
+        *,
+        request_index: int,
+        tool_call_id: str,
+        tool_name: str,
+        tool_kind: str,
+        arguments: Any,
+        result_text: Any,
+        status: str,
+        blocked: bool = False,
+        diagnostic_payload: dict[str, Any] | None = None,
+    ) -> None:
+        entry = {
+            "sequence_id": self._next_sequence_id(),
+            "request_index": request_index,
+            "type": "tool_call",
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "tool_kind": tool_kind,
+            "arguments": _normalize_tool_arguments(arguments),
+            "result_text": _truncate_text(result_text, limit=1500),
+            "status": status,
+            "blocked": blocked,
+            "kernel_errors": [],
+            "kernel_warnings": [],
+        }
+        if diagnostic_payload is not None:
+            entry["diagnostic_payload"] = diagnostic_payload
+            entry["kernel_errors"] = list(diagnostic_payload.get("errors", []))
+            entry["kernel_warnings"] = list(diagnostic_payload.get("warnings", []))
+        self.entries.append(entry)
+
+    def note_tactic_attempt(self, tactic_call_log: list[dict[str, Any]], tactic: str) -> None:
+        if self.pending_tactic_log_index is not None:
+            previous = tactic_call_log[self.pending_tactic_log_index]
+            if previous.get("successful") is None:
+                previous["successful"] = False
+                previous["resolution"] = "superseded_before_diagnostics"
+
+        tactic_call_log.append(
+            {
+                "attempt_index": len(tactic_call_log) + 1,
+                "tactic": tactic,
+                "tactic_preview": _preview_tactic(tactic),
+                "triggering_errors": list(self.latest_kernel_errors),
+                "triggering_warnings": list(self.latest_kernel_warnings),
+                "successful": None,
+                "resolution": "pending_diagnostics",
+            }
+        )
+        self.pending_tactic_log_index = len(tactic_call_log) - 1
+
+    def resolve_from_diagnostics(
+        self,
+        tactic_call_log: list[dict[str, Any]],
+        *,
+        errors: list[str],
+        warnings: list[str],
+    ) -> None:
+        self.latest_kernel_errors = list(errors)
+        self.latest_kernel_warnings = list(warnings)
+
+        if self.pending_tactic_log_index is None:
+            return
+
+        attempt = tactic_call_log[self.pending_tactic_log_index]
+        attempt["post_diagnostic_errors"] = list(errors)
+        attempt["post_diagnostic_warnings"] = list(warnings)
+        attempt["successful"] = not errors
+        attempt["resolution"] = "diagnostics_clean" if not errors else "diagnostics_error"
+        self.pending_tactic_log_index = None
+
+    def finalize_pending_attempt(self, tactic_call_log: list[dict[str, Any]]) -> None:
+        if self.pending_tactic_log_index is None:
+            return
+        attempt = tactic_call_log[self.pending_tactic_log_index]
+        if attempt.get("successful") is None:
+            attempt["successful"] = False
+            attempt["resolution"] = "unresolved_when_run_ended"
+        self.pending_tactic_log_index = None
+
+    def _next_sequence_id(self) -> int:
+        self.sequence_id += 1
+        return self.sequence_id
+
+
 def _preview_tactic(tactic: str, limit: int = 120) -> str:
     """Collapse a tactic block to a short one-line preview for tool responses."""
     collapsed = " ".join(line.strip() for line in tactic.splitlines() if line.strip())
@@ -119,6 +231,94 @@ def _unavailable_tool_message(tool_name: str) -> str:
         f"ERROR: Tool `{tool_name}` is not registered in this run context. "
         f"Use one of the listed tools and call lean_diagnostic_messages to inspect the current proof state."
     )
+
+
+def _truncate_text(value: Any, limit: int = 500) -> str:
+    """Convert arbitrary tool payloads into bounded log text."""
+    text = str(value).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
+def _normalize_tool_arguments(arguments: Any) -> dict[str, Any] | list[Any] | str:
+    """Normalize tool-call arguments for JSONL logging."""
+    if isinstance(arguments, (dict, list)):
+        return arguments
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            return arguments
+        if isinstance(parsed, (dict, list)):
+            return parsed
+        return arguments
+    return str(arguments)
+
+
+def _extract_json_like_payload(value: Any) -> dict[str, Any] | None:
+    """Best-effort parse of MCP result payloads that embed JSON as text."""
+    payload = value
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+
+    if isinstance(payload, dict):
+        return payload
+
+    if isinstance(payload, list) and payload:
+        first = payload[0]
+        if isinstance(first, dict):
+            text = first.get("text")
+            if isinstance(text, str):
+                try:
+                    nested = json.loads(text)
+                except json.JSONDecodeError:
+                    return None
+                if isinstance(nested, dict):
+                    return nested
+    return None
+
+
+def _parse_diagnostic_payload(result_text: Any) -> dict[str, Any] | None:
+    """Extract Lean kernel diagnostics from an MCP tool result."""
+    payload = _extract_json_like_payload(result_text)
+    if not isinstance(payload, dict):
+        return None
+
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        items = []
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    normalized_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        message = str(item.get("message", "")).strip()
+        line = item.get("line")
+        prefix = f"line {line}: " if line else ""
+        normalized = {
+            "severity": item.get("severity"),
+            "message": message,
+            "line": line,
+            "column": item.get("column"),
+        }
+        normalized_items.append(normalized)
+        if item.get("severity") == "error":
+            errors.append(prefix + message)
+        elif item.get("severity") == "warning":
+            warnings.append(prefix + message)
+
+    return {
+        "success": bool(payload.get("success", False)),
+        "errors": errors,
+        "warnings": warnings,
+        "items": normalized_items,
+    }
 
 
 def _status_code_from_exception(exc: Exception) -> int | None:
@@ -296,6 +496,7 @@ def _build_interrupted_run_result(
         "warnings": warnings,
         "tool_trace": tool_trace_entries,
         "tactic_calls": tactic_call_log,
+        "trace_schema_version": TRACE_SCHEMA_VERSION,
         "steps_used": steps_used,
         "mcp_enabled": True,
         "agent_summary": agent_summary,
@@ -396,7 +597,7 @@ def _build_instructions(file_path: str, goal_line: int) -> str:
 # Tool function factory
 # ---------------------------------------------------------------------------
 
-def _make_apply_tactic(controller: ProofFileController):
+def _make_apply_tactic(controller: ProofFileController, trace_recorder: TraceRecorder):
     """
     Create the apply_tactic closure bound to a ProofFileController.
 
@@ -421,7 +622,7 @@ def _make_apply_tactic(controller: ProofFileController):
             tactic: A Lean 4 tactic or tactic block. Examples: "ring",
                     "field_simp [ne_of_gt hc]", "norm_num", "exact hspend"
         """
-        tactic_call_log.append({"tactic": tactic})
+        trace_recorder.note_tactic_attempt(tactic_call_log, tactic)
 
         try:
             controller.replace_tactic_block(tactic)
@@ -439,7 +640,12 @@ def _make_apply_tactic(controller: ProofFileController):
     return apply_tactic, tactic_call_log
 
 
-def _install_guarded_execute_function_calls(run_ctx, tracker: AgenticToolTracker):
+def _install_guarded_execute_function_calls(
+    run_ctx,
+    tracker: AgenticToolTracker,
+    trace_recorder: TraceRecorder,
+    tactic_call_log: list[dict[str, Any]],
+):
     """
     Wrap RunContext.execute_function_calls so tool execution stays well-formed.
 
@@ -457,26 +663,51 @@ def _install_guarded_execute_function_calls(run_ctx, tracker: AgenticToolTracker
         for function_call in function_calls:
             tool_name = function_call.name
             run_tool = run_ctx._callable_tools.get(tool_name)
+            tool_kind = "local" if tool_name == "apply_tactic" else "mcp"
+            request_index = getattr(run_ctx, "request_count", 0) + 1
+            arguments = getattr(function_call, "arguments", {})
 
             if run_tool is None:
+                unavailable_result = _unavailable_tool_message(tool_name)
                 results.append(
                     FunctionResultEntry(
                         tool_call_id=function_call.tool_call_id,
-                        result=_unavailable_tool_message(tool_name),
+                        result=unavailable_result,
                     )
+                )
+                trace_recorder.append_tool_call(
+                    request_index=request_index,
+                    tool_call_id=function_call.tool_call_id,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    arguments=arguments,
+                    result_text=unavailable_result,
+                    status="unavailable",
                 )
                 continue
 
             if tool_name == "apply_tactic" and tracker.should_block_apply():
                 tracker.note_circuit_breaker()
+                blocked_result = CIRCUIT_BREAKER_WARNING
                 results.append(
                     FunctionResultEntry(
                         tool_call_id=function_call.tool_call_id,
-                        result=CIRCUIT_BREAKER_WARNING,
+                        result=blocked_result,
                     )
+                )
+                trace_recorder.append_tool_call(
+                    request_index=request_index,
+                    tool_call_id=function_call.tool_call_id,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    arguments=arguments,
+                    result_text=blocked_result,
+                    status="blocked",
+                    blocked=True,
                 )
                 continue
 
+            status = "ok"
             try:
                 function_result = await create_function_result(
                     function_call=function_call,
@@ -484,6 +715,7 @@ def _install_guarded_execute_function_calls(run_ctx, tracker: AgenticToolTracker
                     continue_on_fn_error=True,
                 )
             except Exception as exc:  # pragma: no cover - defensive fallback over SDK helper
+                status = "error"
                 function_result = FunctionResultEntry(
                     tool_call_id=function_call.tool_call_id,
                     result=f"ERROR while executing {tool_name}: {exc}",
@@ -494,6 +726,27 @@ def _install_guarded_execute_function_calls(run_ctx, tracker: AgenticToolTracker
                 getattr(function_result, "result", ""),
             )
             results.append(function_result)
+
+            diagnostic_payload = None
+            if tool_name == "lean_diagnostic_messages":
+                diagnostic_payload = _parse_diagnostic_payload(function_result.result)
+                if diagnostic_payload is not None:
+                    trace_recorder.resolve_from_diagnostics(
+                        tactic_call_log,
+                        errors=diagnostic_payload["errors"],
+                        warnings=diagnostic_payload["warnings"],
+                    )
+
+            trace_recorder.append_tool_call(
+                request_index=request_index,
+                tool_call_id=function_call.tool_call_id,
+                tool_name=tool_name,
+                tool_kind=tool_kind,
+                arguments=arguments,
+                result_text=function_result.result,
+                status=status,
+                diagnostic_payload=diagnostic_payload,
+            )
 
             if tool_name == "lean_diagnostic_messages":
                 tracker.note_diagnostic_check()
@@ -553,7 +806,8 @@ async def _prove_theorem_agentic_async(
         # --- Step 2: Set up Mistral RunContext with tools ---
         _log(on_log, "agentic_setup", "Setting up Leanstral + MCP tools...", status="running")
 
-        apply_tactic_fn, tactic_call_log = _make_apply_tactic(controller)
+        trace_recorder = TraceRecorder()
+        apply_tactic_fn, tactic_call_log = _make_apply_tactic(controller, trace_recorder)
         tool_tracker = AgenticToolTracker()
         client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
 
@@ -575,7 +829,7 @@ async def _prove_theorem_agentic_async(
         _log(on_log, "agentic_run", "Leanstral proving loop started...", status="running")
         stop_reason = STOP_PROOF_INCOMPLETE
         model_text = ""
-        tool_trace_entries = []
+        tool_trace_entries: list[dict[str, Any]] = trace_recorder.entries
 
         steps_used = 0
         run_ctx = None
@@ -584,7 +838,12 @@ async def _prove_theorem_agentic_async(
             async with open_mistral_run_context(model=MODEL) as run_ctx:
                 run_ctx.agentic_tool_tracker = tool_tracker
                 run_ctx.register_func(apply_tactic_fn)
-                _install_guarded_execute_function_calls(run_ctx, tool_tracker)
+                _install_guarded_execute_function_calls(
+                    run_ctx,
+                    tool_tracker,
+                    trace_recorder,
+                    tactic_call_log,
+                )
 
                 _log(on_log, "agentic_setup",
                      f"Tools registered: {len(run_ctx.get_tools())} total",
@@ -607,17 +866,11 @@ async def _prove_theorem_agentic_async(
                 steps_used = run_ctx.request_count
 
                 for entry in result.output_entries:
-                    entry_type = getattr(entry, "type", type(entry).__name__)
-                    trace_entry = {"type": entry_type}
-                    if hasattr(entry, "name"):
-                        trace_entry["name"] = entry.name
-                    if hasattr(entry, "arguments"):
-                        trace_entry["arguments"] = str(entry.arguments)[:500]
-                    if hasattr(entry, "result"):
-                        trace_entry["result"] = str(entry.result)[:500]
-                    if hasattr(entry, "content"):
-                        trace_entry["content"] = str(entry.content)[:500]
-                    tool_trace_entries.append(trace_entry)
+                    if getattr(entry, "type", "") == "message.output":
+                        trace_recorder.append_message_output(
+                            request_index=getattr(run_ctx, "request_count", steps_used),
+                            content=getattr(entry, "content", ""),
+                        )
 
                 try:
                     model_text = result.output_as_text
@@ -627,6 +880,7 @@ async def _prove_theorem_agentic_async(
         except asyncio.TimeoutError:
             steps_used = getattr(run_ctx, "request_count", steps_used)
             error_message = f"run_async timed out after {TIMEOUT_MS}ms"
+            trace_recorder.finalize_pending_attempt(tactic_call_log)
             return _build_interrupted_run_result(
                 controller=controller,
                 model_text=model_text,
@@ -650,6 +904,7 @@ async def _prove_theorem_agentic_async(
                 interruption_message = (
                     "Agentic run halted after exhausting retry backoff for a transient Mistral API error."
                 )
+                trace_recorder.finalize_pending_attempt(tactic_call_log)
                 return _build_interrupted_run_result(
                     controller=controller,
                     model_text=model_text,
@@ -671,6 +926,7 @@ async def _prove_theorem_agentic_async(
                     "Agentic run halted after an empty tool-result cycle. "
                     "The current proof state was preserved so Leanstral can resume from diagnostics."
                 )
+                trace_recorder.finalize_pending_attempt(tactic_call_log)
                 return _build_interrupted_run_result(
                     controller=controller,
                     model_text=model_text,
@@ -689,6 +945,7 @@ async def _prove_theorem_agentic_async(
 
             stop_reason = STOP_RUN_ERROR
             elapsed = time.time() - start_time
+            trace_recorder.finalize_pending_attempt(tactic_call_log)
             return {
                 "success": False,
                 "strategy": model_text,
@@ -698,6 +955,7 @@ async def _prove_theorem_agentic_async(
                 "warnings": [],
                 "tool_trace": tool_trace_entries,
                 "tactic_calls": tactic_call_log,
+                "trace_schema_version": TRACE_SCHEMA_VERSION,
                 "steps_used": steps_used,
                 "mcp_enabled": True,
                 "agent_summary": f"run_async failed: {exc}",
@@ -710,6 +968,7 @@ async def _prove_theorem_agentic_async(
         _log(on_log, "agentic_run",
              f"Leanstral loop completed ({steps_used} API round-trips, {len(tactic_call_log)} tactic calls)",
              status="done")
+        trace_recorder.finalize_pending_attempt(tactic_call_log)
 
         # --- Step 4: Check if proof looks complete (pre-verification) ---
         current_tactics = controller.current_tactic_block
@@ -765,6 +1024,7 @@ async def _prove_theorem_agentic_async(
             "warnings": verification["warnings"],
             "tool_trace": tool_trace_entries,
             "tactic_calls": tactic_call_log,
+            "trace_schema_version": TRACE_SCHEMA_VERSION,
             "steps_used": steps_used,
             "mcp_enabled": True,
             "agent_summary": " ".join(summary_parts),

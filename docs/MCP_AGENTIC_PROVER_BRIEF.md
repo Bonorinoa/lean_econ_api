@@ -14,6 +14,7 @@ proof search and uses `lake build` as the final authority.
 - raw MCP diagnostics and goal queries succeed through `src/mcp_smoke_test.py`
 - `src/agentic_prover.py` runs Leanstral through Mistral's `run_async`
 - `src/pipeline.py` is agentic-only and returns normalized prover trace data
+- `logs/runs.jsonl` now stores richer `tool_trace` / `tactic_calls` records plus the original claim text
 - `src/api.py` exposes classify, formalize, verify, jobs, and explain endpoints
 - the preamble library is backed by Lean modules under `lean_workspace/LeanEcon/Preamble/`
 
@@ -43,12 +44,15 @@ All passing cases above were verified by `lake build`.
 | `src/preamble_library.py` | File-backed preamble metadata and lookup |
 | `src/leanstral_utils.py` | Shared Leanstral API helpers |
 | `src/lean_verifier.py` | Final Lean compiler verification |
+| `src/eval_metrics.py` | Shared deep-trace metric aggregation |
+| `src/semantic_alignment.py` | Offline semantic grading helpers |
 
 ### Key design decisions
 
 - Leanstral drives the proving loop through `run_async`; Python does not micromanage tactic selection.
 - `apply_tactic` is intentionally lightweight and only edits the working file.
 - MCP tools are used for in-loop diagnostics and goal inspection.
+- The prover now persists ordered deep traces with parsed diagnostic payloads so retries can be analyzed offline.
 - `lake build` remains the final source of truth for proof acceptance.
 - Economic preambles live in Lean modules so their source is validated by the Lean kernel.
 
@@ -65,6 +69,7 @@ All passing cases above were verified by `lake build`.
 - Each full agentic run still has noticeable latency from MCP setup and Lean verification.
 - Proof search remains stochastic.
 - Hard `Real.rpow`-heavy or structure-heavy economics claims are not yet stable enough to treat as solved.
+- The offline semantic grader is useful for evaluation, but it is not part of the normal `/verify` API path.
 
 ## Useful Commands
 
@@ -80,6 +85,15 @@ All passing cases above were verified by `lake build`.
 
 # Phase 1 stress suite
 ./leanEconAPI_venv/bin/python scripts/run_phase1_stress_tests.py
+
+# Deep trace analysis
+./leanEconAPI_venv/bin/python scripts/analyze_traces.py --runs-file logs/runs.jsonl --format both
+
+# Semantic alignment grading
+./leanEconAPI_venv/bin/python scripts/semantic_grader.py --claim "1 + 1 = 2" --theorem-file examples/even_form_pass.lean
+
+# Advanced pass@k evaluation harness
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py <claims.jsonl> --pass-k 5
 
 # FastAPI app
 uvicorn src.api:app --host 0.0.0.0 --port 8000

@@ -37,6 +37,7 @@ class ProveResult(TypedDict):
     stop_reason: str | None
     tool_trace: list[dict[str, Any]]
     tactic_calls: list[dict[str, Any]]
+    trace_schema_version: int
     agent_summary: str
     agent_elapsed_seconds: float
     axiom_info: dict[str, Any] | None
@@ -146,6 +147,7 @@ def prove_and_verify(
         "stop_reason": result.get("stop_reason"),
         "tool_trace": result.get("tool_trace", []),
         "tactic_calls": result.get("tactic_calls", []),
+        "trace_schema_version": result.get("trace_schema_version", 1),
         "agent_summary": result.get("agent_summary", ""),
         "agent_elapsed_seconds": result.get("elapsed_seconds", 0.0),
         "axiom_info": result.get("axiom_info"),
@@ -177,6 +179,7 @@ def run_pipeline(
             cached.setdefault("stop_reason", None)
             cached.setdefault("tool_trace", [])
             cached.setdefault("tactic_calls", [])
+            cached.setdefault("trace_schema_version", 1)
             cached.setdefault("agent_summary", "")
             cached.setdefault("agent_elapsed_seconds", 0.0)
             return cached
@@ -198,7 +201,7 @@ def run_pipeline(
         f_result = formalize_claim(raw_input, on_log=on_log)
 
     if not f_result["success"]:
-        return {
+        result = {
             "success": False,
             "lean_code": f_result.get("theorem_code", ""),
             "errors": f_result.get("errors", []),
@@ -218,10 +221,45 @@ def run_pipeline(
             "stop_reason": None,
             "tool_trace": [],
             "tactic_calls": [],
+            "trace_schema_version": 1,
             "agent_summary": "",
             "agent_elapsed_seconds": 0.0,
             "axiom_info": None,
         }
+        log_run({
+            "original_raw_claim": raw_input,
+            "input_text": raw_input[:500] if preformalized_theorem is None else "",
+            "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
+            "formalization": {
+                "success": f_result["success"],
+                "attempts": f_result["attempts"],
+                "theorem_code": f_result.get("theorem_code", ""),
+                "errors": f_result.get("errors", []),
+                "model": "labs-leanstral-2603",
+                "formalization_failed": f_result.get("formalization_failed", False),
+                "failure_reason": f_result.get("failure_reason"),
+            },
+            "proving": {
+                "success": False,
+                "attempts_used": 0,
+                "proof_strategy": "",
+                "proof_tactics": "",
+                "tool_trace": [],
+                "tactic_calls": [],
+                "trace_schema_version": 1,
+                "agent_summary": "",
+            },
+            "verification": {
+                "success": False,
+                "errors": f_result.get("errors", []),
+                "warnings": [],
+            },
+            "elapsed_seconds": result["elapsed_seconds"],
+            "from_cache": result["from_cache"],
+            "partial": result["partial"],
+            "stop_reason": result["stop_reason"],
+        })
+        return result
 
     theorem_with_sorry = f_result["theorem_code"]
     pv_result = prove_and_verify(theorem_with_sorry, on_log=on_log)
@@ -254,6 +292,7 @@ def run_pipeline(
         "attempts_used": pv_result["attempts_used"],
         "tool_trace": pv_result["tool_trace"],
         "tactic_calls": pv_result["tactic_calls"],
+        "trace_schema_version": pv_result["trace_schema_version"],
         "agent_summary": pv_result["agent_summary"],
         "agent_elapsed_seconds": pv_result["agent_elapsed_seconds"],
         "axiom_info": pv_result.get("axiom_info"),
@@ -263,6 +302,7 @@ def run_pipeline(
         result_cache.put(cache_key_input, result)
 
     log_run({
+        "original_raw_claim": raw_input,
         "input_text": raw_input[:500] if preformalized_theorem is None else "",
         "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
         "formalization": {
@@ -281,6 +321,7 @@ def run_pipeline(
             "proof_tactics": pv_result["proof_tactics"],
             "tool_trace": pv_result["tool_trace"],
             "tactic_calls": pv_result["tactic_calls"],
+            "trace_schema_version": pv_result["trace_schema_version"],
             "agent_summary": pv_result["agent_summary"],
         },
         "verification": {

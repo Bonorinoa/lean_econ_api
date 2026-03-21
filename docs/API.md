@@ -153,6 +153,9 @@ Important fields inside `result`:
 - `from_cache`: whether the response came from the verified-result cache
 - `partial`: whether the prover timed out and returned partial output
 - `stop_reason`: prover stop reason when reported
+- `tool_trace`: ordered deep-trace events from the proving run
+- `tactic_calls`: tactic-application attempts with triggering Lean errors when available
+- `trace_schema_version`: schema marker for `tool_trace` / `tactic_calls`
 - `axiom_info`: optional axiom-usage metadata from final verification
 - `explanation`: optional natural-language explanation when `explain=true`
 - `explanation_generated`: whether the explanation was model-generated
@@ -175,6 +178,17 @@ Phase meanings:
 - `verified`: Lean accepted the proof
 - `proved`: a proof was generated, but Lean rejected it
 - `failed`: the pipeline did not reach a valid proof
+
+Observability notes:
+
+- `tool_trace` keeps the existing field name for backward compatibility, but new
+  runs include ordered tool-call records with tool kind, arguments, normalized
+  result text, status, and parsed diagnostic payloads for
+  `lean_diagnostic_messages`
+- `tactic_calls` now record retry-triggering Lean kernel errors and whether the
+  following diagnostic check succeeded
+- `logs/runs.jsonl` also persists `original_raw_claim` so offline evaluation can
+  score semantic alignment without needing a separate artifact store
 
 ## SSE job streaming
 
@@ -289,6 +303,50 @@ Example response:
 
 This endpoint is meant for lightweight development-time visibility, not a full
 metrics stack.
+
+## Offline evaluation scripts
+
+LeanEcon also includes script-level evaluation tooling that operates on the
+append-only log and pipeline outputs.
+
+### Deep trace analysis
+
+```bash
+./leanEconAPI_venv/bin/python scripts/analyze_traces.py --runs-file logs/runs.jsonl --format both
+```
+
+This script computes:
+
+- Tool Call Efficiency: successful tactic applications divided by total tool calls
+- Tactic Depth: average number of distinct tactic heads in successful proofs
+- Error Frequency: most common Lean kernel errors seen in failed proof attempts
+
+### Semantic grading
+
+```bash
+./leanEconAPI_venv/bin/python scripts/semantic_grader.py \
+  --claim "Under CRRA utility, relative risk aversion is constant." \
+  --theorem-file examples/crra_pass.lean
+```
+
+This script uses Leanstral as a mathematical referee and returns structured
+JSON with `score`, `verdict`, `rationale`, and `trivialization_flags`.
+
+### Uncharted evaluations
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py <claims.jsonl> --pass-k 5
+```
+
+Input JSONL records should include:
+
+- `id`: stable case identifier
+- `raw_claim`: advanced natural-language claim
+- optional `preamble_names`, `tags`, and `notes`
+
+The runner bypasses `/api/v1/classify`, calls `formalize_claim(...)` directly,
+then retries `run_pipeline(...)` up to `pass@k` with `use_cache=False`. It
+writes both `results.json` and `report.md` under `outputs/uncharted_evals/`.
 
 ## Cache endpoints
 

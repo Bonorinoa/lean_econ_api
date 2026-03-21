@@ -101,6 +101,31 @@ If the claim depends on a bundled economic definition, use
 [`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md) to choose
 `preamble_names` for formalization.
 
+## Evaluation toolkit
+
+LeanEcon now ships a small offline evaluation stack on top of the append-only
+log at `logs/runs.jsonl`.
+
+- `scripts/analyze_traces.py` computes deep-trace metrics such as Tool Call Efficiency,
+  average Tactic Depth, and error-frequency summaries from persisted prover traces.
+- `scripts/semantic_grader.py` uses Leanstral as a semantic referee to score whether
+  generated Lean code is a faithful, non-trivial translation of the original claim.
+- `scripts/run_uncharted_evals.py` bypasses classification, runs `formalize_claim(...)`
+  plus `run_pipeline(...)` with configurable `pass@k`, and writes JSON/Markdown
+  reports under `outputs/uncharted_evals/`.
+
+Example commands:
+
+```bash
+./leanEconAPI_venv/bin/python scripts/analyze_traces.py --runs-file logs/runs.jsonl --format both
+
+./leanEconAPI_venv/bin/python scripts/semantic_grader.py \
+  --claim "Under CRRA utility, relative risk aversion is constant." \
+  --theorem-file examples/crra_pass.lean
+
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py test_cases/uncharted_claims.jsonl --pass-k 5
+```
+
 Example calls:
 
 ```bash
@@ -178,7 +203,8 @@ User Input (LaTeX / text / raw Lean)
         -> [prover_backend.py] swappable prover dispatch
         -> [agentic_prover.py] Leanstral + MCP + working proof file
     -> [lean_verifier.py] isolated temp-file verification via `lake env lean`
-    -> [eval_logger.py] JSONL run log
+    -> [eval_logger.py] JSONL run log with deep traces
+    -> [evaluation scripts] trace analysis + semantic grading + uncharted evals
     -> [FastAPI / CLI] results + metrics
 ```
 
@@ -195,7 +221,17 @@ src/
 ├── proof_file_controller.py Working-file management for agentic proving
 ├── lean_verifier.py         Final isolated-file Lean verification
 ├── eval_logger.py           Append-only JSONL structured logging
+├── eval_metrics.py          Shared evaluation-metric helpers
+├── semantic_alignment.py    Semantic grading helpers
 └── mcp_smoke_test.py        Lean MCP smoke test
+```
+
+```text
+scripts/
+├── analyze_traces.py        Offline deep-trace analyzer for runs.jsonl
+├── semantic_grader.py       CLI semantic-alignment grader
+├── run_uncharted_evals.py   pass@k advanced-claim evaluation harness
+└── run_phase1_stress_tests.py
 ```
 
 ## How verification works
@@ -212,6 +248,10 @@ proof files.
 
 Leanstral generates candidate proofs. Lean verifies them.
 
+The persisted log now records rich `tool_trace` and `tactic_calls` data with a
+`trace_schema_version`, plus the full `original_raw_claim`, so offline
+evaluation scripts can analyze proving behavior without re-running old jobs.
+
 ## Limitations
 
 - Verified examples are still mostly algebraic identities over the reals.
@@ -223,13 +263,12 @@ Leanstral generates candidate proofs. Lean verifies them.
 
 - [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): current MCP-first prover design and status
 - [`docs/API.md`](docs/API.md): endpoint contract and agent-oriented usage guide
-- [`docs/endpoints.md`](docs/endpoints.md): compact endpoint-by-endpoint reference
 - [`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md): generated catalog of reusable preamble modules
-- [`docs/preamble.md`](docs/preamble.md): preamble-focused quick reference for agents
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): Docker-based local deployment notes
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): current sprint and post-sprint priorities
 - [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md): chronological implementation log
-- [`docs/SKILL.md`](docs/SKILL.md): agent integration skill for LeanEcon clients
+- [`docs/skill/SKILL.md`](docs/skill/SKILL.md): agent integration skill for LeanEcon clients
+- [`docs/skill/references/endpoints.md`](docs/skill/references/endpoints.md): compact endpoint reference
 - [`docs/leanstral_architecture.html`](docs/leanstral_architecture.html): visual architecture artifact
 
 ## Roadmap
