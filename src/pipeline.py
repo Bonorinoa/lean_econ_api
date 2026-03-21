@@ -17,11 +17,12 @@ from typing import Any, TypedDict
 
 from eval_logger import log_run
 from formalizer import formalize
+from prover_backend import get_prover
 from result_cache import result_cache
 
 
 class ProveResult(TypedDict):
-    """Normalized output from the agentic proving stage."""
+    """Normalized output from the proving stage."""
 
     success: bool
     lean_code: str
@@ -38,6 +39,7 @@ class ProveResult(TypedDict):
     tactic_calls: list[dict[str, Any]]
     agent_summary: str
     agent_elapsed_seconds: float
+    axiom_info: dict[str, Any] | None
 
 
 def _log(on_log, stage: str, message: str, data: str | None = None, status: str = "done"):
@@ -115,36 +117,30 @@ def formalize_claim(
 def prove_and_verify(
     theorem_with_sorry: str,
     on_log: callable | None = None,
+    prover_name: str = "leanstral",
 ) -> ProveResult:
-    """Phase 2: agentic proof generation plus final Lean verification."""
-    return _prove_and_verify_agentic(theorem_with_sorry, on_log=on_log)
-
-
-def _prove_and_verify_agentic(
-    theorem_with_sorry: str,
-    on_log: callable | None = None,
-) -> ProveResult:
-    """Dispatch to the agentic prover and normalize its result."""
-    from agentic_prover import prove_theorem_agentic
-
-    _log(on_log, "agentic_dispatch", "Using agentic prover (Leanstral+MCP)...", status="running")
-    result = prove_theorem_agentic(theorem_with_sorry, on_log=on_log)
+    """Phase 2: proof generation plus final Lean verification."""
+    prover = get_prover(prover_name)
+    success = False
+    _log(on_log, "prover_dispatch", f"Using prover: {prover.name}", status="running")
+    result = prover.prove(theorem_with_sorry, on_log=on_log)
+    success = result.get("success", False)
     _log(
         on_log,
-        "agentic_dispatch",
-        f"Agentic prover finished: {'PASS' if result['success'] else 'FAIL'}",
-        status="done" if result["success"] else "error",
+        "prover_dispatch",
+        f"Prover finished: {'PASS' if success else 'FAIL'}",
+        status="done" if success else "error",
     )
 
     return {
-        "success": result["success"],
-        "lean_code": result["full_lean_code"],
-        "errors": result["errors"],
+        "success": success,
+        "lean_code": result.get("full_lean_code", ""),
+        "errors": result.get("errors", []),
         "warnings": result.get("warnings", []),
         "proof_strategy": result.get("strategy", ""),
-        "proof_tactics": result["proof_tactics"],
+        "proof_tactics": result.get("proof_tactics", ""),
         "output_lean": result.get("output_lean"),
-        "proof_generated": True,
+        "proof_generated": result.get("proof_generated", True),
         "attempts_used": result.get("steps_used", 0),
         "partial": result.get("partial", False),
         "stop_reason": result.get("stop_reason"),
@@ -152,6 +148,7 @@ def _prove_and_verify_agentic(
         "tactic_calls": result.get("tactic_calls", []),
         "agent_summary": result.get("agent_summary", ""),
         "agent_elapsed_seconds": result.get("elapsed_seconds", 0.0),
+        "axiom_info": result.get("axiom_info"),
     }
 
 
@@ -223,6 +220,7 @@ def run_pipeline(
             "tactic_calls": [],
             "agent_summary": "",
             "agent_elapsed_seconds": 0.0,
+            "axiom_info": None,
         }
 
     theorem_with_sorry = f_result["theorem_code"]
@@ -258,6 +256,7 @@ def run_pipeline(
         "tactic_calls": pv_result["tactic_calls"],
         "agent_summary": pv_result["agent_summary"],
         "agent_elapsed_seconds": pv_result["agent_elapsed_seconds"],
+        "axiom_info": pv_result.get("axiom_info"),
     }
 
     if use_cache and result["success"]:

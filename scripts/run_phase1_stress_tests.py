@@ -8,6 +8,7 @@ plus an aggregate markdown report.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -34,6 +35,43 @@ OUTPUT_DIR = PROJECT_ROOT / "outputs" / "phase1_stress"
 SUMMARY_PATH = PROJECT_ROOT / "outputs" / "phase1_stress_test_results.md"
 VALIDATION_DIR = LEAN_WORKSPACE / "LeanEcon" / "StressValidation"
 PROOF_PATH = LEAN_WORKSPACE / "LeanEcon" / "Proof.lean"
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the LeanEcon Phase 1 stress suite.")
+    parser.add_argument(
+        "--cases",
+        nargs="*",
+        default=None,
+        help=(
+            "Optional case filters. Match either the file stem "
+            "(for example `test_04_water_extraction_dynamics`) or the full filename."
+        ),
+    )
+    parser.add_argument(
+        "--summary-path",
+        default=str(SUMMARY_PATH),
+        help="Optional markdown output path for the aggregate summary report.",
+    )
+    return parser.parse_args()
+
+
+def _select_cases(case_filters: list[str] | None) -> list[Path]:
+    if not case_filters:
+        return list(TEST_CASES)
+
+    requested = {item.strip() for item in case_filters if item.strip()}
+    selected = [
+        case_path
+        for case_path in TEST_CASES
+        if case_path.stem in requested or case_path.name in requested
+    ]
+    if not selected:
+        raise SystemExit(
+            "No stress cases matched the provided filters: "
+            + ", ".join(sorted(requested))
+        )
+    return selected
 
 
 def _goal_line(lean_code: str) -> int:
@@ -235,15 +273,18 @@ def _render_summary(records: list[dict[str, Any]]) -> str:
 
 
 def main() -> int:
+    args = _parse_args()
     if not os.environ.get("MISTRAL_API_KEY"):
         print("MISTRAL_API_KEY is required to run the stress suite.", file=sys.stderr)
         return 1
 
     original_proof = PROOF_PATH.read_text(encoding="utf-8") if PROOF_PATH.exists() else None
     records: list[dict[str, Any]] = []
+    selected_cases = _select_cases(args.cases)
+    summary_path = Path(args.summary_path).resolve()
 
     try:
-        for case_path in TEST_CASES:
+        for case_path in selected_cases:
             validation = _validate_case(case_path)
             run = _run_case(case_path)
             record = {
@@ -255,8 +296,8 @@ def main() -> int:
             record["artifact_path"] = str(artifact_path)
             records.append(record)
 
-        SUMMARY_PATH.write_text(_render_summary(records), encoding="utf-8")
-        print(f"Wrote summary report to {SUMMARY_PATH}")
+        summary_path.write_text(_render_summary(records), encoding="utf-8")
+        print(f"Wrote summary report to {summary_path}")
         return 0
     finally:
         if original_proof is None:

@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -63,6 +64,7 @@ def _make_verify_result() -> dict:
         "tactic_calls": [],
         "agent_summary": "Leanstral agentic prover: 1 API round-trips, 1 tactic applications.",
         "agent_elapsed_seconds": 0.1,
+        "axiom_info": None,
         "error_code": "none",
     }
 
@@ -78,6 +80,7 @@ def _test_app_imports_and_routes() -> None:
     assert "/api/v1/formalize" in route_paths
     assert "/api/v1/verify" in route_paths
     assert "/api/v1/jobs/{job_id}" in route_paths
+    assert "/api/v1/jobs/{job_id}/stream" in route_paths
     assert "/api/v1/explain" in route_paths
     assert "/api/v1/cache/stats" in route_paths
     assert "/api/v1/cache" in route_paths
@@ -168,6 +171,7 @@ def _test_openapi_schema() -> None:
     assert response.status_code == 200
     schema = response.json()
     assert "/api/v1/verify" in schema["paths"]
+    assert "/api/v1/jobs/{job_id}/stream" in schema["paths"]
     assert "VerifyRequest" in schema["components"]["schemas"]
     assert "VerifyAcceptedResponse" in schema["components"]["schemas"]
     assert "JobStatusResponse" in schema["components"]["schemas"]
@@ -223,7 +227,7 @@ def _test_verify_uses_preformalized_theorem() -> None:
     client = TestClient(api.app)
     captured: dict[str, str] = {}
 
-    def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str) -> dict:
+    def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str, on_log=None) -> dict:
         captured["raw_input"] = raw_input
         captured["preformalized_theorem"] = preformalized_theorem
         return _make_verify_result()
@@ -280,6 +284,90 @@ def _test_job_not_found() -> None:
     client = TestClient(api.app)
     response = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000")
     assert response.status_code == 404
+
+
+def _test_stream_completed_job() -> None:
+    client = TestClient(api.app)
+    with patch.object(api, "run_pipeline", return_value=_make_verify_result()):
+        resp = client.post("/api/v1/verify", json={"theorem_code": RAW_LEAN_THEOREM})
+    assert resp.status_code == 202
+    job_id = resp.json()["job_id"]
+
+    for _ in range(20):
+        status = client.get(f"/api/v1/jobs/{job_id}").json()
+        if status["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+
+    with client.stream("GET", f"/api/v1/jobs/{job_id}/stream") as response:
+        assert response.status_code == 200
+        body = b"".join(response.iter_bytes())
+
+    assert b'"type": "complete"' in body or b'"type":"complete"' in body
+    assert b'"status": "completed"' in body or b'"status":"completed"' in body
+
+
+def _test_stream_not_found() -> None:
+    client = TestClient(api.app)
+    response = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000/stream")
+    assert response.status_code == 404
+
+
+def _test_stream_live_progress() -> None:
+    client = TestClient(api.app)
+    emit_progress = threading.Event()
+    complete_job = threading.Event()
+
+    def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str, on_log=None) -> dict:
+        emit_progress.wait(timeout=2.0)
+        if on_log is not None:
+            on_log(
+                {
+                    "stage": "formalize",
+                    "message": "Calling Leanstral...",
+                    "status": "running",
+                }
+            )
+        complete_job.wait(timeout=2.0)
+        if on_log is not None:
+            on_log(
+                {
+                    "stage": "agentic_run",
+                    "message": "Leanstral proving loop finished.",
+                    "status": "done",
+                }
+            )
+        return _make_verify_result()
+
+    job_id = api.job_store.create({"theorem_code": RAW_LEAN_THEOREM, "explain": False})
+
+    with patch.object(api, "run_pipeline", side_effect=fake_run_pipeline):
+        worker = threading.Thread(
+            target=api._run_verify_job,
+            args=(job_id, RAW_LEAN_THEOREM, False),
+            daemon=True,
+        )
+        worker.start()
+
+        with client.stream("GET", f"/api/v1/jobs/{job_id}/stream") as response:
+            assert response.status_code == 200
+            emit_progress.set()
+            body = b""
+            for chunk in response.iter_bytes():
+                body += chunk
+                if (b'"type": "progress"' in body or b'"type":"progress"' in body) and not complete_job.is_set():
+                    complete_job.set()
+                if b'"type": "complete"' in body or b'"type":"complete"' in body:
+                    break
+
+        worker.join(timeout=2.0)
+
+    assert b'"type": "progress"' in body or b'"type":"progress"' in body
+    assert b'"stage": "formalize"' in body or b'"stage":"formalize"' in body
+    assert b'"message": "Calling Leanstral..."' in body or b'"message":"Calling Leanstral..."' in body
+    assert b'"status": "running"' in body or b'"status":"running"' in body
+    assert b'"type": "complete"' in body or b'"type":"complete"' in body
+    assert not worker.is_alive()
 
 
 def _test_cache_stats_endpoint() -> None:
@@ -487,6 +575,24 @@ def _test_formalize_success_no_diagnosis() -> None:
     assert body["preamble_used"] == []
 
 
+def _test_prover_registry() -> None:
+    from prover_backend import PROVER_REGISTRY, get_prover
+
+    assert "leanstral" in PROVER_REGISTRY
+    prover = get_prover("leanstral")
+    assert prover.name == "leanstral"
+
+
+def _test_prover_registry_unknown() -> None:
+    from prover_backend import get_prover
+
+    try:
+        get_prover("nonexistent")
+        assert False, "Should have raised ValueError"
+    except ValueError as exc:
+        assert "nonexistent" in str(exc)
+
+
 def main() -> int:
     print("=" * 60)
     print("LeanEcon FastAPI Smoke Tests")
@@ -525,6 +631,9 @@ def main() -> int:
             "job_status_queued_or_running", _test_job_status_queued_or_running
         ),
         "job_not_found": _run_case("job_not_found", _test_job_not_found),
+        "stream_completed_job": _run_case("stream_completed_job", _test_stream_completed_job),
+        "stream_not_found": _run_case("stream_not_found", _test_stream_not_found),
+        "stream_live_progress": _run_case("stream_live_progress", _test_stream_live_progress),
         "cache_stats_endpoint": _run_case(
             "cache_stats_endpoint", _test_cache_stats_endpoint
         ),
@@ -555,6 +664,10 @@ def main() -> int:
         ),
         "formalize_success_no_diagnosis": _run_case(
             "formalize_success_no_diagnosis", _test_formalize_success_no_diagnosis
+        ),
+        "prover_registry": _run_case("prover_registry", _test_prover_registry),
+        "prover_registry_unknown": _run_case(
+            "prover_registry_unknown", _test_prover_registry_unknown
         ),
     }
 

@@ -7,6 +7,7 @@ This module exposes a frontend-friendly, multi-step API:
   - POST /api/v1/formalize
   - POST /api/v1/verify      (async, returns 202 + job_id)
   - GET  /api/v1/jobs/{job_id}
+  - GET  /api/v1/jobs/{job_id}/stream
   - POST /api/v1/explain
 
 Legacy unversioned routes (/api/classify, /api/formalize, /api/verify) are
@@ -15,12 +16,15 @@ preserved as deprecated redirects for backward compatibility.
 
 from __future__ import annotations
 
+import json
+import queue
 import sys
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 # Allow sibling imports such as `from pipeline import ...` to resolve when the
@@ -57,7 +61,8 @@ Recommended client workflow:
 2. `POST /api/v1/formalize` to obtain a Lean theorem containing `:= by sorry`.
 3. Optionally let a user or agent edit the theorem text.
 4. `POST /api/v1/verify` with the formalized theorem — returns HTTP 202 and a
-   `job_id`. Poll `GET /api/v1/jobs/{job_id}` until status is `completed` or `failed`.
+   `job_id`. Poll `GET /api/v1/jobs/{job_id}` or stream
+   `GET /api/v1/jobs/{job_id}/stream` until the job finishes.
 
 Important behavior:
 
@@ -390,6 +395,14 @@ class VerifyResponse(BaseModel):
         default=None,
         description="Why the proving loop stopped, when reported by the prover.",
     )
+    axiom_info: dict | None = Field(
+        default=None,
+        description=(
+            "Axiom usage from lean_verify. Contains 'axioms' (list), "
+            "'sound' (bool), 'has_sorry_ax' (bool). Only present on "
+            "successful verifications when MCP is available."
+        ),
+    )
     error_code: LeanEconErrorCode = Field(
         default=LeanEconErrorCode.NONE,
         description="Machine-readable error code.",
@@ -487,6 +500,11 @@ def _verify_error_code(result: dict) -> LeanEconErrorCode:
     return LeanEconErrorCode.VERIFICATION_REJECTED
 
 
+def _format_sse_event(event: dict[str, Any]) -> str:
+    """Encode an SSE payload as a single JSON data frame."""
+    return f"data: {json.dumps(event)}\n\n"
+
+
 # ---------------------------------------------------------------------------
 # Background task
 # ---------------------------------------------------------------------------
@@ -494,10 +512,24 @@ def _verify_error_code(result: dict) -> LeanEconErrorCode:
 def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
     """Background task that runs the full pipeline and stores the result."""
     job_store.update_status(job_id, JobStatus.RUNNING)
+
+    def on_log(entry: dict[str, Any]) -> None:
+        """Forward pipeline log entries to SSE subscribers."""
+        job_store.publish(
+            job_id,
+            {
+                "type": "progress",
+                "stage": str(entry.get("stage", "")),
+                "message": str(entry.get("message", "")),
+                "status": str(entry.get("status", "done")),
+            },
+        )
+
     try:
         result = run_pipeline(
             raw_input=theorem_code,
             preformalized_theorem=theorem_code,
+            on_log=on_log,
         )
         error_code = _verify_error_code(result)
         response_data: dict[str, Any] = {
@@ -509,6 +541,7 @@ def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
                 original_claim=theorem_code,
                 theorem_code=theorem_code,
                 verification_result=result,
+                on_log=on_log,
             )
             response_data["explanation"] = expl["explanation"]
             response_data["explanation_generated"] = expl["generated"]
@@ -629,8 +662,9 @@ def formalize_endpoint(request: FormalizeRequest) -> FormalizeResponse:
     summary="Verify a formalized theorem (async)",
     description=(
         "Queue a proving and Lean verification job. Returns HTTP 202 with a `job_id` "
-        "immediately. Poll `GET /api/v1/jobs/{job_id}` until status is `completed` "
-        "or `failed`. LeanEcon uses the agentic prover for all verify jobs."
+        "immediately. Poll `GET /api/v1/jobs/{job_id}` or stream "
+        "`GET /api/v1/jobs/{job_id}/stream` until status is `completed` or "
+        "`failed`. LeanEcon uses the agentic prover for all verify jobs."
     ),
     responses={
         202: {"description": "Job queued successfully."},
@@ -684,6 +718,79 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         status=job["status"],
         result=result,
         error=job.get("error"),
+    )
+
+
+@router.get(
+    "/jobs/{job_id}/stream",
+    summary="Stream verify job progress (SSE)",
+    description=(
+        "Returns a Server-Sent Events stream of job progress. Events use a JSON "
+        "`data:` payload with `type` (`progress` or `complete`), `stage`, "
+        "`message`, and `status`. The stream closes automatically after the job "
+        "completes or fails."
+    ),
+    responses={
+        200: {"description": "SSE event stream", "content": {"text/event-stream": {}}},
+        404: {"description": "Job not found or expired."},
+    },
+)
+def stream_job_events(job_id: str) -> StreamingResponse:
+    """Stream real-time progress events for a verify job."""
+    job = job_store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+
+    if job["status"] in (JobStatus.COMPLETED, JobStatus.FAILED):
+        def already_done():
+            event = {
+                "type": "complete",
+                "status": job["status"],
+            }
+            if job.get("error"):
+                event["error"] = job["error"]
+            yield _format_sse_event(event)
+
+        return StreamingResponse(
+            already_done(),
+            media_type="text/event-stream",
+            headers=headers,
+        )
+
+    subscriber = job_store.subscribe(job_id)
+
+    def event_generator():
+        try:
+            while True:
+                try:
+                    event = subscriber.get(timeout=1.0)
+                    yield _format_sse_event(event)
+                    if event.get("type") == "complete":
+                        break
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+                    current = job_store.get(job_id)
+                    if current and current["status"] in (JobStatus.COMPLETED, JobStatus.FAILED):
+                        final_event = {
+                            "type": "complete",
+                            "status": current["status"],
+                        }
+                        if current.get("error"):
+                            final_event["error"] = current["error"]
+                        yield _format_sse_event(final_event)
+                        break
+        finally:
+            job_store.unsubscribe(job_id, subscriber)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=headers,
     )
 
 

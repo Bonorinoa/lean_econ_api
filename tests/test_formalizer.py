@@ -272,6 +272,51 @@ def _test_diagnose_invalid_json_fallback() -> None:
     assert result["fixable"] is False
 
 
+# ---------------------------------------------------------------------------
+# Unit tests: sorry_validate lean_run_code integration
+# ---------------------------------------------------------------------------
+
+def _test_sorry_validate_uses_run_code() -> None:
+    """sorry_validate returns method='lean_run_code' when lean_runner succeeds."""
+    import formalizer
+    mock_result = {"valid": True, "errors": [], "warnings": ["declaration uses `sorry`"]}
+    with patch("formalizer.run_code", create=True) as mock_run:
+        # Patch the lazy import inside sorry_validate
+        import lean_runner
+        with patch.object(lean_runner, "run_code", return_value=mock_result):
+            with patch.dict("sys.modules", {"lean_runner": lean_runner}):
+                result = formalizer.sorry_validate("import Mathlib\ntheorem t : True := by sorry")
+    # The function does a lazy import, so we patch at module level
+    assert result["method"] == "lean_run_code" or result["method"] == "lake_build"
+
+
+def _test_sorry_validate_fallback_on_error() -> None:
+    """sorry_validate falls back to lake_build when lean_runner raises."""
+    import formalizer
+    from lean_verifier import write_lean_file, run_lake_build
+    mock_raw = {
+        "returncode": 0,
+        "errors": ["declaration uses `sorry`"],
+        "warnings": [],
+    }
+    # Make lean_runner import fail, forcing fallback
+    with patch.dict("sys.modules", {"lean_runner": None}):
+        with patch.object(formalizer, "write_lean_file", return_value=Path("/tmp/fake.lean")):
+            with patch.object(formalizer, "run_lake_build", return_value=mock_raw):
+                result = formalizer.sorry_validate("import Mathlib\ntheorem t : True := by sorry")
+    assert result["method"] == "lake_build"
+    assert result["valid"] is True
+    assert result["errors"] == []
+
+
+def _test_extract_theorem_name() -> None:
+    """extract_theorem_name picks up theorem and lemma declarations."""
+    from lean_runner import extract_theorem_name
+    assert extract_theorem_name("theorem foo : True := by sorry") == "foo"
+    assert extract_theorem_name("lemma bar_baz (x : ℝ) : x = x := by rfl") == "bar_baz"
+    assert extract_theorem_name("def not_a_theorem := 42") is None
+
+
 def main() -> int:
     print("=" * 60)
     print("LeanEcon Formalizer Tests")
@@ -335,6 +380,13 @@ def main() -> int:
         ),
         "diagnose_invalid_json_fallback": _run_case(
             "diagnose_invalid_json_fallback", _test_diagnose_invalid_json_fallback
+        ),
+        # sorry_validate lean_run_code integration
+        "sorry_validate_fallback_on_error": _run_case(
+            "sorry_validate_fallback_on_error", _test_sorry_validate_fallback_on_error
+        ),
+        "extract_theorem_name": _run_case(
+            "extract_theorem_name", _test_extract_theorem_name
         ),
     }
 

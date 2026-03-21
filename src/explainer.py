@@ -144,6 +144,21 @@ def _format_messages(messages: list[str], limit: int = 6) -> str:
     return _truncate(rendered, 2000)
 
 
+def _axiom_section(verification_result: dict) -> str:
+    """Build a short axiom-info section for the explainer prompt."""
+    axiom_info = verification_result.get("axiom_info")
+    if not axiom_info:
+        return ""
+    if axiom_info.get("has_sorry_ax"):
+        return "Axiom warning: Proof uses sorryAx — it is NOT sound despite compilation."
+    if axiom_info.get("nonstandard_axioms"):
+        names = ", ".join(axiom_info["nonstandard_axioms"])
+        return f"Nonstandard axioms used: {names}"
+    if axiom_info.get("sound"):
+        return "Axiom check: Only standard axioms used (propext, Classical.choice, Quot.sound). Proof is sound."
+    return ""
+
+
 def _infer_outcome_label(verification_result: dict) -> str:
     """Normalize the result dict into the fallback outcome taxonomy."""
     if verification_result.get("formalization_failed"):
@@ -195,7 +210,8 @@ Errors:
 
 Warnings:
 {_format_messages(warnings)}
-"""
+
+{_axiom_section(verification_result)}"""
 
 
 def _call_explainer_model(user_prompt: str) -> str:

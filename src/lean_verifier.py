@@ -15,12 +15,15 @@ Critical path note:
   NOT from lean_workspace/LeanEcon/ (that's the source module directory).
 """
 
+import logging
 import re
 import subprocess
 import textwrap
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -153,7 +156,11 @@ def run_lake_build(lean_path: Path, timeout: int = 300) -> dict:
     }
 
 
-def verify(lean_code: str, filename: str | None = None) -> dict:
+def verify(
+    lean_code: str,
+    filename: str | None = None,
+    check_axioms: bool = True,
+) -> dict:
     """
     Write .lean file and verify it with lake build in one call.
 
@@ -162,15 +169,33 @@ def verify(lean_code: str, filename: str | None = None) -> dict:
     Args:
         lean_code: Complete .lean file content.
         filename: Optional base name for the .lean file.
+        check_axioms: If True and build succeeds, query lean_verify for axiom info.
 
     Returns:
-        Build result dict (see run_lake_build) with added key:
+        Build result dict (see run_lake_build) with added keys:
           - lean_code (str): The code that was verified.
+          - axiom_info (dict | None): Axiom usage info, if available.
     """
     with _preserve_proof_module() as lean_path:
         lean_path = write_lean_file(lean_code, filename)
         result = run_lake_build(lean_path)
         result["lean_code"] = lean_code
+
+        # Axiom check (only on success, best-effort, file must still exist)
+        result["axiom_info"] = None
+        if check_axioms and result["success"]:
+            try:
+                from lean_runner import verify_axioms, extract_theorem_name
+                thm_name = extract_theorem_name(lean_code)
+                if thm_name:
+                    axiom_info = verify_axioms(str(lean_path), thm_name)
+                    result["axiom_info"] = axiom_info
+                    logger.info(
+                        "Axiom check: %s — sound=%s",
+                        axiom_info["axioms"], axiom_info["sound"],
+                    )
+            except Exception as exc:
+                logger.warning("Axiom check failed: %s", exc)
 
         # Also save a copy to outputs/
         _save_to_outputs(lean_code, lean_path, result)

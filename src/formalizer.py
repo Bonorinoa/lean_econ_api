@@ -224,15 +224,30 @@ def sorry_validate(lean_code: str) -> dict:
     """
     Check that a Lean 4 file with sorry compiles (no errors except sorry warning).
 
-    Uses write_lean_file + run_lake_build directly and checks returncode == 0.
-    Does NOT use lean_verifier.verify() which treats sorry as a failure.
+    Tries lean_run_code first (fast, no file writes). Falls back to
+    lake build if lean_run_code is unavailable or fails.
 
     Returns:
         dict with keys:
           - valid (bool): True if only sorry warnings, no real errors.
           - errors (list[str]): Lean errors (empty if valid).
           - warnings (list[str]): Lean warnings (including sorry).
+          - method (str): "lean_run_code" or "lake_build".
     """
+    # Fast path: lean_run_code via MCP (no file writes, ~2-5s)
+    try:
+        from lean_runner import run_code
+        result = run_code(lean_code)
+        return {
+            "valid": result["valid"],
+            "errors": result["errors"],
+            "warnings": result["warnings"],
+            "method": "lean_run_code",
+        }
+    except Exception:
+        pass  # Fall through to lake build
+
+    # Slow path: write to Proof.lean + lake build (~15-25s)
     lean_path = write_lean_file(lean_code)
     raw = run_lake_build(lean_path, timeout=SORRY_VALIDATION_TIMEOUT)
     valid = raw["returncode"] == 0
@@ -245,6 +260,7 @@ def sorry_validate(lean_code: str) -> dict:
         "valid": valid,
         "errors": real_errors if not valid else [],
         "warnings": raw["warnings"],
+        "method": "lake_build",
     }
 
 
