@@ -29,6 +29,14 @@ LEAN_LSP_MCP_COMMAND = "uvx"
 LEAN_LSP_MCP_ARGS = ["lean-lsp-mcp", "--transport", "stdio"]
 LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
 
+# NOTE (2026-03-21): we intentionally create a fresh MCPClientSTDIO for each
+# RunContext. Local probing showed that re-registering the same client instance
+# with a second sequential RunContext raises ClosedResourceError because
+# `RunContext.register_mcp_client()` initializes the client against the
+# context-owned AsyncExitStack and `RunContext.__aexit__()` closes that stack,
+# then calls `mcp_client.aclose()`. Until the SDK offers a detach/rebind-safe
+# lifecycle, a warm MCP client pool is not reliable here.
+
 # Match the existing repo convention of loading .env from the project root.
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -100,6 +108,10 @@ async def open_mistral_run_context(
 
     The RunContext import is intentionally lazy so Phase 0-1 can surface a
     clear install hint if the optional agents dependencies are incomplete.
+
+    A fresh MCP client is registered on every entry. Reusing a closed
+    MCPClientSTDIO across sequential RunContexts currently fails with
+    ClosedResourceError in the Mistral SDK.
     """
     try:
         from mistralai.extra.run.context import RunContext
@@ -149,7 +161,8 @@ async def query_lean_state(file_path: str, goal_line: int) -> dict[str, Any]:
     parses the results, and returns a structured dict.
 
     Args:
-        file_path: Lean file path relative to lean_workspace/ (e.g. "LeanEcon/AgenticProof.lean")
+        file_path: Lean file path relative to lean_workspace/
+            (e.g. "LeanEcon/AgenticProof_ab12cd34ef56.lean")
         goal_line: Line number to query goals at (1-indexed, typically the `:= by` line)
 
     Returns:

@@ -82,6 +82,14 @@ theorem trivial_truth : True := by
         controller.cleanup()
 
 
+def _test_default_controller_paths_are_unique() -> None:
+    first = ProofFileController()
+    second = ProofFileController()
+    assert first.working_file != second.working_file
+    assert first.working_file.name.startswith("AgenticProof_")
+    assert second.working_file.name.startswith("AgenticProof_")
+
+
 async def _exercise_circuit_breaker() -> None:
     run_ctx = RunContext(model="dummy")
 
@@ -118,7 +126,7 @@ async def _exercise_circuit_breaker() -> None:
             FunctionCallEntry(
                 tool_call_id="diag-1",
                 name="lean_diagnostic_messages",
-                arguments={"file_path": "LeanEcon/AgenticProof.lean"},
+                arguments={"file_path": "LeanEcon/AgenticProof_test.lean"},
             )
         ]
     )
@@ -160,6 +168,10 @@ def main() -> int:
         "apply_tactic_returns_nonempty_message": _run_case(
             "apply_tactic_returns_nonempty_message",
             _test_apply_tactic_returns_nonempty_message,
+        ),
+        "default_controller_paths_are_unique": _run_case(
+            "default_controller_paths_are_unique",
+            _test_default_controller_paths_are_unique,
         ),
         "circuit_breaker": _run_case(
             "circuit_breaker",

@@ -1,27 +1,24 @@
 """
 lean_verifier.py
 
-Writes a .lean file to lean_workspace/LeanEcon/, runs `lake build` from
-lean_workspace/, and parses the result.
+Verify Lean 4 source files for LeanEcon.
 
-Responsibilities:
-  - Write .lean source file into the Lean project source directory
-  - Run `lake build` from the correct working directory (lean_workspace/)
-  - Parse stdout/stderr: extract errors, warnings, success signal
-  - Return a structured result dict
+Full-proof verification now writes each candidate to a unique temporary file
+under `lean_workspace/LeanEcon/` and compiles that file directly with
+`lake env lean <file>`. This avoids the old shared `Proof.lean` bottleneck and
+allows concurrent verifier runs without clobbering a tracked module.
 
-Critical path note:
-  lake build must be run from lean_workspace/ (where lakefile.toml lives),
-  NOT from lean_workspace/LeanEcon/ (that's the source module directory).
+The older `Proof.lean` + `lake build` path remains available only as a legacy
+helper for sorry-validation fallback in `formalizer.py`.
 """
 
 import logging
 import re
 import subprocess
 import textwrap
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +30,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 LEAN_WORKSPACE = PROJECT_ROOT / "lean_workspace"
 LEAN_SOURCE_DIR = LEAN_WORKSPACE / "LeanEcon"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+LEGACY_BUILD_FILE = LEAN_SOURCE_DIR / "Proof.lean"
+VERIFICATION_FILE_PREFIX = "AgenticProof"
 
 
 def _ensure_dirs():
@@ -40,26 +39,15 @@ def _ensure_dirs():
     OUTPUTS_DIR.mkdir(exist_ok=True)
 
 
-@contextmanager
-def _preserve_proof_module() -> Path:
-    """
-    Preserve the tracked `LeanEcon/Proof.lean` contents across verification runs.
-
-    The verifier still compiles by writing through `Proof.lean`, but we restore the
-    original source afterward so smoke tests and stress runs do not leave the repo dirty.
-    """
-    lean_path = LEAN_SOURCE_DIR / "Proof.lean"
-    original = lean_path.read_text(encoding="utf-8") if lean_path.exists() else None
-    try:
-        yield lean_path
-    finally:
-        if original is None:
-            try:
-                lean_path.unlink()
-            except FileNotFoundError:
-                pass
-        else:
-            lean_path.write_text(original, encoding="utf-8")
+def _sanitize_file_stem(filename: str | None, default: str) -> str:
+    """Convert a user-provided label into a Lean-file-friendly stem."""
+    candidate = Path(filename).stem if filename else default
+    sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", candidate).strip("_")
+    if not sanitized:
+        sanitized = default
+    if not sanitized[0].isalpha():
+        sanitized = f"{default}_{sanitized}"
+    return sanitized
 
 
 # ---------------------------------------------------------------------------
@@ -68,28 +56,45 @@ def _preserve_proof_module() -> Path:
 
 def write_lean_file(lean_code: str, filename: str | None = None) -> Path:
     """
-    Write Lean 4 source code to lean_workspace/LeanEcon/Proof.lean.
+    Write Lean 4 source code to the legacy `LeanEcon/Proof.lean` path.
 
-    We always write to the fixed name `Proof.lean` because `LeanEcon.lean`
-    imports `LeanEcon.Proof` — lake only compiles modules it knows about via
-    import. The fixed name ensures lake detects the file change and recompiles.
+    This helper is kept for the formalizer's sorry-validation fallback, which
+    still uses a project-wide `lake build` when `lean_run_code` is unavailable.
 
     Args:
         lean_code: Complete .lean file content (must start with `import Mathlib`).
-        filename: Ignored (kept for API compatibility). Always writes to Proof.lean.
+        filename: Ignored (kept for API compatibility).
 
     Returns:
         Path to lean_workspace/LeanEcon/Proof.lean.
     """
     _ensure_dirs()
-    lean_path = LEAN_SOURCE_DIR / "Proof.lean"
+    lean_path = LEGACY_BUILD_FILE
+    lean_path.write_text(lean_code, encoding="utf-8")
+    return lean_path
+
+
+def write_verification_file(lean_code: str, filename: str | None = None) -> Path:
+    """
+    Write a unique temporary Lean file for one verifier run.
+
+    Using a fresh filename per run eliminates collisions between concurrent jobs.
+    The file is intentionally not part of the import graph; `verify()` compiles
+    it directly with `lake env lean`.
+    """
+    _ensure_dirs()
+    stem = _sanitize_file_stem(filename, VERIFICATION_FILE_PREFIX)
+    lean_path = LEAN_SOURCE_DIR / f"{stem}_{uuid4().hex[:12]}.lean"
     lean_path.write_text(lean_code, encoding="utf-8")
     return lean_path
 
 
 def run_lake_build(lean_path: Path, timeout: int = 300) -> dict:
     """
-    Run `lake build` from lean_workspace/ and capture the result.
+    Run project-wide `lake build` from lean_workspace/ and capture the result.
+
+    This is a legacy helper used by sorry-validation fallback. Full proof
+    verification now prefers `run_direct_lean_check()` on a unique file.
 
     Args:
         lean_path: Path to the .lean file (used only for reporting; lake builds
@@ -156,13 +161,83 @@ def run_lake_build(lean_path: Path, timeout: int = 300) -> dict:
     }
 
 
+def run_direct_lean_check(lean_path: Path, timeout: int = 300) -> dict:
+    """
+    Compile one Lean file directly with `lake env lean`.
+
+    Unlike `lake build`, this checks a standalone file whether or not it is
+    imported from `LeanEcon.lean`, which makes it safe for concurrent
+    per-verification temp files.
+
+    We intentionally do not use `lean_run_code` here. Local probing on
+    2026-03-21 found that complete-proof calls failed with
+    "No valid Lean project path found" and became non-responsive after a
+    same-session bootstrap attempt, so the direct Lean compiler path is the
+    reliable concurrency-safe option for now.
+    """
+    try:
+        relative_path = lean_path.resolve().relative_to(LEAN_WORKSPACE.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Lean file is outside the workspace: {lean_path}") from exc
+
+    try:
+        result = subprocess.run(
+            ["lake", "env", "lean", str(relative_path)],
+            cwd=str(LEAN_WORKSPACE),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": f"lake env lean timed out after {timeout}s",
+            "errors": [f"Timeout after {timeout}s"],
+            "warnings": [],
+            "lean_file": str(lean_path),
+            "verification_method": "lake_env_lean",
+        }
+    except FileNotFoundError:
+        return {
+            "success": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "lake not found on PATH",
+            "errors": ["lake executable not found — is Lean 4 installed?"],
+            "warnings": [],
+            "lean_file": str(lean_path),
+            "verification_method": "lake_env_lean",
+        }
+
+    combined = result.stdout + "\n" + result.stderr
+    errors = _parse_diagnostics(combined, "error")
+    warnings = _parse_diagnostics(combined, "warning")
+
+    has_sorry = "declaration uses `sorry`" in combined
+    if has_sorry:
+        errors.append("Proof contains 'sorry' — not a complete proof.")
+
+    return {
+        "success": result.returncode == 0 and not has_sorry,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "errors": errors,
+        "warnings": warnings,
+        "lean_file": str(lean_path),
+        "verification_method": "lake_env_lean",
+    }
+
+
 def verify(
     lean_code: str,
     filename: str | None = None,
     check_axioms: bool = True,
 ) -> dict:
     """
-    Write .lean file and verify it with lake build in one call.
+    Write a unique Lean file and verify it with `lake env lean` in one call.
 
     This is the main entry point used by pipeline.py.
 
@@ -172,13 +247,13 @@ def verify(
         check_axioms: If True and build succeeds, query lean_verify for axiom info.
 
     Returns:
-        Build result dict (see run_lake_build) with added keys:
+        Verification result dict with added keys:
           - lean_code (str): The code that was verified.
           - axiom_info (dict | None): Axiom usage info, if available.
     """
-    with _preserve_proof_module() as lean_path:
-        lean_path = write_lean_file(lean_code, filename)
-        result = run_lake_build(lean_path)
+    lean_path = write_verification_file(lean_code, filename)
+    try:
+        result = run_direct_lean_check(lean_path)
         result["lean_code"] = lean_code
 
         # Axiom check (only on success, best-effort, file must still exist)
@@ -186,6 +261,7 @@ def verify(
         if check_axioms and result["success"]:
             try:
                 from lean_runner import verify_axioms, extract_theorem_name
+
                 thm_name = extract_theorem_name(lean_code)
                 if thm_name:
                     axiom_info = verify_axioms(str(lean_path), thm_name)
@@ -197,24 +273,26 @@ def verify(
             except Exception as exc:
                 logger.warning("Axiom check failed: %s", exc)
 
-        # Also save a copy to outputs/
         _save_to_outputs(lean_code, lean_path, result)
-
         return result
+    finally:
+        lean_path.unlink(missing_ok=True)
 
 
 def _parse_diagnostics(text: str, level: str) -> list[str]:
     """
-    Extract error or warning lines from lake build output.
+    Extract error or warning lines from Lean compiler output.
 
-    Lake formats diagnostics in one of two styles:
-      A) Lean text format:  `LeanEcon/Proof.lean:5:2: error: message`
-      B) Lake summary format: `error: LeanEcon/Proof.lean:5:2: message`
+    The verifier currently sees diagnostics in one of two styles:
+      A) Lean text format:
+         `LeanEcon/AgenticProof_ab12cd34ef56.lean:5:2: error: message`
+      B) Lake summary format:
+         `error: LeanEcon/AgenticProof_ab12cd34ef56.lean:5:2: message`
 
     We capture the message part and up to 3 continuation lines (for goal state).
 
     Args:
-        text: Combined stdout + stderr from lake build.
+        text: Combined stdout + stderr from the verification command.
         level: "error" or "warning".
 
     Returns:
@@ -299,13 +377,14 @@ def _save_to_outputs(lean_code: str, lean_path: Path, result: dict):
         for w in result["warnings"]:
             report_lines.append(textwrap.indent(w, "  "))
         report_lines.append("")
+    method_label = result.get("verification_method", "verifier")
     if result["stdout"].strip():
-        report_lines.append("## lake stdout")
+        report_lines.append(f"## {method_label} stdout")
         report_lines.append("```")
         report_lines.append(result["stdout"].strip())
         report_lines.append("```")
     if result["stderr"].strip():
-        report_lines.append("## lake stderr")
+        report_lines.append(f"## {method_label} stderr")
         report_lines.append("```")
         report_lines.append(result["stderr"].strip())
         report_lines.append("```")

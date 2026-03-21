@@ -493,3 +493,22 @@ User action needed: no
 Decision/Finding: Updated Home and Examples page copy so the app now mentions both proving modes and describes Cobb-Douglas as improved-but-not-fully-stable instead of a flat unresolved limitation.
 Why: The repo docs and the UI should tell the same story before release.
 User action needed: no
+
+---
+
+## Session: 2026-03-21
+
+[2026-03-21 01:55] — Verification concurrency — Removed the shared `Proof.lean` bottleneck
+Decision/Finding: Final proof verification no longer writes through `LeanEcon/Proof.lean`. `src/lean_verifier.py` now writes each verification candidate to a unique temporary file such as `LeanEcon/AgenticProof_<id>.lean` and checks it with `lake env lean <file>`.
+Why: `lean_run_code` was not reliable for complete-proof verification in this repo. A direct probe failed immediately with `No valid Lean project path found. Run another tool first to set it up.`, and a same-session bootstrap attempt became non-responsive. By contrast, `lake env lean` successfully checked an arbitrary unimported file, so we can verify per-job files without touching the tracked import graph.
+User action needed: no
+
+[2026-03-21 01:56] — Agentic concurrency — Made MCP working files unique by default
+Decision/Finding: `ProofFileController` now allocates a unique `AgenticProof_<id>.lean` working file per controller instance instead of reusing a fixed `AgenticProof.lean`.
+Why: Even after removing `Proof.lean` from final verification, concurrent agentic proving runs could still overwrite each other's in-progress MCP file if they shared a fixed path.
+User action needed: no
+
+[2026-03-21 01:57] — MCP pooling investigation — Warm `MCPClientSTDIO` pool is not safe with current Mistral SDK
+Decision/Finding: Reusing the same `MCPClientSTDIO` across two sequential `RunContext` instances failed on the second registration with `ClosedResourceError`, while a fresh client in the next context succeeded immediately.
+Why: `RunContext.register_mcp_client()` initializes the client against the context-owned `AsyncExitStack`, and `RunContext.__aexit__()` closes that stack before calling `mcp_client.aclose()`. That lifecycle leaves the client transport closed after the first run, so a reusable warm pool is not viable without SDK support for detaching or rebinding clients. For now LeanEcon intentionally constructs a fresh MCP client per `RunContext`.
+User action needed: no

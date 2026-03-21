@@ -11,7 +11,7 @@ Leanstral drives the proving loop autonomously via tool calls:
 The Python controller owns:
   - Working file management (via ProofFileController)
   - Checkpoint save/restore on tactic application
-  - Final verification via lake build (MCP is guidance, not truth)
+  - Final verification via the local Lean compiler (MCP is guidance, not truth)
 
 Usage:
   from agentic_prover import prove_theorem_agentic
@@ -532,7 +532,7 @@ async def _prove_theorem_agentic_async(
     1. Initialize working file via ProofFileController
     2. Register custom tool functions + MCP tools via RunContext
     3. Let Leanstral drive the loop via run_async
-    4. Final verification via lake build
+    4. Final verification via the local Lean compiler
     """
     from mistralai.client import Mistral
     from mistralai.client.models.completionargs import CompletionArgs
@@ -720,16 +720,16 @@ async def _prove_theorem_agentic_async(
             stop_reason = STOP_PROOF_COMPLETE
             _log(on_log, "agentic_check", "Proof appears complete (no sorry)", status="done")
 
-        # --- Step 5: Final verification via lake build ---
-        _log(on_log, "agentic_verify", "Running final lake build verification...", status="running")
+        # --- Step 5: Final verification via the local Lean compiler ---
+        _log(on_log, "agentic_verify", "Running final Lean verification...", status="running")
         verification = verify(controller.current_lean_code)
 
         if verification["success"]:
             stop_reason = STOP_PROOF_COMPLETE
-            _log(on_log, "agentic_verify", "Verified — lake build passed", status="done")
+            _log(on_log, "agentic_verify", "Verified — Lean check passed", status="done")
         else:
             if stop_reason == STOP_PROOF_COMPLETE:
-                stop_reason = STOP_PROOF_INCOMPLETE  # MCP said done but lake disagreed
+                stop_reason = STOP_PROOF_INCOMPLETE  # MCP said done but final verification disagreed
             error_preview = str(verification["errors"][:2])
             _log(on_log, "agentic_verify",
                  f"Verification failed: {error_preview}",
@@ -752,7 +752,7 @@ async def _prove_theorem_agentic_async(
                 f"Circuit breaker triggered {tool_tracker.circuit_breaker_hits} time(s)."
             )
         if success:
-            summary_parts.append("Proof verified by lake build.")
+            summary_parts.append("Proof verified by the local Lean compiler.")
         else:
             summary_parts.append(f"Proof not verified. Stop reason: {stop_reason}.")
 
@@ -814,7 +814,7 @@ def prove_theorem_agentic(
     Agentic prover using Leanstral + MCP via Mistral's Conversations API.
 
     Leanstral autonomously calls lean-lsp-mcp tools and custom Python functions
-    to build a proof interactively. Final verification is via lake build.
+    to build a proof interactively. Final verification is via the local Lean compiler.
 
     Args:
         theorem_with_sorry: Complete Lean 4 theorem with sorry placeholder.

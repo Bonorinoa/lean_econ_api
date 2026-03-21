@@ -10,15 +10,27 @@ import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from mcp_runtime import LEAN_WORKSPACE, lean_workspace_relative_path
 
 
-DEFAULT_WORKING_FILE = LEAN_WORKSPACE / "LeanEcon" / "AgenticProof.lean"
+DEFAULT_WORKING_FILE_BASENAME = "AgenticProof"
 DEFAULT_HEADER = "import Mathlib\nopen Real\n\n"
 TACTIC_REGION_BEGIN = "-- LEANECON_AGENTIC_TACTICS_BEGIN"
 TACTIC_REGION_END = "-- LEANECON_AGENTIC_TACTICS_END"
 _SORRY_LINE_RE = re.compile(r"(?m)^([ \t]*)sorry\b[^\n]*$")
+
+
+def _default_working_file() -> Path:
+    """
+    Allocate a unique working file for one agentic proving run.
+
+    The old fixed `AgenticProof.lean` path caused concurrent runs to overwrite
+    each other. A unique default keeps MCP-visible file paths isolated per job.
+    """
+    suffix = uuid4().hex[:12]
+    return LEAN_WORKSPACE / "LeanEcon" / f"{DEFAULT_WORKING_FILE_BASENAME}_{suffix}.lean"
 
 
 @dataclass(frozen=True)
@@ -34,7 +46,7 @@ class ProofFileController:
     """Own one working Lean file and one editable tactic region."""
 
     def __init__(self, working_file: Path | None = None):
-        self._working_file = working_file or DEFAULT_WORKING_FILE
+        self._working_file = working_file or _default_working_file()
         self._theorem_with_sorry = ""
         self._prefix = ""
         self._suffix = ""
