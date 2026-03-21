@@ -1,7 +1,8 @@
 # LeanEcon Deployment
 
 LeanEcon must run with local Lean tooling available because final verification
-depends on `lake build` inside `lean_workspace/`.
+depends on the local Lean toolchain inside `lean_workspace/`. Runtime verify
+jobs use isolated per-run temp files compiled with `lake env lean`.
 
 ## Docker
 
@@ -35,7 +36,9 @@ available at `http://localhost:8000/health`.
 - `MISTRAL_API_KEY` must be provided at runtime.
 - The image does not bake a real `.env` file into the container.
 - The image exposes port `8000` and starts `uvicorn src.api:app`.
-- Verification still happens locally inside the container with `lake build`.
+- Verification still happens locally inside the container with the Lean toolchain.
+- The image build still runs `lake build` to warm the workspace and because
+  `lean_workspace/LeanEcon.lean` still imports `LeanEcon.Proof`.
 - The first image build can take a while because Lean and Mathlib artifacts must
   be fetched and compiled into the image.
 - This is a Docker deployment path, not a serverless one. The app is not a fit

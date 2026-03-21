@@ -20,8 +20,9 @@ interface:
    `:= by sorry`, then Lean checks that the statement itself compiles.
 2. **Review**: an API client can inspect or edit the theorem before proving.
 3. **Prove**: the agentic prover lets Leanstral call Lean MCP tools and iteratively edit a working proof file.
-4. **Verify**: `lake build` is the final authority. If Lean accepts the proof
-   without `sorry`, the claim is certified.
+4. **Verify**: LeanEcon writes an isolated per-run Lean file and checks it with
+   `lake env lean`. If Lean accepts the proof without `sorry`, the claim is
+   certified.
 
 ## Current examples
 
@@ -55,11 +56,11 @@ style claims as `REQUIRES_DEFINITIONS`.
 ### Setup
 
 ```bash
-git clone https://github.com/Bonorinoa/econ_lean_prover_poc.git
-cd econ_lean_prover_poc
+git clone https://github.com/Bonorinoa/lean_econ_api.git
+cd lean_econ_api
 
-python3 -m venv econProver_venv
-source econProver_venv/bin/activate
+python3 -m venv leanEconAPI_venv
+source leanEconAPI_venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
@@ -93,6 +94,9 @@ the review/edit step:
 4. `POST /api/v1/verify`
 5. `GET /api/v1/jobs/{job_id}` or `GET /api/v1/jobs/{job_id}/stream`
 
+`POST /api/v1/verify` is asynchronous and returns HTTP `202` with a `job_id`.
+Use polling or SSE to track the job to completion.
+
 If the claim depends on a bundled economic definition, use
 [`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md) to choose
 `preamble_names` for formalization.
@@ -112,9 +116,15 @@ curl -X POST http://localhost:8000/api/v1/formalize \
 ```
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/verify \
+curl -i -X POST http://localhost:8000/api/v1/verify \
   -H "Content-Type: application/json" \
   -d '{"theorem_code":"import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry","explain":true}'
+```
+
+The response body is:
+
+```json
+{"job_id":"<JOB_ID>","status":"queued"}
 ```
 
 ```bash
@@ -141,9 +151,11 @@ curl http://localhost:8000/api/v1/cache/stats
 
 ## Deployment
 
-LeanEcon requires Lean 4, Mathlib, and a local `lake build` environment.
-This means it cannot run on serverless platforms such as Vercel or
-static frontend hosts.
+LeanEcon requires Lean 4, Mathlib, and a local Lean workspace. The Docker image
+still performs a build-time `lake build` to warm the workspace and caches, but
+runtime verification uses isolated per-run files compiled with `lake env lean`.
+This means it cannot run on serverless platforms such as Vercel or static
+frontend hosts.
 
 For deployment, use Docker:
 
@@ -165,7 +177,7 @@ User Input (LaTeX / text / raw Lean)
     -> [pipeline.py] agentic proof orchestration
         -> [prover_backend.py] swappable prover dispatch
         -> [agentic_prover.py] Leanstral + MCP + working proof file
-    -> [lean_verifier.py] lake build
+    -> [lean_verifier.py] isolated temp-file verification via `lake env lean`
     -> [eval_logger.py] JSONL run log
     -> [FastAPI / CLI] results + metrics
 ```
@@ -181,7 +193,7 @@ src/
 ├── mcp_runtime.py           Lean MCP session helpers and query utilities
 ├── preamble_library.py      File-backed preamble metadata and lookup helpers
 ├── proof_file_controller.py Working-file management for agentic proving
-├── lean_verifier.py         Final lake build verification
+├── lean_verifier.py         Final isolated-file Lean verification
 ├── eval_logger.py           Append-only JSONL structured logging
 └── mcp_smoke_test.py        Lean MCP smoke test
 ```
@@ -189,9 +201,14 @@ src/
 ## How verification works
 
 Lean 4 is a dependently typed programming language where proofs are programs.
-When `lake build` succeeds with no errors and no `sorry`, the Lean kernel has
-checked every logical step from axioms. This is not LLM confidence; it is a
-machine-checked proof.
+LeanEcon's verifier writes each candidate proof to its own temporary Lean file
+and runs `lake env lean` on that file. When that check succeeds with no errors
+and no `sorry`, the Lean kernel has checked every logical step from axioms.
+This is not LLM confidence; it is a machine-checked proof.
+
+Because verification no longer routes through a shared `LeanEcon/Proof.lean`,
+multiple verify jobs can run concurrently without overwriting each other's
+proof files.
 
 Leanstral generates candidate proofs. Lean verifies them.
 
@@ -206,10 +223,13 @@ Leanstral generates candidate proofs. Lean verifies them.
 
 - [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): current MCP-first prover design and status
 - [`docs/API.md`](docs/API.md): endpoint contract and agent-oriented usage guide
+- [`docs/endpoints.md`](docs/endpoints.md): compact endpoint-by-endpoint reference
 - [`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md): generated catalog of reusable preamble modules
+- [`docs/preamble.md`](docs/preamble.md): preamble-focused quick reference for agents
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): Docker-based local deployment notes
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): current sprint and post-sprint priorities
 - [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md): chronological implementation log
+- [`docs/SKILL.md`](docs/SKILL.md): agent integration skill for LeanEcon clients
 - [`docs/leanstral_architecture.html`](docs/leanstral_architecture.html): visual architecture artifact
 
 ## Roadmap

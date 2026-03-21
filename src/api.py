@@ -20,6 +20,7 @@ preserved as deprecated redirects for backward compatibility.
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import sys
 from pathlib import Path
@@ -39,8 +40,12 @@ from eval_logger import LOG_FILE
 from explainer import explain_result
 from formalizer import classify_claim
 from job_store import JobStatus, job_store
+from lean_verifier import LEAN_SOURCE_DIR, VERIFICATION_FILE_PREFIX
 from pipeline import formalize_claim, parse_claim, run_pipeline
 from result_cache import result_cache
+
+logger = logging.getLogger(__name__)
+AGENTIC_TEMP_FILE_GLOB = f"{VERIFICATION_FILE_PREFIX}_*.lean"
 
 SAMPLE_NATURAL_LANGUAGE_CLAIM = (
     "Under CRRA utility u(c) = c^(1-gamma)/(1-gamma), "
@@ -76,6 +81,8 @@ Important behavior:
 - `formalize` preserves the current pipeline behavior, including raw-Lean bypass.
 - `verify` expects a formalized Lean theorem/lemma/example with a `sorry`
   placeholder so the agentic prover has something to complete.
+- final Lean verification uses isolated per-run `AgenticProof_*.lean` files, so
+  concurrent verify jobs do not clobber a shared `Proof.lean` module.
 """
 
 OPENAPI_TAGS = [
@@ -108,6 +115,29 @@ app.add_middleware(
 )
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
+
+
+def _cleanup_orphaned_agentic_temp_files() -> int:
+    """Delete temp proof files left behind by interrupted verification runs."""
+    cleaned = 0
+    for temp_file in LEAN_SOURCE_DIR.glob(AGENTIC_TEMP_FILE_GLOB):
+        try:
+            temp_file.unlink()
+            cleaned += 1
+        except FileNotFoundError:
+            continue
+    return cleaned
+
+
+@app.on_event("startup")
+def cleanup_orphaned_agentic_temp_files() -> None:
+    """Remove orphaned agentic temp files before the API starts serving jobs."""
+    cleaned = _cleanup_orphaned_agentic_temp_files()
+    logger.info(
+        "Startup cleanup removed %s orphaned agentic temp file(s) from %s",
+        cleaned,
+        LEAN_SOURCE_DIR,
+    )
 
 
 # ---------------------------------------------------------------------------

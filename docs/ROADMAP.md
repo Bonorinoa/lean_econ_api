@@ -1,16 +1,28 @@
 # LeanEcon Roadmap
 
-## Sprint (March 19 – April 2, 2026)
+## Sprint status
 
-- [ ] Stabilize natural-language Cobb-Douglas across repeated runs
-- [ ] Expand claim coverage: MWG micro exercises, SLP contraction mapping
-- [ ] Natural language explanations of Lean output
-- [ ] Add a larger empirical evaluation harness for the agentic prover
-- [x] Dockerfile for reproducible deployment
-- [ ] Advisor demo (2-page summary + live walkthrough)
+Sprint window: March 19 – April 2, 2026.
 
-## Post-sprint
+This sprint is nearly complete. The core backend MVP is in place:
 
-- [ ] Improve timeout handling and partial-result reporting for long agentic runs
-- [ ] Pre-computed example cache for demo resilience
-- [ ] Package for PyPI or standalone distribution
+- [x] Dockerfile deployment path
+- [x] Agentic prover stabilization
+- [x] API hardening across the Bundle 4 series
+- [x] SSE job streaming for long-running verify calls
+- [x] Verification concurrency fix via isolated per-run Lean temp files
+- [x] `ProverBackend` abstraction for swappable proving engines
+
+## Remaining before sprint close
+
+- [ ] Advisor demo package and walkthrough
+- [ ] Frontend development on top of the v1 API
+- [ ] Claim coverage expansion beyond the current algebraic/preamble-heavy set
+- [ ] Final documentation polish for external users and agent builders
+
+## Post-sprint priorities
+
+- [ ] Document-processing microservice for extracting candidate claims from papers
+- [ ] Second prover backend, starting with Claude
+- [ ] Pedagogical tutor frontend for explanation and guided interaction
+- [ ] LeanEcon / EconLib community contributions and reusable theorem-library work

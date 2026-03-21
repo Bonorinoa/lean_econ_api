@@ -98,6 +98,18 @@ def _test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def _test_startup_cleans_orphaned_agentic_files() -> None:
+    orphan = api.LEAN_SOURCE_DIR / "AgenticProof_startup_cleanup_test.lean"
+    orphan.write_text("import Mathlib\n", encoding="utf-8")
+    try:
+        assert orphan.is_file()
+        with TestClient(api.app):
+            pass
+        assert not orphan.exists()
+    finally:
+        orphan.unlink(missing_ok=True)
+
+
 def _test_cors_middleware_present() -> None:
     middleware_names = {middleware.cls.__name__ for middleware in api.app.user_middleware}
     assert "CORSMiddleware" in middleware_names
@@ -673,6 +685,10 @@ def main() -> int:
     results = {
         "app_imports_and_routes": _run_case("app_imports_and_routes", _test_app_imports_and_routes),
         "health": _run_case("health", _test_health),
+        "startup_cleans_orphaned_agentic_files": _run_case(
+            "startup_cleans_orphaned_agentic_files",
+            _test_startup_cleans_orphaned_agentic_files,
+        ),
         "cors_middleware_present": _run_case("cors_middleware_present", _test_cors_middleware_present),
         "classify_raw_lean": _run_case("classify_raw_lean", _test_classify_raw_lean),
         "classify_requires_definitions": _run_case(

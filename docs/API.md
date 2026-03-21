@@ -4,6 +4,10 @@ LeanEcon exposes a versioned REST API for claim classification, formalization,
 proof generation, verification, explanation, cache inspection, and lightweight
 run metrics.
 
+Verify jobs are asynchronous and concurrency-safe: each run uses isolated
+temporary Lean files for proving and final verification, so multiple jobs can
+execute without clobbering a shared `Proof.lean`.
+
 Base docs:
 
 - OpenAPI schema: `/openapi.json`
@@ -108,6 +112,14 @@ Important request rules:
 - `explain=true` asks LeanEcon to include an explanation in the final job result
 - the endpoint responds immediately with HTTP `202`
 
+Verification notes:
+
+- the proving job edits a per-run working file such as `AgenticProof_<id>.lean`
+- final Lean acceptance is checked by compiling an isolated per-run temp file
+  with `lake env lean`
+- concurrent verify jobs are supported because the API no longer routes all
+  verification through a shared `LeanEcon/Proof.lean`
+
 Queue response:
 
 ```json
@@ -119,7 +131,8 @@ Queue response:
 
 ### Polling jobs
 
-Use `GET /api/v1/jobs/{job_id}` to read job status and final output.
+Use `GET /api/v1/jobs/{job_id}` to read job status and final output. Poll until
+`status` becomes `completed` or `failed`.
 
 Response fields:
 
@@ -191,6 +204,9 @@ Notes:
 - completed jobs return a single `complete` event and then close
 - failed jobs return `{"type":"complete","status":"failed","error":"..."}` and then close
 - keepalive comments may appear as `: keepalive`
+- typical progress stages include `parse`, `formalize`, `prover_dispatch`,
+  `agentic_init`, `agentic_setup`, `agentic_run`, `agentic_check`,
+  `agentic_verify`, `cache`, and `explain`
 - the stream does not include the final verify payload; fetch `GET /api/v1/jobs/{job_id}` for that
 
 Frontend example:

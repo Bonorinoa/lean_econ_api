@@ -1,2 +1,3 @@
 -- LeanEcon: Formal verification workspace for economics theorems.
--- Generated proof files appear in this directory as Proof.lean.
+-- Runtime proof checks use isolated AgenticProof_*.lean temp files in this directory.
+-- Proof.lean remains as a checked-in legacy module for project-build workflows.
