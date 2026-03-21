@@ -1,23 +1,29 @@
 # LeanEcon API Guide
 
-LeanEcon exposes a versioned REST API for classification, formalization, proof
-generation, and Lean verification. The generated OpenAPI schema is available at
-`/openapi.json`, and the interactive docs are available at `/docs`.
+LeanEcon exposes a versioned REST API for claim classification, formalization,
+proof generation, verification, explanation, cache inspection, and lightweight
+run metrics.
 
-## Recommended workflow
+Base docs:
+
+- OpenAPI schema: `/openapi.json`
+- Interactive docs: `/docs`
+
+## Recommended v1 workflow
 
 1. `POST /api/v1/classify`
 2. `POST /api/v1/formalize`
 3. Optionally edit the returned `theorem_code`
 4. `POST /api/v1/verify`
-5. Track progress with either:
+5. Track the job with either:
    - `GET /api/v1/jobs/{job_id}`
    - `GET /api/v1/jobs/{job_id}/stream`
+6. Optionally call `POST /api/v1/explain`
 
 ## 1. Classify
 
-Use `POST /api/v1/classify` to decide whether a claim looks formalizable before
-spending proving effort.
+Use `POST /api/v1/classify` to decide whether the claim looks formalizable
+before spending proving effort.
 
 Request:
 
@@ -30,16 +36,20 @@ Request:
 Important response fields:
 
 - `cleaned_claim`: normalized claim text after lightweight cleaning
-- `category`: one of `RAW_LEAN`, `ALGEBRAIC`, `DEFINABLE`, `REQUIRES_DEFINITIONS`
+- `category`: `RAW_LEAN`, `ALGEBRAIC`, `DEFINABLE`, or `REQUIRES_DEFINITIONS`
 - `formalizable`: quick yes/no signal for whether to continue
 - `reason`: rejection explanation for out-of-scope claims
-- `is_raw_lean`: whether the input already looked like Lean code
+- `definitions_needed`: missing concept description for `DEFINABLE` claims
+- `preamble_matches`: reusable LeanEcon modules that may help formalization
+- `suggested_reformulation`: optional reformulation hint
+- `error_code`: machine-readable classifier outcome
 
 Interpretation:
 
 - `RAW_LEAN`: skip directly to `POST /api/v1/verify`
-- `ALGEBRAIC` or `DEFINABLE`: continue to `POST /api/v1/formalize`
-- `REQUIRES_DEFINITIONS`: stop or ask a human to reformulate the claim
+- `ALGEBRAIC`: continue to `POST /api/v1/formalize`
+- `DEFINABLE`: continue to `POST /api/v1/formalize`, optionally using `preamble_matches`
+- `REQUIRES_DEFINITIONS`: stop or ask for a reformulation
 
 ## 2. Formalize
 
@@ -50,18 +60,29 @@ Request:
 
 ```json
 {
-  "raw_claim": "Under CRRA utility, relative risk aversion is constant and equal to gamma."
+  "raw_claim": "Under CRRA utility, relative risk aversion is constant and equal to gamma.",
+  "preamble_names": ["crra_utility"]
 }
 ```
+
+Important request fields:
+
+- `raw_claim`: plain text, LaTeX, or raw Lean input
+- `preamble_names`: optional explicit preamble module names to inject
+
+Use [`PREAMBLE_CATALOG.md`](./PREAMBLE_CATALOG.md) to choose valid
+`preamble_names`.
 
 Important response fields:
 
 - `success`: whether the theorem compiled with `sorry`
 - `theorem_code`: full Lean file content to review or edit
-- `attempts`: number of formalization/repair attempts used
+- `attempts`: number of formalization or repair attempts used
 - `formalization_failed`: whether the claim was rejected as out of scope
 - `failure_reason`: explanation for a formalization rejection
-- `preamble_used`: injected preamble definitions, if any
+- `preamble_used`: names of injected preamble definitions
+- `diagnosis`, `suggested_fix`, `fixable`: repair guidance when formalization fails
+- `error_code`: machine-readable formalization outcome
 
 If `raw_claim` already looks like Lean and contains a proof stub, this endpoint
 passes it through unchanged with `attempts = 0`.
@@ -75,17 +96,19 @@ Request:
 
 ```json
 {
-  "theorem_code": "import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry"
+  "theorem_code": "import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry",
+  "explain": false
 }
 ```
 
 Important request rules:
 
-- `theorem_code` must look like a Lean theorem/lemma/example
+- `theorem_code` must look like a Lean theorem, lemma, or example
 - it must still contain `:= by sorry`
+- `explain=true` asks LeanEcon to include an explanation in the final job result
 - the endpoint responds immediately with HTTP `202`
 
-Response:
+Queue response:
 
 ```json
 {
@@ -94,21 +117,45 @@ Response:
 }
 ```
 
-After queueing the job, either poll `GET /api/v1/jobs/{job_id}` or stream
-`GET /api/v1/jobs/{job_id}/stream`.
+### Polling jobs
 
-Important final result fields from `GET /api/v1/jobs/{job_id}`:
+Use `GET /api/v1/jobs/{job_id}` to read job status and final output.
+
+Response fields:
+
+- `job_id`: the same identifier returned by verify
+- `status`: `queued`, `running`, `completed`, or `failed`
+- `result`: final verify payload when completed
+- `error`: exception text when failed
+
+Important fields inside `result`:
 
 - `success`: whether Lean accepted the final proof
-- `phase`: one of `verified`, `proved`, `failed`
+- `phase`: `verified`, `proved`, or `failed`
 - `lean_code`: final Lean file produced by the proving run
 - `proof_strategy`: high-level proof plan
 - `proof_tactics`: tactic script or tactics summary
 - `errors` / `warnings`: Lean diagnostics
-- `elapsed_seconds`: pipeline runtime
-- `from_cache`: whether the result came from the verified-result cache
+- `elapsed_seconds`: total pipeline runtime
+- `from_cache`: whether the response came from the verified-result cache
 - `partial`: whether the prover timed out and returned partial output
-- `axiom_info`: optional axiom usage metadata from final verification
+- `stop_reason`: prover stop reason when reported
+- `axiom_info`: optional axiom-usage metadata from final verification
+- `explanation`: optional natural-language explanation when `explain=true`
+- `explanation_generated`: whether the explanation was model-generated
+- `error_code`: machine-readable verification outcome
+
+`axiom_info` is only present when the final verification succeeded and axiom
+checking was available. Its shape is:
+
+```json
+{
+  "axioms": ["propext", "Classical.choice"],
+  "sound": true,
+  "has_sorry_ax": false,
+  "nonstandard_axioms": []
+}
+```
 
 Phase meanings:
 
@@ -116,12 +163,12 @@ Phase meanings:
 - `proved`: a proof was generated, but Lean rejected it
 - `failed`: the pipeline did not reach a valid proof
 
-## SSE streaming
+## SSE job streaming
 
 `GET /api/v1/jobs/{job_id}/stream` returns a Server-Sent Events stream with
 `Content-Type: text/event-stream`.
 
-Each event is emitted as a single JSON object on a `data:` line:
+Each event is a single JSON object on a `data:` line:
 
 ```text
 data: {"type":"progress","stage":"formalize","message":"Calling Leanstral...","status":"running"}
@@ -136,7 +183,8 @@ Event fields:
 - `type`: `progress` or `complete`
 - `stage`: pipeline stage name for progress events
 - `message`: human-readable progress text for progress events
-- `status`: stage/job status such as `running`, `done`, `error`, `completed`, `failed`
+- `status`: stage or job status such as `running`, `done`, `error`, `completed`, `failed`
+- `error`: present on failed `complete` events
 
 Notes:
 
@@ -165,6 +213,87 @@ eventSource.onmessage = (event) => {
 };
 ```
 
+## Explain
+
+Use `POST /api/v1/explain` to get a natural-language explanation of a pipeline
+outcome. This endpoint is useful when you already have intermediate artifacts
+and do not want to rerun verification.
+
+Request:
+
+```json
+{
+  "original_claim": "1 + 1 = 2",
+  "verification_result": {
+    "success": true,
+    "proof_generated": true,
+    "formalization_failed": false
+  }
+}
+```
+
+Supported inputs:
+
+- `original_claim`: required
+- `theorem_code`: optional formalized theorem
+- `verification_result`: optional final verify result
+- `formalization_result`: optional formalization output
+- `classification_result`: optional classification output
+
+Response:
+
+```json
+{
+  "explanation": "The proof is valid.",
+  "generated": false,
+  "error_code": "none"
+}
+```
+
+## Metrics
+
+`GET /api/v1/metrics` aggregates metrics from the append-only evaluation log at
+`logs/runs.jsonl`.
+
+Example response:
+
+```json
+{
+  "total_runs": 12,
+  "verified": 9,
+  "formalization_failures": 1,
+  "proof_failures": 2,
+  "cache_hits": 3,
+  "partial_runs": 1,
+  "avg_elapsed_seconds": 18.4,
+  "verification_rate": 0.75,
+  "cache_hit_rate": 0.25
+}
+```
+
+This endpoint is meant for lightweight development-time visibility, not a full
+metrics stack.
+
+## Cache endpoints
+
+Use these operational endpoints to inspect or clear the verified-result cache:
+
+- `GET /api/v1/cache/stats` returns:
+
+```json
+{
+  "size": 4
+}
+```
+
+- `DELETE /api/v1/cache` returns:
+
+```json
+{
+  "status": "cleared"
+}
+```
+
 ## Health
 
 `GET /health` returns:
@@ -180,4 +309,4 @@ eventSource.onmessage = (event) => {
 - `422` means the request payload was blank or structurally invalid
 - `404` means a job was not found or expired
 - `500` means an unexpected internal failure occurred in classification,
-  formalization, verification, or explanation
+  formalization, verification, explanation, or metrics aggregation

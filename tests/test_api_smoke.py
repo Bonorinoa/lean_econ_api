@@ -7,7 +7,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -82,6 +84,7 @@ def _test_app_imports_and_routes() -> None:
     assert "/api/v1/jobs/{job_id}" in route_paths
     assert "/api/v1/jobs/{job_id}/stream" in route_paths
     assert "/api/v1/explain" in route_paths
+    assert "/api/v1/metrics" in route_paths
     assert "/api/v1/cache/stats" in route_paths
     assert "/api/v1/cache" in route_paths
     # meta
@@ -172,6 +175,7 @@ def _test_openapi_schema() -> None:
     schema = response.json()
     assert "/api/v1/verify" in schema["paths"]
     assert "/api/v1/jobs/{job_id}/stream" in schema["paths"]
+    assert "/api/v1/metrics" in schema["paths"]
     assert "VerifyRequest" in schema["components"]["schemas"]
     assert "VerifyAcceptedResponse" in schema["components"]["schemas"]
     assert "JobStatusResponse" in schema["components"]["schemas"]
@@ -375,6 +379,74 @@ def _test_cache_stats_endpoint() -> None:
     response = client.get("/api/v1/cache/stats")
     assert response.status_code == 200
     assert "size" in response.json()
+
+
+def _test_metrics_empty_log() -> None:
+    client = TestClient(api.app)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        missing_path = Path(tmpdir) / "missing.jsonl"
+        with patch.object(api, "LOG_FILE", missing_path):
+            response = client.get("/api/v1/metrics")
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_runs": 0,
+        "verified": 0,
+        "formalization_failures": 0,
+        "proof_failures": 0,
+        "cache_hits": 0,
+        "partial_runs": 0,
+        "avg_elapsed_seconds": 0.0,
+        "verification_rate": 0.0,
+        "cache_hit_rate": 0.0,
+    }
+
+
+def _test_metrics_aggregates_runs() -> None:
+    client = TestClient(api.app)
+    entries = [
+        {
+            "verification": {"success": True},
+            "formalization": {"formalization_failed": False},
+            "from_cache": False,
+            "partial": False,
+            "elapsed_seconds": 10.0,
+        },
+        {
+            "verification": {"success": False},
+            "formalization": {"formalization_failed": True},
+            "from_cache": False,
+            "partial": False,
+            "elapsed_seconds": 5.0,
+        },
+        {
+            "verification": {"success": False},
+            "formalization": {"formalization_failed": False},
+            "from_cache": True,
+            "partial": True,
+            "elapsed_seconds": 15.0,
+        },
+    ]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        log_path = Path(tmpdir) / "runs.jsonl"
+        lines = [json.dumps(entry) for entry in entries]
+        lines.append("{bad json")
+        log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with patch.object(api, "LOG_FILE", log_path):
+            response = client.get("/api/v1/metrics")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "total_runs": 3,
+        "verified": 1,
+        "formalization_failures": 1,
+        "proof_failures": 1,
+        "cache_hits": 1,
+        "partial_runs": 1,
+        "avg_elapsed_seconds": 10.0,
+        "verification_rate": 0.333,
+        "cache_hit_rate": 0.333,
+    }
 
 
 def _test_cache_clear_endpoint() -> None:
@@ -636,6 +708,10 @@ def main() -> int:
         "stream_live_progress": _run_case("stream_live_progress", _test_stream_live_progress),
         "cache_stats_endpoint": _run_case(
             "cache_stats_endpoint", _test_cache_stats_endpoint
+        ),
+        "metrics_empty_log": _run_case("metrics_empty_log", _test_metrics_empty_log),
+        "metrics_aggregates_runs": _run_case(
+            "metrics_aggregates_runs", _test_metrics_aggregates_runs
         ),
         "cache_clear_endpoint": _run_case(
             "cache_clear_endpoint", _test_cache_clear_endpoint

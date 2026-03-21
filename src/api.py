@@ -9,6 +9,9 @@ This module exposes a frontend-friendly, multi-step API:
   - GET  /api/v1/jobs/{job_id}
   - GET  /api/v1/jobs/{job_id}/stream
   - POST /api/v1/explain
+  - GET  /api/v1/metrics
+  - GET  /api/v1/cache/stats
+  - DELETE /api/v1/cache
 
 Legacy unversioned routes (/api/classify, /api/formalize, /api/verify) are
 preserved as deprecated redirects for backward compatibility.
@@ -32,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 sys.path.insert(0, str(Path(__file__).parent))
 
 from error_codes import LeanEconErrorCode
+from eval_logger import LOG_FILE
 from explainer import explain_result
 from formalizer import classify_claim
 from job_store import JobStatus, job_store
@@ -63,6 +67,8 @@ Recommended client workflow:
 4. `POST /api/v1/verify` with the formalized theorem — returns HTTP 202 and a
    `job_id`. Poll `GET /api/v1/jobs/{job_id}` or stream
    `GET /api/v1/jobs/{job_id}/stream` until the job finishes.
+5. Use `POST /api/v1/explain` for natural-language summaries of outcomes.
+6. Use `GET /api/v1/metrics` and `GET /api/v1/cache/stats` for operational insight.
 
 Important behavior:
 
@@ -446,6 +452,46 @@ class ExplainResponse(BaseModel):
     )
 
 
+class MetricsResponse(BaseModel):
+    """Aggregate metrics derived from the JSONL evaluation log."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "total_runs": 12,
+                "verified": 9,
+                "formalization_failures": 1,
+                "proof_failures": 2,
+                "cache_hits": 3,
+                "partial_runs": 1,
+                "avg_elapsed_seconds": 18.4,
+                "verification_rate": 0.75,
+                "cache_hit_rate": 0.25,
+            }
+        }
+    )
+
+    total_runs: int = Field(description="Number of JSONL eval-log entries parsed.")
+    verified: int = Field(description="Runs whose verification stage succeeded.")
+    formalization_failures: int = Field(
+        description="Runs marked as formalization failures in the eval log."
+    )
+    proof_failures: int = Field(
+        description="Runs that were not verified and were not formalization failures."
+    )
+    cache_hits: int = Field(description="Runs served from the verified-result cache.")
+    partial_runs: int = Field(description="Runs that ended with partial prover output.")
+    avg_elapsed_seconds: float = Field(
+        description="Average elapsed wall-clock time across parsed runs."
+    )
+    verification_rate: float = Field(
+        description="Verified runs divided by total runs."
+    )
+    cache_hit_rate: float = Field(
+        description="Cache-hit runs divided by total runs."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -503,6 +549,21 @@ def _verify_error_code(result: dict) -> LeanEconErrorCode:
 def _format_sse_event(event: dict[str, Any]) -> str:
     """Encode an SSE payload as a single JSON data frame."""
     return f"data: {json.dumps(event)}\n\n"
+
+
+def _empty_metrics() -> MetricsResponse:
+    """Return a zeroed metrics payload."""
+    return MetricsResponse(
+        total_runs=0,
+        verified=0,
+        formalization_failures=0,
+        proof_failures=0,
+        cache_hits=0,
+        partial_runs=0,
+        avg_elapsed_seconds=0.0,
+        verification_rate=0.0,
+        cache_hit_rate=0.0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -847,6 +908,53 @@ def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Explanation failed: {exc}") from exc
+
+
+@router.get(
+    "/metrics",
+    response_model=MetricsResponse,
+    summary="Pipeline run metrics",
+    description=(
+        "Aggregate verification metrics from the append-only JSONL evaluation "
+        "log at `logs/runs.jsonl`."
+    ),
+)
+def metrics() -> MetricsResponse:
+    """Aggregate counts and rates from the structured evaluation log."""
+    if not LOG_FILE.is_file():
+        return _empty_metrics()
+
+    runs: list[dict[str, Any]] = []
+    for line in LOG_FILE.read_text(encoding="utf-8").splitlines():
+        try:
+            runs.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    total = len(runs)
+    if total == 0:
+        return _empty_metrics()
+
+    verified = sum(1 for run in runs if run.get("verification", {}).get("success"))
+    formalization_failures = sum(
+        1 for run in runs if run.get("formalization", {}).get("formalization_failed")
+    )
+    cache_hits = sum(1 for run in runs if run.get("from_cache"))
+    partial_runs = sum(1 for run in runs if run.get("partial"))
+    avg_elapsed = sum(float(run.get("elapsed_seconds", 0.0)) for run in runs) / total
+    proof_failures = max(total - verified - formalization_failures, 0)
+
+    return MetricsResponse(
+        total_runs=total,
+        verified=verified,
+        formalization_failures=formalization_failures,
+        proof_failures=proof_failures,
+        cache_hits=cache_hits,
+        partial_runs=partial_runs,
+        avg_elapsed_seconds=round(avg_elapsed, 1),
+        verification_rate=round(verified / total, 3),
+        cache_hit_rate=round(cache_hits / total, 3),
+    )
 
 
 @router.get(

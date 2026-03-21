@@ -7,9 +7,10 @@ Lean-checked proof using [Leanstral](https://mistral.ai/news/leanstral),
 [Lean 4](https://lean-lang.org/), and
 [Mathlib](https://leanprover-community.github.io/mathlib4_docs/).
 
-LeanEcon now uses a single proving backend:
+LeanEcon currently defaults to one proving backend behind a swappable prover
+interface:
 
-- `agentic`: Leanstral + `lean-lsp-mcp` with live tool use during proving
+- `leanstral`: Leanstral + `lean-lsp-mcp` with live tool use during proving
 
 > Working prototype. Built March 2026.
 
@@ -86,29 +87,56 @@ For a workflow-oriented reference aimed at frontend agents, see
 The first API cut is intentionally multi-step so frontend clients can preserve
 the review/edit step:
 
-1. `POST /api/classify`
-2. `POST /api/formalize`
+1. `POST /api/v1/classify`
+2. `POST /api/v1/formalize`
 3. Optional client-side theorem review/edit
-4. `POST /api/verify`
+4. `POST /api/v1/verify`
+5. `GET /api/v1/jobs/{job_id}` or `GET /api/v1/jobs/{job_id}/stream`
+
+If the claim depends on a bundled economic definition, use
+[`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md) to choose
+`preamble_names` for formalization.
 
 Example calls:
 
 ```bash
-curl -X POST http://localhost:8000/api/classify \
+curl -X POST http://localhost:8000/api/v1/classify \
   -H "Content-Type: application/json" \
   -d '{"raw_claim":"Under CRRA utility, relative risk aversion is constant and equal to gamma."}'
 ```
 
 ```bash
-curl -X POST http://localhost:8000/api/formalize \
+curl -X POST http://localhost:8000/api/v1/formalize \
   -H "Content-Type: application/json" \
-  -d '{"raw_claim":"Under CRRA utility, relative risk aversion is constant and equal to gamma."}'
+  -d '{"raw_claim":"Under CRRA utility, relative risk aversion is constant and equal to gamma.","preamble_names":["crra_utility"]}'
 ```
 
 ```bash
-curl -X POST http://localhost:8000/api/verify \
+curl -X POST http://localhost:8000/api/v1/verify \
   -H "Content-Type: application/json" \
-  -d '{"theorem_code":"import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry"}'
+  -d '{"theorem_code":"import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry","explain":true}'
+```
+
+```bash
+curl -N http://localhost:8000/api/v1/jobs/<JOB_ID>/stream
+```
+
+```bash
+curl http://localhost:8000/api/v1/jobs/<JOB_ID>
+```
+
+```bash
+curl -X POST http://localhost:8000/api/v1/explain \
+  -H "Content-Type: application/json" \
+  -d '{"original_claim":"1 + 1 = 2","verification_result":{"success":true,"proof_generated":true,"formalization_failed":false}}'
+```
+
+```bash
+curl http://localhost:8000/api/v1/metrics
+```
+
+```bash
+curl http://localhost:8000/api/v1/cache/stats
 ```
 
 ## Deployment
@@ -135,15 +163,18 @@ User Input (LaTeX / text / raw Lean)
     -> [formalizer.py] classify + formalize + sorry-validate
     -> [API client] optional theorem review/edit
     -> [pipeline.py] agentic proof orchestration
+        -> [prover_backend.py] swappable prover dispatch
         -> [agentic_prover.py] Leanstral + MCP + working proof file
     -> [lean_verifier.py] lake build
-    -> [FastAPI / CLI] results + logs
+    -> [eval_logger.py] JSONL run log
+    -> [FastAPI / CLI] results + metrics
 ```
 
 ```text
 src/
 ├── api.py                   FastAPI service entry point
 ├── pipeline.py              Shared orchestration and agentic prover dispatch
+├── prover_backend.py        Prover protocol and registry
 ├── formalizer.py            Leanstral classification + formalization
 ├── leanstral_utils.py       Shared Leanstral API helpers
 ├── agentic_prover.py        Leanstral Conversations API + MCP loop
@@ -175,6 +206,7 @@ Leanstral generates candidate proofs. Lean verifies them.
 
 - [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): current MCP-first prover design and status
 - [`docs/API.md`](docs/API.md): endpoint contract and agent-oriented usage guide
+- [`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md): generated catalog of reusable preamble modules
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): Docker-based local deployment notes
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): current sprint and post-sprint priorities
 - [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md): chronological implementation log
