@@ -30,9 +30,9 @@ from preamble_library import (
     get_preamble_entries,
 )
 from prompts import (
-    CLASSIFY_SYSTEM_PROMPT,
     DIAGNOSE_SYSTEM_PROMPT,
     REPAIR_SYSTEM_PROMPT,
+    build_classify_prompt,
     build_formalize_prompt,
 )
 
@@ -163,7 +163,7 @@ def classify_claim(claim_text: str) -> dict:
     """
     client = _get_client()
     messages = [
-        {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
+        {"role": "system", "content": build_classify_prompt()},
         {"role": "user", "content": claim_text},
     ]
     raw = call_leanstral(
@@ -175,6 +175,25 @@ def classify_claim(claim_text: str) -> dict:
 
     if line.startswith("REQUIRES_DEFINITIONS"):
         reason = line.removeprefix("REQUIRES_DEFINITIONS").lstrip(":").strip() or None
+
+        # Preamble rescue: check if we actually have definitions for this claim
+        rescue_matches = find_matching_preambles(claim_text)
+        if rescue_matches:
+            match_names = [m.name for m in rescue_matches]
+            match_descriptions = [m.description for m in rescue_matches]
+            return {
+                "category": "DEFINABLE",
+                "reason": reason,
+                "definitions_needed": reason,
+                "preamble_matches": match_names,
+                "suggested_reformulation": (
+                    f"Initially classified as requiring unavailable definitions, "
+                    f"but LeanEcon has built-in modules for: "
+                    f"{', '.join(match_descriptions)}. "
+                    f"Proceed to formalization."
+                ),
+            }
+
         return {
             "category": "REQUIRES_DEFINITIONS",
             "reason": reason,
@@ -211,11 +230,12 @@ def classify_claim(claim_text: str) -> dict:
             "suggested_reformulation": suggested,
         }
 
+    alg_matches = find_matching_preambles(claim_text)
     return {
         "category": "ALGEBRAIC",
         "reason": None,
         "definitions_needed": None,
-        "preamble_matches": [],
+        "preamble_matches": [m.name for m in alg_matches],
         "suggested_reformulation": None,
     }
 

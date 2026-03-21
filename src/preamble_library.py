@@ -40,35 +40,51 @@ def _register(entry: PreambleEntry) -> None:
 _register(PreambleEntry(
     name="cobb_douglas_2factor",
     lean_module="LeanEcon.Preamble.Producer.CobbDouglas2Factor",
-    description="Two-factor Cobb-Douglas production function f(K,L) = A·K^α·L^(1-α)",
-    keywords=("cobb-douglas", "cobb douglas", "cd production", "output elasticity"),
+    description="Two-factor Cobb-Douglas production function with MPK, MPL, and elasticity lemmas",
+    keywords=(
+        "cobb-douglas", "cobb douglas", "cd production", "output elasticity",
+        "marginal product", "returns to scale", "production function",
+        "diminishing returns", "factor share", "homogeneous of degree",
+    ),
     parameters=("A", "K", "L", "α"),
 ))
 _register(PreambleEntry(
     name="ces_2factor",
     lean_module="LeanEcon.Preamble.Producer.CES2Factor",
     description="Two-factor CES production function with elasticity of substitution σ",
-    keywords=("ces production", "ces function", "constant elasticity of substitution"),
+    keywords=(
+        "ces production", "ces function", "constant elasticity of substitution",
+        "returns to scale", "homogeneous", "production function",
+        "elasticity of substitution", "homogeneous of degree",
+    ),
     parameters=("A", "K", "L", "σ", "α"),
 ))
 _register(PreambleEntry(
     name="crra_utility",
     lean_module="LeanEcon.Preamble.Consumer.CRRAUtility",
-    description="CRRA (constant relative risk aversion) utility function",
-    keywords=("crra", "isoelastic", "crra utility", "constant relative risk aversion"),
+    description="CRRA utility function with derivative and RRA lemmas",
+    keywords=(
+        "crra", "isoelastic", "crra utility", "constant relative risk aversion",
+        "risk aversion", "concave utility", "diminishing marginal utility",
+        "power utility", "marginal utility", "derivative",
+    ),
     parameters=("c", "γ"),
 ))
 _register(PreambleEntry(
     name="cara_utility",
     lean_module="LeanEcon.Preamble.Consumer.CARAUtility",
-    description="CARA (constant absolute risk aversion) utility function",
-    keywords=("cara", "cara utility", "constant absolute risk aversion", "exponential utility"),
+    description="CARA utility function with derivative and ARA lemmas",
+    keywords=(
+        "cara", "cara utility", "constant absolute risk aversion",
+        "exponential utility", "risk aversion", "exponential", "absolute risk",
+        "marginal utility", "derivative",
+    ),
     parameters=("c", "α"),
 ))
 _register(PreambleEntry(
     name="stone_geary_utility",
     lean_module="LeanEcon.Preamble.Consumer.StoneGearyUtility",
-    description="Stone-Geary (linear expenditure system) utility for two goods",
+    description="Stone-Geary utility for two goods with marginal utility lemmas",
     keywords=("stone-geary", "stone geary", "les utility", "linear expenditure"),
     parameters=("x₁", "x₂", "α", "γ₁", "γ₂"),
 ))
@@ -90,14 +106,20 @@ _register(PreambleEntry(
     name="arrow_pratt_rra",
     lean_module="LeanEcon.Preamble.Risk.ArrowPrattRRA",
     description="Arrow-Pratt measure of relative risk aversion",
-    keywords=("relative risk aversion", "rra", "arrow-pratt", "arrow pratt"),
+    keywords=(
+        "relative risk aversion", "rra", "arrow-pratt", "arrow pratt",
+        "risk premium", "risk aversion coefficient", "concavity of utility",
+    ),
     parameters=("c", "u'", "u''"),
 ))
 _register(PreambleEntry(
     name="arrow_pratt_ara",
     lean_module="LeanEcon.Preamble.Risk.ArrowPrattARA",
     description="Arrow-Pratt measure of absolute risk aversion",
-    keywords=("absolute risk aversion", "ara"),
+    keywords=(
+        "absolute risk aversion", "ara",
+        "risk premium", "absolute risk", "concavity of utility",
+    ),
     parameters=("u'", "u''"),
 ))
 _register(PreambleEntry(
@@ -117,7 +139,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="contraction_mapping",
     lean_module="LeanEcon.Preamble.Optimization.ContractionMapping",
-    description="Contraction mapping / Banach fixed point theorem template",
+    description="Contraction mapping predicate (sup-norm based) for Banach fixed point",
     keywords=(
         "contraction mapping",
         "contraction",
@@ -131,7 +153,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="blackwell_sufficient",
     lean_module="LeanEcon.Preamble.Optimization.BlackwellSufficient",
-    description="Blackwell's sufficient conditions for a contraction",
+    description="Blackwell's sufficient conditions (monotonicity + discounting) predicates",
     keywords=(
         "blackwell",
         "blackwell sufficient",
@@ -144,7 +166,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="extreme_value_theorem",
     lean_module="LeanEcon.Preamble.Optimization.ExtremeValueTheorem",
-    description="Extreme value theorem (Weierstrass) template",
+    description="Extreme value theorem (Weierstrass) via Mathlib IsCompact.exists_isMaxOn",
     keywords=(
         "extreme value",
         "extreme value theorem",
@@ -155,6 +177,15 @@ _register(PreambleEntry(
         "compact",
         "continuous maximum",
         "berge",
+        "concave",
+        "convex",
+        "strictly concave",
+        "strictly convex",
+        "concavity",
+        "convexity",
+        "maximum",
+        "minimum",
+        "optimization",
     ),
     parameters=("f", "S"),
 ))
@@ -190,7 +221,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="implicit_function_condition",
     lean_module="LeanEcon.Preamble.Optimization.ImplicitFunctionCondition",
-    description="Implicit function theorem template for comparative statics",
+    description="Implicit function theorem for comparative statics (dx/dθ identity)",
     keywords=(
         "implicit function",
         "comparative statics",
@@ -203,7 +234,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="envelope_theorem",
     lean_module="LeanEcon.Preamble.Optimization.EnvelopeTheorem",
-    description="Envelope theorem template for value derivatives",
+    description="Envelope theorem as hypothesis-based algebraic identity",
     keywords=(
         "envelope theorem",
         "envelope",
@@ -218,7 +249,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="slutsky_equation",
     lean_module="LeanEcon.Preamble.Consumer.SlutskyEquation",
-    description="Slutsky equation template",
+    description="Slutsky equation as algebraic decomposition identity",
     keywords=(
         "slutsky",
         "slutsky equation",
@@ -226,6 +257,9 @@ _register(PreambleEntry(
         "income effect",
         "hicksian demand",
         "compensated demand",
+        "giffen good",
+        "normal good",
+        "inferior good",
     ),
     parameters=("xᵢ", "pⱼ", "hᵢ", "m"),
 ))
@@ -239,6 +273,8 @@ _register(PreambleEntry(
         "demand function",
         "optimal consumption",
         "utility maximization demand",
+        "budget constraint",
+        "tangency condition",
     ),
     parameters=("α", "m", "p₁", "p₂"),
 ))
@@ -252,21 +288,29 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="profit_function",
     lean_module="LeanEcon.Preamble.Producer.ProfitFunction",
-    description="Profit function for a single-input firm",
-    keywords=("profit function", "profit maximization", "firm profit", "producer surplus"),
+    description="Profit function for a single-input firm with FOC lemma",
+    keywords=(
+        "profit function", "profit maximization", "firm profit", "producer surplus",
+        "marginal cost", "marginal revenue", "supply function",
+        "first order condition", "foc",
+    ),
     parameters=("p", "w", "A", "α"),
 ))
 _register(PreambleEntry(
     name="cost_function",
     lean_module="LeanEcon.Preamble.Producer.CostFunction",
-    description="Cost function for Cobb-Douglas technology",
-    keywords=("cost function", "cost minimization", "conditional factor demand", "total cost"),
+    description="Cost function for Cobb-Douglas technology with Shephard's lemma",
+    keywords=(
+        "cost function", "cost minimization", "conditional factor demand", "total cost",
+        "marginal cost", "average cost", "isoquant",
+        "shephard", "shephard's lemma",
+    ),
     parameters=("w", "r", "A", "α", "q"),
 ))
 _register(PreambleEntry(
     name="bellman_equation",
     lean_module="LeanEcon.Preamble.Dynamic.BellmanEquation",
-    description="Bellman equation template for deterministic dynamic programming",
+    description="Bellman equation for deterministic DP with bellman_rhs and optimality theorem",
     keywords=(
         "bellman",
         "bellman equation",
@@ -276,13 +320,16 @@ _register(PreambleEntry(
         "optimal savings",
         "ramsey",
         "cake eating",
+        "recursive",
+        "value function",
+        "optimal control",
     ),
     parameters=("V", "u", "f", "β"),
 ))
 _register(PreambleEntry(
     name="euler_equation",
     lean_module="LeanEcon.Preamble.Dynamic.EulerEquation",
-    description="Euler equation template for intertemporal consumption",
+    description="Euler equation for intertemporal consumption as algebraic identity",
     keywords=(
         "euler equation",
         "consumption euler",
@@ -290,6 +337,8 @@ _register(PreambleEntry(
         "intertemporal",
         "consumption growth",
         "savings decision",
+        "marginal rate of substitution",
+        "intertemporal substitution",
     ),
     parameters=("β", "r", "γ", "c"),
 ))
@@ -310,7 +359,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="solow_steady_state",
     lean_module="LeanEcon.Preamble.Macro.SolowSteadyState",
-    description="Solow model steady-state condition template",
+    description="Solow model with investment, depreciation, and steady-state condition",
     keywords=(
         "solow",
         "solow model",
@@ -319,13 +368,16 @@ _register(PreambleEntry(
         "solow steady state",
         "capital accumulation",
         "growth model",
+        "golden rule",
+        "convergence",
+        "per capita",
     ),
     parameters=("s", "A", "n", "g", "δ", "α"),
 ))
 _register(PreambleEntry(
     name="phillips_curve",
     lean_module="LeanEcon.Preamble.Macro.PhillipsCurve",
-    description="New Keynesian Phillips Curve template",
+    description="New Keynesian Phillips Curve with nkpc function and identity theorem",
     keywords=("phillips curve", "nkpc", "new keynesian", "inflation", "output gap"),
     parameters=("π", "β", "κ", "x"),
 ))
@@ -404,3 +456,11 @@ def get_preamble_entries(names: list[str]) -> list[PreambleEntry]:
         entries.append(entry)
         seen_names.add(name)
     return entries
+
+
+def build_preamble_catalog_summary() -> str:
+    """Compact text listing of all preamble modules for LLM context."""
+    return "\n".join(
+        f"- {entry.name}: {entry.description}"
+        for entry in PREAMBLE_LIBRARY.values()
+    )

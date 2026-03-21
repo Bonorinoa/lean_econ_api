@@ -23,11 +23,13 @@ from formalizer import _inject_preamble_imports, formalize
 from preamble_library import (
     PREAMBLE_LIBRARY,
     build_preamble_block,
+    build_preamble_catalog_summary,
     build_preamble_imports,
     find_matching_preambles,
     get_preamble_entries,
     read_preamble_source,
 )
+from prompts import build_classify_prompt
 
 
 def _run_case(name: str, fn) -> bool:
@@ -241,9 +243,25 @@ def _test_classify_requires_definitions() -> None:
         "call_leanstral",
         return_value="REQUIRES_DEFINITIONS: Needs competitive equilibrium framework.",
     ):
-        result = formalizer.classify_claim("The second welfare theorem holds.")
+        result = formalizer.classify_claim("Nash equilibrium exists in finite games.")
     assert result["category"] == "REQUIRES_DEFINITIONS"
     assert result["preamble_matches"] == []
+
+
+def _test_classify_requires_definitions_rescued() -> None:
+    """When LLM says REQUIRES_DEFINITIONS but preamble matches exist, rescue to DEFINABLE."""
+    import formalizer
+    with patch.object(
+        formalizer,
+        "call_leanstral",
+        return_value="REQUIRES_DEFINITIONS: Needs concavity infrastructure.",
+    ):
+        result = formalizer.classify_claim(
+            "A strictly concave function attains a maximum on a compact set."
+        )
+    assert result["category"] == "DEFINABLE", f"Expected DEFINABLE, got {result['category']}"
+    assert len(result["preamble_matches"]) > 0, "Expected preamble matches from rescue"
+    assert "extreme_value_theorem" in result["preamble_matches"]
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +325,51 @@ def _test_sorry_validate_fallback_on_error() -> None:
     assert result["method"] == "lake_build"
     assert result["valid"] is True
     assert result["errors"] == []
+
+
+def _test_expanded_keyword_strictly_concave() -> None:
+    matches = find_matching_preambles("A strictly concave function attains a maximum on a compact set.")
+    names = [m.name for m in matches]
+    assert "extreme_value_theorem" in names, f"Expected extreme_value_theorem, got {names}"
+
+
+def _test_expanded_keyword_risk_premium() -> None:
+    matches = find_matching_preambles("The risk premium for a risk-averse agent.")
+    names = [m.name for m in matches]
+    assert any(n in names for n in ("arrow_pratt_rra", "arrow_pratt_ara")), (
+        f"Expected arrow_pratt entry, got {names}"
+    )
+
+
+def _test_expanded_keyword_marginal_product() -> None:
+    matches = find_matching_preambles("The marginal product of capital in a Cobb-Douglas economy.")
+    names = [m.name for m in matches]
+    assert "cobb_douglas_2factor" in names, f"Expected cobb_douglas_2factor, got {names}"
+
+
+def _test_expanded_keyword_diminishing_returns() -> None:
+    matches = find_matching_preambles("Diminishing returns to labor in production.")
+    names = [m.name for m in matches]
+    assert "cobb_douglas_2factor" in names, f"Expected cobb_douglas_2factor, got {names}"
+
+
+def _test_expanded_keyword_returns_to_scale_ces() -> None:
+    matches = find_matching_preambles("CES production exhibits constant returns to scale.")
+    names = [m.name for m in matches]
+    assert "ces_2factor" in names, f"Expected ces_2factor, got {names}"
+
+
+def _test_build_preamble_catalog_summary() -> None:
+    summary = build_preamble_catalog_summary()
+    for name in PREAMBLE_LIBRARY:
+        assert name in summary, f"Entry {name!r} missing from catalog summary"
+
+
+def _test_build_classify_prompt_includes_catalog() -> None:
+    prompt = build_classify_prompt()
+    assert "AVAILABLE DEFINITIONS" in prompt
+    assert "cobb_douglas_2factor" in prompt
+    assert "crra_utility" in prompt
 
 
 def _test_extract_theorem_name() -> None:
@@ -374,6 +437,10 @@ def main() -> int:
         "classify_requires_definitions": _run_case(
             "classify_requires_definitions", _test_classify_requires_definitions
         ),
+        "classify_requires_definitions_rescued": _run_case(
+            "classify_requires_definitions_rescued",
+            _test_classify_requires_definitions_rescued,
+        ),
         # diagnostics
         "diagnose_valid_json": _run_case(
             "diagnose_valid_json", _test_diagnose_valid_json
@@ -387,6 +454,36 @@ def main() -> int:
         ),
         "extract_theorem_name": _run_case(
             "extract_theorem_name", _test_extract_theorem_name
+        ),
+        # expanded keyword coverage
+        "expanded_keyword_strictly_concave": _run_case(
+            "expanded_keyword_strictly_concave",
+            _test_expanded_keyword_strictly_concave,
+        ),
+        "expanded_keyword_risk_premium": _run_case(
+            "expanded_keyword_risk_premium",
+            _test_expanded_keyword_risk_premium,
+        ),
+        "expanded_keyword_marginal_product": _run_case(
+            "expanded_keyword_marginal_product",
+            _test_expanded_keyword_marginal_product,
+        ),
+        "expanded_keyword_diminishing_returns": _run_case(
+            "expanded_keyword_diminishing_returns",
+            _test_expanded_keyword_diminishing_returns,
+        ),
+        "expanded_keyword_returns_to_scale_ces": _run_case(
+            "expanded_keyword_returns_to_scale_ces",
+            _test_expanded_keyword_returns_to_scale_ces,
+        ),
+        # catalog & classify prompt
+        "build_preamble_catalog_summary": _run_case(
+            "build_preamble_catalog_summary",
+            _test_build_preamble_catalog_summary,
+        ),
+        "build_classify_prompt_includes_catalog": _run_case(
+            "build_classify_prompt_includes_catalog",
+            _test_build_classify_prompt_includes_catalog,
         ),
     }
 
@@ -405,8 +502,8 @@ def main() -> int:
                 expect_failed=False,
             )
             results["requires_definitions"] = _run_live_case(
-                "Second welfare theorem",
-                "The second welfare theorem holds under convex preferences.",
+                "Nash equilibrium existence",
+                "Every finite normal-form game has a Nash equilibrium.",
                 expect_success=False,
                 expect_failed=True,
             )

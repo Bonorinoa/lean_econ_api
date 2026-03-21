@@ -132,7 +132,7 @@ libraries that don't exist), output:
   -- Reason: [explanation]
 """
 
-CLASSIFY_SYSTEM_PROMPT = """\
+_CLASSIFY_SYSTEM_PROMPT_TEMPLATE = """\
 You are an expert in Lean 4 and the Mathlib library.
 You will be given a mathematical claim from economics.
 
@@ -158,6 +158,11 @@ measure-theoretic constructs, stochastic processes, game-theoretic solution
 concepts, or results requiring topology (Brouwer, Kakutani). These need a
 domain-specific library that does not exist yet.
 
+AVAILABLE DEFINITIONS — LeanEcon already provides the following reusable modules.
+If a claim can be formalized using one or more of these, classify it as DEFINABLE,
+NOT as REQUIRES_DEFINITIONS:
+{catalog_summary}
+
 For DEFINABLE claims, also state which economic objects need to be defined
 and what functional form they take.
 
@@ -170,6 +175,15 @@ or
 
 No other text. No markdown. Just the classification line.
 """
+
+
+def build_classify_prompt() -> str:
+    """Build the classification system prompt with the current preamble catalog."""
+    from preamble_library import build_preamble_catalog_summary
+
+    return _CLASSIFY_SYSTEM_PROMPT_TEMPLATE.format(
+        catalog_summary=build_preamble_catalog_summary()
+    )
 
 REPAIR_SYSTEM_PROMPT = """\
 You are an expert in Lean 4 and Mathlib. A previous attempt to formalize an
