@@ -58,6 +58,11 @@ def _make_verify_result() -> dict:
         "from_cache": False,
         "partial": False,
         "stop_reason": None,
+        "attempts_used": 1,
+        "tool_trace": [],
+        "tactic_calls": [],
+        "agent_summary": "Leanstral agentic prover: 1 API round-trips, 1 tactic applications.",
+        "agent_elapsed_seconds": 0.1,
         "error_code": "none",
     }
 
@@ -214,14 +219,13 @@ def _test_verify_returns_202_with_job_id() -> None:
     assert body["status"] == "queued"
 
 
-def _test_verify_defaults_to_agentic_and_uses_preformalized() -> None:
+def _test_verify_uses_preformalized_theorem() -> None:
     client = TestClient(api.app)
     captured: dict[str, str] = {}
 
-    def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str, prover_mode: str) -> dict:
+    def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str) -> dict:
         captured["raw_input"] = raw_input
         captured["preformalized_theorem"] = preformalized_theorem
-        captured["prover_mode"] = prover_mode
         return _make_verify_result()
 
     with patch.object(api, "run_pipeline", side_effect=fake_run_pipeline):
@@ -243,9 +247,8 @@ def _test_verify_defaults_to_agentic_and_uses_preformalized() -> None:
 
     assert data["status"] == "completed"
     assert data["result"]["success"] is True
-    assert data["result"]["prover_mode"] == "agentic"
-    assert captured["prover_mode"] == "agentic"
     assert captured["raw_input"] == RAW_LEAN_THEOREM.strip()
+    assert captured["preformalized_theorem"] == RAW_LEAN_THEOREM.strip()
 
 
 def _test_job_status_queued_or_running() -> None:
@@ -277,15 +280,6 @@ def _test_job_not_found() -> None:
     client = TestClient(api.app)
     response = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000")
     assert response.status_code == 404
-
-
-def _test_verify_rejects_batch_mode() -> None:
-    client = TestClient(api.app)
-    response = client.post(
-        "/api/v1/verify",
-        json={"theorem_code": RAW_LEAN_THEOREM, "prover_mode": "batch"},
-    )
-    assert response.status_code == 422
 
 
 def _test_cache_stats_endpoint() -> None:
@@ -523,17 +517,14 @@ def main() -> int:
         "verify_returns_202_with_job_id": _run_case(
             "verify_returns_202_with_job_id", _test_verify_returns_202_with_job_id
         ),
-        "verify_defaults_to_agentic_and_uses_preformalized": _run_case(
-            "verify_defaults_to_agentic_and_uses_preformalized",
-            _test_verify_defaults_to_agentic_and_uses_preformalized,
+        "verify_uses_preformalized_theorem": _run_case(
+            "verify_uses_preformalized_theorem",
+            _test_verify_uses_preformalized_theorem,
         ),
         "job_status_queued_or_running": _run_case(
             "job_status_queued_or_running", _test_job_status_queued_or_running
         ),
         "job_not_found": _run_case("job_not_found", _test_job_not_found),
-        "verify_rejects_batch_mode": _run_case(
-            "verify_rejects_batch_mode", _test_verify_rejects_batch_mode
-        ),
         "cache_stats_endpoint": _run_case(
             "cache_stats_endpoint", _test_cache_stats_endpoint
         ),

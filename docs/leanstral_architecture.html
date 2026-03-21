@@ -508,9 +508,10 @@ em { color: var(--text-dim); font-style: italic; }
 src/
 ├── app.py              ← Streamlit UI. Thin wrapper. No pipeline logic.
 ├── formalizer.py        ← Claim → Lean 4 theorem. Classification + sorry-validation.
-├── leanstral_client.py  ← Mistral API wrapper. Two-stage prompting. Feedback-aware.
+├── leanstral_utils.py   ← Shared Mistral helpers used by formalization and explanation.
+├── agentic_prover.py    ← Leanstral + lean-lsp-mcp proving loop.
 ├── lean_verifier.py     ← Writes .lean files, runs lake build, parses diagnostics.
-├── pipeline.py          ← Orchestration: formalize → prove → verify. Pass@N loop.
+├── pipeline.py          ← Orchestration: formalize → agentic prove → verify.
 └── eval_logger.py       ← Structured JSONL logging for every pipeline run.
 </pre>
 
@@ -701,7 +702,7 @@ src/
   The MCP-first agentic prover described here is now operational in the repo. This section remains as the architecture rationale for the implementation now shipping in LeanEcon.
 </div>
 
-<p>The target architecture replaces the batch prove-then-verify pattern with an <strong>agentic loop</strong> where Leanstral interacts with Lean's compiler via MCP tools on every tactic step. This is how Leanstral achieves its benchmark results — and it's how human Lean users work too, constantly checking the goal state after each tactic in the Lean InfoView panel in VSCode.</p>
+<p>The target architecture replaces the older prototype prove-then-verify pattern with an <strong>agentic loop</strong> where Leanstral interacts with Lean's compiler via MCP tools on every tactic step. This is how Leanstral achieves its benchmark results — and it's how human Lean users work too, constantly checking the goal state after each tactic in the Lean InfoView panel in VSCode.</p>
 
 <p>Available MCP tools that would integrate into the loop:</p>
 

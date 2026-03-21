@@ -19,12 +19,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from formalizer import _inject_preamble, formalize
+from formalizer import _inject_preamble_imports, formalize
 from preamble_library import (
     PREAMBLE_LIBRARY,
     build_preamble_block,
+    build_preamble_imports,
     find_matching_preambles,
     get_preamble_entries,
+    read_preamble_source,
 )
 
 
@@ -83,7 +85,8 @@ def _test_preamble_library_has_entries() -> None:
     assert len(PREAMBLE_LIBRARY) >= 10, f"Expected >=10 entries, got {len(PREAMBLE_LIBRARY)}"
     for name, entry in PREAMBLE_LIBRARY.items():
         assert entry.name == name
-        assert len(entry.lean_code.strip()) > 0
+        assert entry.lean_path.is_file(), f"Missing Lean file for {name}: {entry.lean_path}"
+        assert len(read_preamble_source(entry, strip_header=False).strip()) > 0
         assert len(entry.description) > 0
         assert len(entry.keywords) > 0
 
@@ -110,6 +113,16 @@ def _test_build_preamble_block() -> None:
     block = build_preamble_block(entries)
     assert "noncomputable def cobb_douglas" in block
     assert "noncomputable def crra_utility" in block
+    assert "import Mathlib" not in block
+
+
+def _test_build_preamble_imports() -> None:
+    entries = get_preamble_entries(["cobb_douglas_2factor", "crra_utility", "crra_utility"])
+    imports = build_preamble_imports(entries)
+    assert imports == [
+        "import LeanEcon.Preamble.Producer.CobbDouglas2Factor",
+        "import LeanEcon.Preamble.Consumer.CRRAUtility",
+    ]
 
 
 def _test_get_preamble_entries_unknown() -> None:
@@ -144,11 +157,18 @@ def _test_preamble_library_expanded() -> None:
     assert len(PREAMBLE_LIBRARY) >= 25, f"Expected >=25 entries, got {len(PREAMBLE_LIBRARY)}"
 
 
+def _test_read_preamble_source_strips_import_header() -> None:
+    entry = PREAMBLE_LIBRARY["crra_utility"]
+    source = read_preamble_source(entry)
+    assert "import Mathlib" not in source
+    assert "noncomputable def crra_utility" in source
+
+
 # ---------------------------------------------------------------------------
-# Unit tests: _inject_preamble
+# Unit tests: _inject_preamble_imports
 # ---------------------------------------------------------------------------
 
-def _test_inject_preamble_placement() -> None:
+def _test_inject_preamble_imports_placement() -> None:
     lean_code = (
         "import Mathlib\n"
         "open Real\n"
@@ -156,20 +176,19 @@ def _test_inject_preamble_placement() -> None:
         "theorem foo : 1 = 1 := by\n"
         "  sorry\n"
     )
-    preamble = "noncomputable def bar (x : ℝ) : ℝ := x * x"
-    result = _inject_preamble(lean_code, preamble)
+    imports = ["import LeanEcon.Preamble.Consumer.CRRAUtility"]
+    result = _inject_preamble_imports(lean_code, imports)
     lines = result.splitlines()
-    # Preamble should appear after open Real, before theorem
-    preamble_idx = None
-    theorem_idx = None
+    import_idx = None
+    open_idx = None
     for i, line in enumerate(lines):
-        if "noncomputable def bar" in line:
-            preamble_idx = i
-        if "theorem foo" in line:
-            theorem_idx = i
-    assert preamble_idx is not None, "Preamble not found in output"
-    assert theorem_idx is not None, "Theorem not found in output"
-    assert preamble_idx < theorem_idx, "Preamble should appear before theorem"
+        if "import LeanEcon.Preamble.Consumer.CRRAUtility" in line:
+            import_idx = i
+        if "open Real" in line:
+            open_idx = i
+    assert import_idx is not None, "Preamble import not found in output"
+    assert open_idx is not None, "`open Real` not found in output"
+    assert import_idx < open_idx, "Preamble import should appear before `open Real`"
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +295,9 @@ def main() -> int:
         "build_preamble_block": _run_case(
             "build_preamble_block", _test_build_preamble_block
         ),
+        "build_preamble_imports": _run_case(
+            "build_preamble_imports", _test_build_preamble_imports
+        ),
         "get_preamble_entries_unknown": _run_case(
             "get_preamble_entries_unknown", _test_get_preamble_entries_unknown
         ),
@@ -285,9 +307,14 @@ def main() -> int:
         "preamble_library_expanded": _run_case(
             "preamble_library_expanded", _test_preamble_library_expanded
         ),
-        # inject preamble
-        "inject_preamble_placement": _run_case(
-            "inject_preamble_placement", _test_inject_preamble_placement
+        "read_preamble_source_strips_import_header": _run_case(
+            "read_preamble_source_strips_import_header",
+            _test_read_preamble_source_strips_import_header,
+        ),
+        # inject preamble imports
+        "inject_preamble_imports_placement": _run_case(
+            "inject_preamble_imports_placement",
+            _test_inject_preamble_imports_placement,
         ),
         # three-tier classifier
         "classify_algebraic": _run_case(

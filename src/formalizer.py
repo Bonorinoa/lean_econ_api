@@ -22,9 +22,10 @@ from dotenv import load_dotenv
 from mistralai.client import Mistral
 
 from lean_verifier import run_lake_build, write_lean_file
-from leanstral_client import _strip_fences, call_leanstral
+from leanstral_utils import call_leanstral, strip_fences
 from preamble_library import (
     build_preamble_block,
+    build_preamble_imports,
     find_matching_preambles,
     get_preamble_entries,
 )
@@ -71,20 +72,32 @@ def _detect_formalization_failed(lean_code: str) -> tuple[bool, str | None]:
     return False, None
 
 
-def _inject_preamble(lean_code: str, preamble_block: str) -> str:
-    """Insert preamble definitions after import/open header, before theorem."""
+def _inject_preamble_imports(lean_code: str, import_lines: list[str]) -> str:
+    """Insert deduplicated preamble imports at the top of a Lean file."""
+    if not import_lines:
+        return lean_code
+
     lines = lean_code.splitlines()
+    existing_imports = {
+        line.strip()
+        for line in lines
+        if line.strip().startswith("import ")
+    }
+    new_imports = [line for line in import_lines if line not in existing_imports]
+    if not new_imports:
+        return lean_code
+
     insert_idx = 0
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(("import ", "open ")):
-            insert_idx = i + 1
-        elif stripped and not stripped.startswith("--") and not stripped.startswith("/-"):
-            break
-    lines.insert(insert_idx, "")
-    lines.insert(insert_idx + 1, preamble_block.rstrip())
-    lines.insert(insert_idx + 2, "")
-    return "\n".join(lines)
+    while insert_idx < len(lines) and lines[insert_idx].strip().startswith("import "):
+        insert_idx += 1
+
+    prefix = lines[:insert_idx]
+    suffix = lines[insert_idx:]
+    updated = prefix + new_imports
+    if suffix and suffix[0].strip():
+        updated.append("")
+    updated.extend(suffix)
+    return "\n".join(updated).rstrip() + "\n"
 
 
 def _diagnose_formalization_failure(
@@ -244,7 +257,7 @@ def formalize(
     Translate a natural language / LaTeX claim into a Lean 4 theorem using Leanstral.
 
     Runs the formalize → sorry-validate → repair cycle up to
-    MAX_FORMALIZATION_ATTEMPTS times. Optionally prepends preamble definitions.
+    MAX_FORMALIZATION_ATTEMPTS times. Optionally adds preamble imports.
 
     Args:
         claim_text: Cleaned claim text (output of parse_claim()["text"]).
@@ -259,7 +272,7 @@ def formalize(
           - errors (list[str]): Lean errors from the last failed attempt.
           - formalization_failed (bool): True if model said FORMALIZATION_FAILED.
           - failure_reason (str | None): Model's explanation if formalization_failed.
-          - preamble_used (list[str]): Names of preamble definitions injected.
+          - preamble_used (list[str]): Names of preamble modules injected.
           - diagnosis (str | None): Failure analysis (only on exhausted attempts).
           - suggested_fix (str | None): Concrete fix suggestion.
           - fixable (bool | None): Whether a human edit could fix it.
@@ -293,20 +306,23 @@ def formalize(
             **_defaults,
         }
 
-    # Resolve preamble definitions
+    # Resolve preamble modules
     preamble_block = None
+    preamble_imports: list[str] = []
     preamble_used: list[str] = []
 
     if preamble_names:
         entries = get_preamble_entries(preamble_names)
         if entries:
             preamble_block = build_preamble_block(entries)
+            preamble_imports = build_preamble_imports(entries)
             preamble_used = [e.name for e in entries]
             _log(f"Using explicit preamble: {', '.join(preamble_used)}", status="running")
     elif classification["category"] == "DEFINABLE" and classification.get("preamble_matches"):
         entries = get_preamble_entries(classification["preamble_matches"])
         if entries:
             preamble_block = build_preamble_block(entries)
+            preamble_imports = build_preamble_imports(entries)
             preamble_used = [e.name for e in entries]
             _log(f"Auto-attaching preamble for DEFINABLE claim: {', '.join(preamble_used)}", status="running")
 
@@ -342,7 +358,7 @@ def formalize(
             temperature=FORMALIZE_TEMPERATURE,
             max_tokens=FORMALIZE_MAX_TOKENS,
         )
-        lean_code = _strip_fences(raw)
+        lean_code = strip_fences(raw)
 
         failed, reason = _detect_formalization_failed(lean_code)
         if failed:
@@ -360,9 +376,8 @@ def formalize(
                 "fixable": None,
             }
 
-        # Inject preamble if generated code doesn't already include it
-        if preamble_block and preamble_block.strip() not in lean_code:
-            lean_code = _inject_preamble(lean_code, preamble_block)
+        if preamble_imports:
+            lean_code = _inject_preamble_imports(lean_code, preamble_imports)
 
         _log(f"Attempt {attempt}: running sorry-validation...", data=lean_code, status="running")
         sv = sorry_validate(lean_code)

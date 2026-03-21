@@ -41,6 +41,16 @@ theorem unproven : 1 + 1 = 2 := by
   sorry
 """
 
+LEAN_WITH_PREAMBLE_IMPORT = """\
+import Mathlib
+import LeanEcon.Preamble.Consumer.CRRAUtility
+open Real
+
+theorem imported_crra_definition (c γ : ℝ) :
+    crra_utility c γ = Real.rpow c (1 - γ) / (1 - γ) := by
+  rfl
+"""
+
 CURATED_PARITY_EXAMPLES = {
     "even_form_example": EXAMPLES_DIR / "even_form_pass.lean",
     "even_sum_example": EXAMPLES_DIR / "even_sum_pass.lean",
@@ -78,6 +88,22 @@ def _run_example_case(name: str, path: Path, expected_success: bool = True) -> b
     return ok
 
 
+def _test_verify_restores_proof_module() -> bool:
+    proof_path = LEAN_WORKSPACE / "LeanEcon" / "Proof.lean"
+    original = proof_path.read_text(encoding="utf-8")
+    result = verify(KNOWN_GOOD_LEAN, filename="_test_restore_check")
+    restored = proof_path.read_text(encoding="utf-8")
+    ok = result["success"] and restored == original
+
+    print("\nrestore_proof_module")
+    print("  expected: PASS")
+    print(f"  got:      {'PASS' if ok else 'FAIL'}")
+    if not ok and restored != original:
+        print("  errors:   LeanEcon/Proof.lean was not restored after verification")
+    print(f"  status:   {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
 def main() -> int:
     print("=" * 60)
     print("LeanEcon Verifier Smoke Tests")
@@ -88,6 +114,8 @@ def main() -> int:
         "known_good": _run_case("known_good", KNOWN_GOOD_LEAN, True),
         "known_bad": _run_case("known_bad", KNOWN_BAD_LEAN, False),
         "sorry_proof": _run_case("sorry_proof", SORRY_LEAN, False),
+        "preamble_import": _run_case("preamble_import", LEAN_WITH_PREAMBLE_IMPORT, True),
+        "restore_proof_module": _test_verify_restores_proof_module(),
     }
     for name, path in CURATED_PARITY_EXAMPLES.items():
         results[name] = _run_example_case(name, path, True)

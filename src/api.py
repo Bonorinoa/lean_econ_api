@@ -64,8 +64,7 @@ Important behavior:
 - `classify` short-circuits raw Lean input and marks it as `RAW_LEAN`.
 - `formalize` preserves the current pipeline behavior, including raw-Lean bypass.
 - `verify` expects a formalized Lean theorem/lemma/example with a `sorry`
-  placeholder so the prover has something to complete.
-- `agentic` is the only supported prover mode.
+  placeholder so the agentic prover has something to complete.
 """
 
 OPENAPI_TAGS = [
@@ -124,7 +123,6 @@ class VerifyRequest(BaseModel):
         json_schema_extra={
             "example": {
                 "theorem_code": SAMPLE_RAW_LEAN_THEOREM,
-                "prover_mode": "agentic",
                 "explain": False,
             }
         }
@@ -135,10 +133,6 @@ class VerifyRequest(BaseModel):
         description=(
             "Formalized Lean theorem file content that still contains `sorry`."
         ),
-    )
-    prover_mode: Literal["agentic"] = Field(
-        default="agentic",
-        description="Proof backend to use. Currently only 'agentic' is supported.",
     )
     explain: bool = Field(
         default=False,
@@ -335,7 +329,6 @@ class VerifyResponse(BaseModel):
                 "from_cache": False,
                 "partial": False,
                 "stop_reason": None,
-                "prover_mode": "agentic",
                 "error_code": "none",
                 "explanation": None,
                 "explanation_generated": None,
@@ -396,9 +389,6 @@ class VerifyResponse(BaseModel):
     stop_reason: str | None = Field(
         default=None,
         description="Why the proving loop stopped, when reported by the prover.",
-    )
-    prover_mode: Literal["agentic"] = Field(
-        description="Proof backend used for the request."
     )
     error_code: LeanEconErrorCode = Field(
         default=LeanEconErrorCode.NONE,
@@ -501,18 +491,16 @@ def _verify_error_code(result: dict) -> LeanEconErrorCode:
 # Background task
 # ---------------------------------------------------------------------------
 
-def _run_verify_job(job_id: str, theorem_code: str, prover_mode: str, explain: bool) -> None:
+def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
     """Background task that runs the full pipeline and stores the result."""
     job_store.update_status(job_id, JobStatus.RUNNING)
     try:
         result = run_pipeline(
             raw_input=theorem_code,
             preformalized_theorem=theorem_code,
-            prover_mode=prover_mode,
         )
         error_code = _verify_error_code(result)
         response_data: dict[str, Any] = {
-            "prover_mode": prover_mode,
             "error_code": error_code,
             **result,
         }
@@ -642,14 +630,13 @@ def formalize_endpoint(request: FormalizeRequest) -> FormalizeResponse:
     description=(
         "Queue a proving and Lean verification job. Returns HTTP 202 with a `job_id` "
         "immediately. Poll `GET /api/v1/jobs/{job_id}` until status is `completed` "
-        "or `failed`. Only `agentic` prover mode is supported."
+        "or `failed`. LeanEcon uses the agentic prover for all verify jobs."
     ),
     responses={
         202: {"description": "Job queued successfully."},
         422: {
             "description": (
-                "The theorem payload was blank, did not look like a Lean proof stub, "
-                "or an unsupported prover_mode was specified."
+                "The theorem payload was blank or did not look like a Lean proof stub."
             )
         },
     },
@@ -668,11 +655,9 @@ def verify_endpoint(
             ),
         )
 
-    job_id = job_store.create(
-        {"theorem_code": theorem_code, "prover_mode": request.prover_mode, "explain": request.explain}
-    )
+    job_id = job_store.create({"theorem_code": theorem_code, "explain": request.explain})
     background_tasks.add_task(
-        _run_verify_job, job_id, theorem_code, request.prover_mode, request.explain
+        _run_verify_job, job_id, theorem_code, request.explain
     )
     return VerifyAcceptedResponse(job_id=job_id, status="queued")
 

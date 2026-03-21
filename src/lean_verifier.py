@@ -18,6 +18,7 @@ Critical path note:
 import re
 import subprocess
 import textwrap
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,28 @@ OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 def _ensure_dirs():
     """Create outputs/ directory if it doesn't exist."""
     OUTPUTS_DIR.mkdir(exist_ok=True)
+
+
+@contextmanager
+def _preserve_proof_module() -> Path:
+    """
+    Preserve the tracked `LeanEcon/Proof.lean` contents across verification runs.
+
+    The verifier still compiles by writing through `Proof.lean`, but we restore the
+    original source afterward so smoke tests and stress runs do not leave the repo dirty.
+    """
+    lean_path = LEAN_SOURCE_DIR / "Proof.lean"
+    original = lean_path.read_text(encoding="utf-8") if lean_path.exists() else None
+    try:
+        yield lean_path
+    finally:
+        if original is None:
+            try:
+                lean_path.unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            lean_path.write_text(original, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -144,14 +167,15 @@ def verify(lean_code: str, filename: str | None = None) -> dict:
         Build result dict (see run_lake_build) with added key:
           - lean_code (str): The code that was verified.
     """
-    lean_path = write_lean_file(lean_code, filename)
-    result = run_lake_build(lean_path)
-    result["lean_code"] = lean_code
+    with _preserve_proof_module() as lean_path:
+        lean_path = write_lean_file(lean_code, filename)
+        result = run_lake_build(lean_path)
+        result["lean_code"] = lean_code
 
-    # Also save a copy to outputs/
-    _save_to_outputs(lean_code, lean_path, result)
+        # Also save a copy to outputs/
+        _save_to_outputs(lean_code, lean_path, result)
 
-    return result
+        return result
 
 
 def _parse_diagnostics(text: str, level: str) -> list[str]:

@@ -46,14 +46,13 @@ theorem cobb_douglas_elasticity_capital (α K : ℝ) (hα : 0 < α) (hα1 : α <
 
 def _run_case(name: str, theorem_with_sorry: str) -> bool:
     start = time.time()
-    result = prove_and_verify(theorem_with_sorry, prover_mode="agentic")
+    result = prove_and_verify(theorem_with_sorry)
     elapsed = time.time() - start
     status = "PASS" if result["success"] else "FAIL"
     preview_errors = result["errors"][:2]
 
     print(f"\n{name}")
     print(f"  status:        {status}")
-    print(f"  prover_mode:   {result['prover_mode']}")
     print(f"  attempts_used: {result['attempts_used']}")
     print(f"  proof_tactics: {result['proof_tactics']}")
     print(f"  elapsed:       {elapsed:.1f}s")

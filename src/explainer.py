@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 
-from leanstral_client import call_leanstral
+from leanstral_utils import call_leanstral
 
 # Load .env from the project root (one level up from src/)
 load_dotenv(Path(__file__).parent.parent / ".env")

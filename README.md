@@ -7,9 +7,8 @@ Lean-checked proof using [Leanstral](https://mistral.ai/news/leanstral),
 [Lean 4](https://lean-lang.org/), and
 [Mathlib](https://leanprover-community.github.io/mathlib4_docs/).
 
-The current prototype supports two proving backends:
+LeanEcon now uses a single proving backend:
 
-- `batch`: pass@5 proof generation with Lean error feedback
 - `agentic`: Leanstral + `lean-lsp-mcp` with live tool use during proving
 
 > Working prototype. Built March 2026.
@@ -19,9 +18,7 @@ The current prototype supports two proving backends:
 1. **Classify + formalize**: Leanstral turns the claim into a Lean theorem with
    `:= by sorry`, then Lean checks that the statement itself compiles.
 2. **Review**: an API client can inspect or edit the theorem before proving.
-3. **Prove**:
-   - `batch` mode samples multiple tactic proofs and uses Lean feedback between attempts.
-   - `agentic` mode lets Leanstral call Lean MCP tools and iteratively edit a working proof file.
+3. **Prove**: the agentic prover lets Leanstral call Lean MCP tools and iteratively edit a working proof file.
 4. **Verify**: `lake build` is the final authority. If Lean accepts the proof
    without `sorry`, the claim is certified.
 
@@ -111,7 +108,7 @@ curl -X POST http://localhost:8000/api/formalize \
 ```bash
 curl -X POST http://localhost:8000/api/verify \
   -H "Content-Type: application/json" \
-  -d '{"theorem_code":"import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry","prover_mode":"agentic"}'
+  -d '{"theorem_code":"import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry"}'
 ```
 
 ## Deployment
@@ -137,8 +134,7 @@ User Input (LaTeX / text / raw Lean)
     -> [FastAPI] classify / formalize / verify endpoints
     -> [formalizer.py] classify + formalize + sorry-validate
     -> [API client] optional theorem review/edit
-    -> [pipeline.py] dispatch to one prover
-        -> [leanstral_client.py] batch proving with feedback
+    -> [pipeline.py] agentic proof orchestration
         -> [agentic_prover.py] Leanstral + MCP + working proof file
     -> [lean_verifier.py] lake build
     -> [FastAPI / CLI] results + logs
@@ -147,20 +143,17 @@ User Input (LaTeX / text / raw Lean)
 ```text
 src/
 ├── api.py                   FastAPI service entry point
-├── pipeline.py              Shared orchestration and prover dispatch
+├── pipeline.py              Shared orchestration and agentic prover dispatch
 ├── formalizer.py            Leanstral classification + formalization
-├── leanstral_client.py      Batch proving (pass@5 with feedback)
+├── leanstral_utils.py       Shared Leanstral API helpers
 ├── agentic_prover.py        Leanstral Conversations API + MCP loop
 ├── mcp_runtime.py           Lean MCP session helpers and query utilities
+├── preamble_library.py      File-backed preamble metadata and lookup helpers
 ├── proof_file_controller.py Working-file management for agentic proving
 ├── lean_verifier.py         Final lake build verification
 ├── eval_logger.py           Append-only JSONL structured logging
 └── mcp_smoke_test.py        Lean MCP smoke test
 ```
-
-`batch` mode remains the regression baseline in the core pipeline. The FastAPI
-layer defaults `POST /api/verify` to `agentic` so frontend clients can opt into
-the MCP-first path without extra configuration.
 
 ## How verification works
 
@@ -175,8 +168,7 @@ Leanstral generates candidate proofs. Lean verifies them.
 
 - Verified examples are still mostly algebraic identities over the reals.
 - Proof generation is stochastic. A claim may pass in one run and fail in another.
-- `Real.rpow`-heavy claims are better in agentic mode than in batch mode, but
-  still not stable enough to call universally solved.
+- `Real.rpow`-heavy claims remain more brittle than simple algebraic equalities.
 - The current Leanstral endpoint is a labs model, not a permanent production API.
 
 ## Docs

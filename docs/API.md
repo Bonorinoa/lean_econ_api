@@ -72,8 +72,7 @@ Request:
 
 ```json
 {
-  "theorem_code": "import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry",
-  "prover_mode": "agentic"
+  "theorem_code": "import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry"
 }
 ```
 
@@ -81,8 +80,7 @@ Important request rules:
 
 - `theorem_code` must look like a Lean theorem/lemma/example
 - it must still contain `:= by sorry`
-- default `prover_mode` is `agentic`
-- supported `prover_mode` values are `agentic` and `batch`
+- LeanEcon always uses the agentic prover for verify requests
 
 Important response fields:
 
@@ -93,7 +91,6 @@ Important response fields:
 - `proof_tactics`: tactic script or tactics summary
 - `errors` / `warnings`: Lean diagnostics
 - `elapsed_seconds`: pipeline runtime
-- `prover_mode`: backend used for the request
 
 Phase meanings:
 

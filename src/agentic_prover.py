@@ -38,7 +38,6 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Constants
 # ---------------------------------------------------------------------------
 
-PROVER_MODE = "agentic"
 MODEL = "labs-leanstral-2603"
 TIMEOUT_MS = 120_000  # 2 minutes for the full run_async conversation
 DEFAULT_MAX_STEPS = 12  # not enforced directly — run_async manages its own loop
@@ -317,7 +316,6 @@ async def _prove_theorem_agentic_async(
                     else [error_message]
                 ),
                 "warnings": warnings,
-                "prover_mode": PROVER_MODE,
                 "tool_trace": tool_trace_entries,
                 "tactic_calls": tactic_call_log,
                 "steps_used": steps_used,
@@ -343,7 +341,6 @@ async def _prove_theorem_agentic_async(
                 "full_lean_code": controller.current_lean_code,
                 "errors": [str(exc)],
                 "warnings": [],
-                "prover_mode": PROVER_MODE,
                 "tool_trace": tool_trace_entries,
                 "tactic_calls": tactic_call_log,
                 "steps_used": 0,
@@ -403,7 +400,6 @@ async def _prove_theorem_agentic_async(
             "full_lean_code": controller.current_lean_code,
             "errors": verification["errors"],
             "warnings": verification["warnings"],
-            "prover_mode": PROVER_MODE,
             "tool_trace": tool_trace_entries,
             "tactic_calls": tactic_call_log,
             "steps_used": steps_used,
@@ -440,8 +436,8 @@ def prove_theorem_agentic(
 
     Returns:
         dict with keys: success, strategy, proof_tactics, full_lean_code,
-        errors, warnings, prover_mode, tool_trace, steps_used, mcp_enabled,
-        agent_summary, stop_reason, output_lean, elapsed_seconds.
+        errors, warnings, tool_trace, steps_used, mcp_enabled, agent_summary,
+        stop_reason, output_lean, elapsed_seconds.
     """
     return asyncio.run(
         _prove_theorem_agentic_async(

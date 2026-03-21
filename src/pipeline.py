@@ -5,11 +5,6 @@ Orchestration layer: parse → formalize → prove → verify.
 
 Input:  raw text (LaTeX, plain English, or raw Lean 4)
 Output: dict with {success, lean_code, errors, proof_strategy, ...}
-
-Two-phase execution:
-  formalize_claim()  — Phase 1: parse + LLM formalization
-  prove_and_verify() — Phase 2: pass@N proof generation + lake build
-  run_pipeline()     — Runs both phases in sequence (CLI / tests)
 """
 
 from __future__ import annotations
@@ -18,19 +13,15 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from eval_logger import log_run
 from formalizer import formalize
-from lean_verifier import verify
-from leanstral_client import prove_theorem, prove_theorem_with_feedback
 from result_cache import result_cache
-
-PASS_AT_N = 5  # Number of independent proof attempts before giving up
 
 
 class ProveResult(TypedDict):
-    """Normalized proof-generation result shared by batch and agentic paths."""
+    """Normalized output from the agentic proving stage."""
 
     success: bool
     lean_code: str
@@ -41,39 +32,24 @@ class ProveResult(TypedDict):
     output_lean: str | None
     proof_generated: bool
     attempts_used: int
-    prover_mode: str
     partial: bool
     stop_reason: str | None
+    tool_trace: list[dict[str, Any]]
+    tactic_calls: list[dict[str, Any]]
+    agent_summary: str
+    agent_elapsed_seconds: float
 
 
 def _log(on_log, stage: str, message: str, data: str | None = None, status: str = "done"):
-    """
-    Emit a pipeline log entry.
-
-    If on_log is provided (Streamlit callback), calls it with a structured dict.
-    Otherwise falls back to print() so terminal usage is unaffected.
-    """
+    """Emit a pipeline log entry."""
     if on_log:
         on_log({"stage": stage, "message": message, "data": data, "status": status})
     else:
         print(f"[pipeline] {stage}: {message}")
 
 
-# ---------------------------------------------------------------------------
-# Step 1: Parse raw input
-# ---------------------------------------------------------------------------
-
 def parse_claim(raw_input: str) -> dict:
-    """
-    Strip LaTeX boilerplate from raw input and return cleaned text.
-
-    Args:
-        raw_input: Raw user input — could be a full .tex file excerpt or plain text.
-
-    Returns:
-        dict with key:
-          - text (str): Cleaned claim text ready for formalization.
-    """
+    """Strip LaTeX boilerplate from raw input and return cleaned text."""
     text = raw_input.strip()
     text = re.sub(r"\\begin\{(claim|theorem|proposition|lemma)\}", "", text)
     text = re.sub(r"\\end\{(claim|theorem|proposition|lemma)\}", "", text)
@@ -81,10 +57,6 @@ def parse_claim(raw_input: str) -> dict:
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     return {"text": text}
 
-
-# ---------------------------------------------------------------------------
-# Step 2: Formalize (Phase 1)
-# ---------------------------------------------------------------------------
 
 def formalize_claim(
     raw_input: str,
@@ -95,13 +67,7 @@ def formalize_claim(
     Phase 1: parse + formalize only. Returns the theorem statement for user review.
 
     Auto-detects raw Lean input and skips formalization if detected.
-
-    Returns:
-        Output of formalizer.formalize() with keys:
-          success, theorem_code, attempts, errors, formalization_failed,
-          failure_reason, preamble_used, diagnosis, suggested_fix, fixable
     """
-    # Auto-detect raw Lean — skip formalization
     if "import Mathlib" in raw_input or (":= by" in raw_input and "sorry" in raw_input):
         _log(on_log, "parse", "Raw Lean input detected — skipping formalization", status="done")
         return {
@@ -127,147 +93,48 @@ def formalize_claim(
     if result["formalization_failed"]:
         _log(on_log, "formalize", f"Formalization failed: {result['failure_reason']}", status="error")
     elif result["success"]:
-        _log(on_log, "formalize",
-             f"Formalized in {result['attempts']} attempt(s)",
-             data=result["theorem_code"],
-             status="done")
+        _log(
+            on_log,
+            "formalize",
+            f"Formalized in {result['attempts']} attempt(s)",
+            data=result["theorem_code"],
+            status="done",
+        )
     else:
-        _log(on_log, "formalize",
-             f"Sorry-validation failed after {result['attempts']} attempt(s)",
-             data="\n".join(result["errors"][:2]),
-             status="error")
+        _log(
+            on_log,
+            "formalize",
+            f"Sorry-validation failed after {result['attempts']} attempt(s)",
+            data="\n".join(result["errors"][:2]),
+            status="error",
+        )
 
     return result
 
 
-# ---------------------------------------------------------------------------
-# Step 3: Prove & Verify (Phase 2)
-# ---------------------------------------------------------------------------
-
 def prove_and_verify(
     theorem_with_sorry: str,
     on_log: callable | None = None,
-    prover_mode: str = "batch",
 ) -> ProveResult:
-    """
-    Phase 2: proof generation + verification.
-
-    Args:
-        theorem_with_sorry: Lean 4 theorem with sorry placeholder.
-        on_log: Optional callback for pipeline log entries.
-        prover_mode: "batch" (default, pass@N) or "agentic" (Leanstral+MCP).
-
-    Returns:
-        dict with keys:
-          - success (bool)
-          - lean_code (str): Final .lean file (verified or last attempted)
-          - errors (list[str])
-          - warnings (list[str])
-          - proof_strategy (str)
-          - proof_tactics (str)
-          - output_lean (str | None)
-          - proof_generated (bool): True if at least one proof attempt ran
-          - attempts_used (int)
-          - prover_mode (str): Which prover was used
-    """
-    if prover_mode == "agentic":
-        return _prove_and_verify_agentic(theorem_with_sorry, on_log=on_log)
-    proof_result = None
-    verification = None
-    attempts_used = 0
-    previous_proof = None
-    previous_error = None
-
-    for attempt in range(1, PASS_AT_N + 1):
-        attempts_used = attempt
-        _log(on_log, f"attempt_{attempt}",
-             f"Attempt {attempt}/{PASS_AT_N} — generating proof...",
-             status="running")
-
-        # Use feedback on attempts 2+ if we have context from a prior failure
-        if attempt > 1 and previous_proof and previous_error:
-            proof_result = prove_theorem_with_feedback(
-                theorem_with_sorry, previous_error, previous_proof
-            )
-        else:
-            proof_result = prove_theorem(theorem_with_sorry)
-
-        _log(on_log, f"attempt_{attempt}",
-             f"Attempt {attempt}/{PASS_AT_N} — strategy received",
-             data=proof_result["strategy"],
-             status="done")
-
-        _log(on_log, f"verify_{attempt}",
-             f"Attempt {attempt}/{PASS_AT_N} — verifying with lake build...",
-             status="running")
-        verification = verify(proof_result["full_lean_code"])
-
-        if verification["success"]:
-            _log(on_log, f"verify_{attempt}", f"Attempt {attempt} PASSED", status="done")
-            break
-
-        # "No goals" recovery — strip last tactic, re-verify without a new API call
-        if _is_no_goals_error(verification):
-            _log(on_log, f"verify_{attempt}",
-                 "Stripping redundant tactic (no goals recovery)...",
-                 status="running")
-            trimmed_code = _drop_redundant_tactic(
-                proof_result["full_lean_code"],
-                verification,
-            )
-            if trimmed_code != proof_result["full_lean_code"]:
-                verification = verify(trimmed_code)
-                proof_result = {**proof_result, "full_lean_code": trimmed_code}
-                if verification["success"]:
-                    _log(on_log, f"verify_{attempt}",
-                         f"Attempt {attempt} PASSED after tactic strip",
-                         status="done")
-                    break
-                _log(on_log, f"verify_{attempt}",
-                     f"Attempt {attempt} still failed after strip",
-                     data=str(verification["errors"][:2]),
-                     status="error")
-
-        _log(on_log, f"verify_{attempt}",
-             f"Attempt {attempt} failed",
-             data=str(verification["errors"][:2]),
-             status="error")
-
-        # Capture feedback for next attempt
-        previous_proof = proof_result["proof_tactics"]
-        previous_error = _build_error_context(verification)
-
-    assert proof_result is not None
-    assert verification is not None
-
-    return {
-        "success": verification["success"],
-        "lean_code": proof_result["full_lean_code"],
-        "errors": verification["errors"],
-        "warnings": verification["warnings"],
-        "proof_strategy": proof_result["strategy"],
-        "proof_tactics": proof_result["proof_tactics"],
-        "output_lean": verification.get("output_lean"),
-        "proof_generated": True,
-        "attempts_used": attempts_used,
-        "prover_mode": "batch",
-        "partial": False,
-        "stop_reason": None,
-    }
+    """Phase 2: agentic proof generation plus final Lean verification."""
+    return _prove_and_verify_agentic(theorem_with_sorry, on_log=on_log)
 
 
 def _prove_and_verify_agentic(
     theorem_with_sorry: str,
     on_log: callable | None = None,
 ) -> ProveResult:
-    """Dispatch to the agentic prover and normalize its result to the batch shape."""
+    """Dispatch to the agentic prover and normalize its result."""
     from agentic_prover import prove_theorem_agentic
 
     _log(on_log, "agentic_dispatch", "Using agentic prover (Leanstral+MCP)...", status="running")
     result = prove_theorem_agentic(theorem_with_sorry, on_log=on_log)
-    _log(on_log, "agentic_dispatch",
-         f"Agentic prover finished: {'PASS' if result['success'] else 'FAIL'}",
-         status="done" if result["success"] else "error")
+    _log(
+        on_log,
+        "agentic_dispatch",
+        f"Agentic prover finished: {'PASS' if result['success'] else 'FAIL'}",
+        status="done" if result["success"] else "error",
+    )
 
     return {
         "success": result["success"],
@@ -279,46 +146,44 @@ def _prove_and_verify_agentic(
         "output_lean": result.get("output_lean"),
         "proof_generated": True,
         "attempts_used": result.get("steps_used", 0),
-        "prover_mode": "agentic",
         "partial": result.get("partial", False),
         "stop_reason": result.get("stop_reason"),
+        "tool_trace": result.get("tool_trace", []),
+        "tactic_calls": result.get("tactic_calls", []),
+        "agent_summary": result.get("agent_summary", ""),
+        "agent_elapsed_seconds": result.get("elapsed_seconds", 0.0),
     }
 
-
-# ---------------------------------------------------------------------------
-# Step 4: Full pipeline (CLI / tests)
-# ---------------------------------------------------------------------------
 
 def run_pipeline(
     raw_input: str,
     on_log: callable | None = None,
     preformalized_theorem: str | None = None,
-    prover_mode: str = "batch",
+    use_cache: bool = True,
 ) -> dict:
     """
     Full pipeline: parse → formalize → prove → verify.
 
     If preformalized_theorem is provided, skip parse and formalize.
     If raw_input looks like raw Lean, skip formalization automatically.
-
-    Returns dict with all keys needed by app.py:
-      success, lean_code, errors, warnings, proof_strategy, proof_tactics,
-      theorem_statement, formalization_attempts, formalization_failed,
-      failure_reason, output_lean, phase
     """
     start = time.time()
     cache_key_input = preformalized_theorem or raw_input
 
-    cached = result_cache.get(cache_key_input)
-    if cached is not None:
-        _log(on_log, "cache", "Cache hit — returning verified result", status="done")
-        cached["elapsed_seconds"] = 0.0
-        cached["from_cache"] = True
-        cached.setdefault("partial", False)
-        cached.setdefault("stop_reason", None)
-        return cached
+    if use_cache:
+        cached = result_cache.get(cache_key_input)
+        if cached is not None:
+            _log(on_log, "cache", "Cache hit — returning verified result", status="done")
+            cached["elapsed_seconds"] = 0.0
+            cached["from_cache"] = True
+            cached.setdefault("partial", False)
+            cached.setdefault("stop_reason", None)
+            cached.setdefault("tool_trace", [])
+            cached.setdefault("tactic_calls", [])
+            cached.setdefault("agent_summary", "")
+            cached.setdefault("agent_elapsed_seconds", 0.0)
+            return cached
 
-    # --- Phase 1: Formalize ---
     if preformalized_theorem is not None:
         f_result = {
             "success": True,
@@ -327,6 +192,10 @@ def run_pipeline(
             "errors": [],
             "formalization_failed": False,
             "failure_reason": None,
+            "preamble_used": [],
+            "diagnosis": None,
+            "suggested_fix": None,
+            "fixable": None,
         }
     else:
         f_result = formalize_claim(raw_input, on_log=on_log)
@@ -350,17 +219,19 @@ def run_pipeline(
             "from_cache": False,
             "partial": False,
             "stop_reason": None,
+            "tool_trace": [],
+            "tactic_calls": [],
+            "agent_summary": "",
+            "agent_elapsed_seconds": 0.0,
         }
 
     theorem_with_sorry = f_result["theorem_code"]
-
-    # --- Phase 2: Prove & Verify ---
-    pv_result = prove_and_verify(theorem_with_sorry, on_log=on_log, prover_mode=prover_mode)
+    pv_result = prove_and_verify(theorem_with_sorry, on_log=on_log)
 
     if pv_result["success"]:
         phase = "verified"
     elif pv_result["proof_generated"]:
-        phase = "proved"  # proof was generated but Lean rejected it
+        phase = "proved"
     else:
         phase = "failed"
 
@@ -382,9 +253,14 @@ def run_pipeline(
         "from_cache": False,
         "partial": pv_result["partial"],
         "stop_reason": pv_result["stop_reason"],
+        "attempts_used": pv_result["attempts_used"],
+        "tool_trace": pv_result["tool_trace"],
+        "tactic_calls": pv_result["tactic_calls"],
+        "agent_summary": pv_result["agent_summary"],
+        "agent_elapsed_seconds": pv_result["agent_elapsed_seconds"],
     }
 
-    if result["success"]:
+    if use_cache and result["success"]:
         result_cache.put(cache_key_input, result)
 
     log_run({
@@ -404,6 +280,9 @@ def run_pipeline(
             "attempts_used": pv_result["attempts_used"],
             "proof_strategy": pv_result["proof_strategy"],
             "proof_tactics": pv_result["proof_tactics"],
+            "tool_trace": pv_result["tool_trace"],
+            "tactic_calls": pv_result["tactic_calls"],
+            "agent_summary": pv_result["agent_summary"],
         },
         "verification": {
             "success": pv_result["success"],
@@ -417,71 +296,6 @@ def run_pipeline(
     })
 
     return result
-
-
-# --- Helpers ---
-
-def _build_error_context(verification: dict) -> str:
-    """
-    Build a concise error context string from a failed verification result.
-
-    Includes Lean error messages and stdout (which may contain unsolved goals).
-    Bounded to avoid prompt bloat.
-    """
-    parts = []
-    errors = verification.get("errors", [])
-    if errors:
-        parts.append("Errors:\n" + "\n".join(errors[:5]))
-    stdout = verification.get("stdout", "")
-    if stdout.strip():
-        trimmed = stdout[:1500]
-        if len(stdout) > 1500:
-            trimmed += "\n... (truncated)"
-        parts.append("Build output:\n" + trimmed)
-    elif not errors:
-        stderr = verification.get("stderr", "")
-        if stderr.strip():
-            trimmed = stderr[:1000]
-            if len(stderr) > 1000:
-                trimmed += "\n... (truncated)"
-            parts.append("Build stderr:\n" + trimmed)
-    return "\n\n".join(parts) if parts else "Unknown error"
-
-
-def _is_no_goals_error(verification: dict) -> bool:
-    """Return True if any Lean error mentions 'No goals to be solved'."""
-    combined = (
-        "\n".join(verification.get("errors", []))
-        + verification.get("stdout", "")
-        + verification.get("stderr", "")
-    )
-    return "No goals to be solved" in combined or "no goals" in combined.lower()
-
-
-def _drop_redundant_tactic(lean_code: str, verification: dict) -> str:
-    """
-    Remove the tactic line Lean flagged as redundant, falling back to the last line.
-
-    Lean often reports "No goals to be solved" with an exact line number.
-    When present, remove that line so we do not accidentally delete a later,
-    still-necessary tactic in another proof branch.
-    """
-    lines = lean_code.splitlines()
-    for error in verification.get("errors", []):
-        if "No goals to be solved" not in error:
-            continue
-        match = re.search(r":(\d+):\d+:", error)
-        if match:
-            line_index = int(match.group(1)) - 1
-            if 0 <= line_index < len(lines) and lines[line_index].strip():
-                del lines[line_index]
-                return "\n".join(lines) + "\n"
-
-    for i in range(len(lines) - 1, -1, -1):
-        if lines[i].strip():
-            del lines[i]
-            return "\n".join(lines) + "\n"
-    return lean_code
 
 
 if __name__ == "__main__":
