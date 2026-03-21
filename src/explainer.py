@@ -70,6 +70,12 @@ points — write in prose.
 """
 
 FALLBACK_EXPLANATIONS = {
+    "classification_rejected": (
+        "**Claim not supported.** This claim requires mathematical definitions "
+        "that are not currently available in LeanEcon's verification scope. "
+        "Try rephrasing as a direct algebraic identity, or paste a Lean 4 "
+        "theorem directly."
+    ),
     "verified": (
         "**Verified.** Lean 4's type checker has confirmed that the proof is "
         "logically valid from axioms. This is a machine-checked proof — not "
@@ -141,6 +147,9 @@ def _format_messages(messages: list[str], limit: int = 6) -> str:
 def _infer_outcome_label(verification_result: dict) -> str:
     """Normalize the result dict into the fallback outcome taxonomy."""
     if verification_result.get("formalization_failed"):
+        reason = verification_result.get("failure_reason", "")
+        if reason and "definition" in reason.lower():
+            return "classification_rejected"
         return "formalization_failed"
     if verification_result.get("success"):
         return "verified"

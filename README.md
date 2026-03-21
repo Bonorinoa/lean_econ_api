@@ -81,6 +81,9 @@ uvicorn src.api:app --host 0.0.0.0 --port 8000
 
 Open `http://localhost:8000/docs` for the generated Swagger UI.
 
+For a workflow-oriented reference aimed at frontend agents, see
+[`docs/API.md`](docs/API.md).
+
 ### API workflow
 
 The first API cut is intentionally multi-step so frontend clients can preserve
@@ -179,6 +182,7 @@ Leanstral generates candidate proofs. Lean verifies them.
 ## Docs
 
 - [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): current MCP-first prover design and status
+- [`docs/API.md`](docs/API.md): endpoint contract and agent-oriented usage guide
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): Docker-based local deployment notes
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): current sprint and post-sprint priorities
 - [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md): chronological implementation log

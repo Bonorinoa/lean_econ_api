@@ -83,7 +83,11 @@ def parse_claim(raw_input: str) -> dict:
 # Step 2: Formalize (Phase 1)
 # ---------------------------------------------------------------------------
 
-def formalize_claim(raw_input: str, on_log: callable | None = None) -> dict:
+def formalize_claim(
+    raw_input: str,
+    on_log: callable | None = None,
+    preamble_names: list[str] | None = None,
+) -> dict:
     """
     Phase 1: parse + formalize only. Returns the theorem statement for user review.
 
@@ -91,7 +95,8 @@ def formalize_claim(raw_input: str, on_log: callable | None = None) -> dict:
 
     Returns:
         Output of formalizer.formalize() with keys:
-          success, theorem_code, attempts, errors, formalization_failed, failure_reason
+          success, theorem_code, attempts, errors, formalization_failed,
+          failure_reason, preamble_used, diagnosis, suggested_fix, fixable
     """
     # Auto-detect raw Lean — skip formalization
     if "import Mathlib" in raw_input or (":= by" in raw_input and "sorry" in raw_input):
@@ -103,6 +108,10 @@ def formalize_claim(raw_input: str, on_log: callable | None = None) -> dict:
             "errors": [],
             "formalization_failed": False,
             "failure_reason": None,
+            "preamble_used": [],
+            "diagnosis": None,
+            "suggested_fix": None,
+            "fixable": None,
         }
 
     _log(on_log, "parse", "Cleaning input...", status="running")
@@ -110,7 +119,7 @@ def formalize_claim(raw_input: str, on_log: callable | None = None) -> dict:
     _log(on_log, "parse", "Input cleaned", status="done")
 
     _log(on_log, "formalize", "Calling Leanstral to formalize claim...", status="running")
-    result = formalize(parsed["text"], on_log=on_log)
+    result = formalize(parsed["text"], on_log=on_log, preamble_names=preamble_names)
 
     if result["formalization_failed"]:
         _log(on_log, "formalize", f"Formalization failed: {result['failure_reason']}", status="error")

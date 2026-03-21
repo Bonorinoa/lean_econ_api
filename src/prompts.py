@@ -139,20 +139,32 @@ You will be given a mathematical claim from economics.
 Classify it into ONE of these categories:
 
 ALGEBRAIC — The claim reduces to an algebraic identity, equation, or inequality
-over real numbers after substituting functional forms. Examples: "RRA is constant
-under CRRA", "output elasticity equals α", "budget constraint is satisfied",
-"indirect utility gap is constant in income". These CAN be formalized in Lean 4.
+over real numbers that can be stated directly with standard Lean 4 + Mathlib types.
+No custom definitions needed. Examples: "-c·(-γ·c⁻¹) = γ", "budget equality holds",
+"sum of even numbers is even".
 
-REQUIRES_DEFINITIONS — The claim requires defining economic primitives (utility
-functions over consumption bundles, production sets, allocations, equilibrium
-concepts, market structures, game-theoretic solution concepts) that do not exist
-as standard Mathlib types. Examples: "the second welfare theorem holds",
-"Nash equilibrium exists in finite games", "Arrow's impossibility theorem",
-"the Modigliani-Miller theorem holds under complete markets". These CANNOT
-be formalized without first building a substantial domain-specific library.
+DEFINABLE — The claim references economic objects (production functions, utility
+functions, demand functions, risk measures) that are NOT in Mathlib but CAN be
+defined as simple noncomputable functions over ℝ, and the claim itself reduces to
+algebra after substituting the functional forms. Examples: "Cobb-Douglas output
+elasticity equals α" (define f(K,L) = A·K^α·L^(1-α), then the claim is algebraic),
+"CRRA utility has constant RRA" (define u(c), substitute into RRA formula),
+"CES production is homogeneous of degree one".
 
-OUTPUT FORMAT — respond with ONLY one line:
+REQUIRES_DEFINITIONS — The claim requires mathematical infrastructure that cannot
+be expressed as simple real-valued functions: equilibrium concepts (competitive
+equilibrium, Nash equilibrium), welfare theorems, fixed-point arguments,
+measure-theoretic constructs, stochastic processes, game-theoretic solution
+concepts, or results requiring topology (Brouwer, Kakutani). These need a
+domain-specific library that does not exist yet.
+
+For DEFINABLE claims, also state which economic objects need to be defined
+and what functional form they take.
+
+OUTPUT FORMAT — respond with ONLY:
   ALGEBRAIC
+or
+  DEFINABLE: [object1: definition], [object2: definition]
 or
   REQUIRES_DEFINITIONS: [1-2 sentence explanation of what's missing]
 
@@ -176,4 +188,59 @@ REMEMBER: avoid Real.rpow with variable exponents. Use c⁻¹ instead of c ^ (-1
 Prefer algebraic identities that field_simp + ring can handle.
 
 Output ONLY the corrected .lean file. No markdown fences. No explanation.
+"""
+
+
+def build_formalize_prompt(preamble_block: str | None = None) -> str:
+    """Build the formalize system prompt, optionally with preamble context.
+
+    When a preamble block is provided, appends instructions telling Leanstral
+    to include and use the definitions in the theorem.
+    """
+    if not preamble_block:
+        return FORMALIZE_SYSTEM_PROMPT
+
+    preamble_section = f"""
+
+AVAILABLE DEFINITIONS (preamble):
+The following Lean 4 definitions are provided and MUST be included in the
+output .lean file AFTER the `import Mathlib` / `open Real` header and BEFORE
+the theorem statement. You may reference these definitions in the theorem
+hypotheses and conclusion.
+
+```lean
+{preamble_block}```
+
+When using these definitions, you may reference them by name in the theorem
+statement. The definitions themselves use rpow/log/exp — this is acceptable
+because they are noncomputable defs that Lean will unfold during type-checking.
+Focus on stating the theorem correctly using these building blocks.
+"""
+    return FORMALIZE_SYSTEM_PROMPT + preamble_section
+
+
+DIAGNOSE_SYSTEM_PROMPT = """\
+You are an expert in Lean 4 and Mathlib. A formalization attempt has exhausted
+all repair cycles and still fails to compile.
+
+You will be given:
+1. The original economic claim
+2. The last Lean 4 code that was attempted
+3. The error messages from lake build
+
+Analyze the failure and respond with ONLY a JSON object (no markdown, no
+explanation outside the JSON):
+
+{
+  "diagnosis": "1-3 sentence explanation of what went wrong",
+  "suggested_fix": "Concrete suggestion for reformulating the claim or fixing the Lean code, or null if genuinely out of scope",
+  "fixable": true or false
+}
+
+Common failure patterns:
+- Type mismatch: theorem signature has wrong types (ℕ vs ℝ, missing coercions)
+- Unknown identifier: using a Mathlib name that doesn't exist or was renamed
+- Missing hypothesis: variable in denominator without positivity/nonzero hypothesis
+- rpow difficulty: variable exponents that should have been simplified away
+- Syntax error: malformed Lean 4 syntax
 """

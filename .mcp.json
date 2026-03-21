@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "lean-lsp": {
+      "command": "uvx",
+      "args": ["lean-lsp-mcp", "--transport", "stdio"],
+      "cwd": "lean_workspace"
+    }
+  }
+}
