@@ -55,6 +55,9 @@ def _make_verify_result() -> dict:
         "proof_generated": True,
         "phase": "verified",
         "elapsed_seconds": 0.1,
+        "from_cache": False,
+        "partial": False,
+        "stop_reason": None,
         "error_code": "none",
     }
 
@@ -71,6 +74,8 @@ def _test_app_imports_and_routes() -> None:
     assert "/api/v1/verify" in route_paths
     assert "/api/v1/jobs/{job_id}" in route_paths
     assert "/api/v1/explain" in route_paths
+    assert "/api/v1/cache/stats" in route_paths
+    assert "/api/v1/cache" in route_paths
     # meta
     assert "/health" in route_paths
 
@@ -281,6 +286,20 @@ def _test_verify_rejects_batch_mode() -> None:
         json={"theorem_code": RAW_LEAN_THEOREM, "prover_mode": "batch"},
     )
     assert response.status_code == 422
+
+
+def _test_cache_stats_endpoint() -> None:
+    client = TestClient(api.app)
+    response = client.get("/api/v1/cache/stats")
+    assert response.status_code == 200
+    assert "size" in response.json()
+
+
+def _test_cache_clear_endpoint() -> None:
+    client = TestClient(api.app)
+    response = client.delete("/api/v1/cache")
+    assert response.status_code == 200
+    assert response.json()["status"] == "cleared"
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +533,12 @@ def main() -> int:
         "job_not_found": _run_case("job_not_found", _test_job_not_found),
         "verify_rejects_batch_mode": _run_case(
             "verify_rejects_batch_mode", _test_verify_rejects_batch_mode
+        ),
+        "cache_stats_endpoint": _run_case(
+            "cache_stats_endpoint", _test_cache_stats_endpoint
+        ),
+        "cache_clear_endpoint": _run_case(
+            "cache_clear_endpoint", _test_cache_clear_endpoint
         ),
         # explain
         "explain_verified": _run_case("explain_verified", _test_explain_verified),

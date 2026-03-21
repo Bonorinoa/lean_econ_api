@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 outputs/
 logs/
+data/
 lean_workspace/.lake/
 lean_workspace/LeanEcon/AgenticProof.lean
 .claude/

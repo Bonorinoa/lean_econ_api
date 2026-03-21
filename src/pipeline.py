@@ -24,6 +24,7 @@ from eval_logger import log_run
 from formalizer import formalize
 from lean_verifier import verify
 from leanstral_client import prove_theorem, prove_theorem_with_feedback
+from result_cache import result_cache
 
 PASS_AT_N = 5  # Number of independent proof attempts before giving up
 
@@ -41,6 +42,8 @@ class ProveResult(TypedDict):
     proof_generated: bool
     attempts_used: int
     prover_mode: str
+    partial: bool
+    stop_reason: str | None
 
 
 def _log(on_log, stage: str, message: str, data: str | None = None, status: str = "done"):
@@ -248,6 +251,8 @@ def prove_and_verify(
         "proof_generated": True,
         "attempts_used": attempts_used,
         "prover_mode": "batch",
+        "partial": False,
+        "stop_reason": None,
     }
 
 
@@ -275,6 +280,8 @@ def _prove_and_verify_agentic(
         "proof_generated": True,
         "attempts_used": result.get("steps_used", 0),
         "prover_mode": "agentic",
+        "partial": result.get("partial", False),
+        "stop_reason": result.get("stop_reason"),
     }
 
 
@@ -300,6 +307,16 @@ def run_pipeline(
       failure_reason, output_lean, phase
     """
     start = time.time()
+    cache_key_input = preformalized_theorem or raw_input
+
+    cached = result_cache.get(cache_key_input)
+    if cached is not None:
+        _log(on_log, "cache", "Cache hit — returning verified result", status="done")
+        cached["elapsed_seconds"] = 0.0
+        cached["from_cache"] = True
+        cached.setdefault("partial", False)
+        cached.setdefault("stop_reason", None)
+        return cached
 
     # --- Phase 1: Formalize ---
     if preformalized_theorem is not None:
@@ -330,6 +347,9 @@ def run_pipeline(
             "proof_generated": False,
             "phase": "failed",
             "elapsed_seconds": time.time() - start,
+            "from_cache": False,
+            "partial": False,
+            "stop_reason": None,
         }
 
     theorem_with_sorry = f_result["theorem_code"]
@@ -359,7 +379,13 @@ def run_pipeline(
         "proof_generated": pv_result["proof_generated"],
         "phase": phase,
         "elapsed_seconds": time.time() - start,
+        "from_cache": False,
+        "partial": pv_result["partial"],
+        "stop_reason": pv_result["stop_reason"],
     }
+
+    if result["success"]:
+        result_cache.put(cache_key_input, result)
 
     log_run({
         "input_text": raw_input[:500] if preformalized_theorem is None else "",
@@ -385,6 +411,9 @@ def run_pipeline(
             "warnings": pv_result["warnings"],
         },
         "elapsed_seconds": result["elapsed_seconds"],
+        "from_cache": result["from_cache"],
+        "partial": result["partial"],
+        "stop_reason": result["stop_reason"],
     })
 
     return result

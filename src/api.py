@@ -32,6 +32,7 @@ from explainer import explain_result
 from formalizer import classify_claim
 from job_store import JobStatus, job_store
 from pipeline import formalize_claim, parse_claim, run_pipeline
+from result_cache import result_cache
 
 SAMPLE_NATURAL_LANGUAGE_CLAIM = (
     "Under CRRA utility u(c) = c^(1-gamma)/(1-gamma), "
@@ -331,6 +332,9 @@ class VerifyResponse(BaseModel):
                 "proof_generated": True,
                 "phase": "verified",
                 "elapsed_seconds": 1.23,
+                "from_cache": False,
+                "partial": False,
+                "stop_reason": None,
                 "prover_mode": "agentic",
                 "error_code": "none",
                 "explanation": None,
@@ -380,6 +384,18 @@ class VerifyResponse(BaseModel):
     )
     elapsed_seconds: float = Field(
         description="Total wall-clock time reported by the pipeline."
+    )
+    from_cache: bool = Field(
+        default=False,
+        description="True if the response was served from the verified-result cache.",
+    )
+    partial: bool = Field(
+        default=False,
+        description="True if the prover timed out and this response contains partial results.",
+    )
+    stop_reason: str | None = Field(
+        default=None,
+        description="Why the proving loop stopped, when reported by the prover.",
     )
     prover_mode: Literal["agentic"] = Field(
         description="Proof backend used for the request."
@@ -471,6 +487,8 @@ def _verify_error_code(result: dict) -> LeanEconErrorCode:
     """Choose the right error code for a completed pipeline result."""
     if result.get("success"):
         return LeanEconErrorCode.NONE
+    if result.get("stop_reason") == "timeout":
+        return LeanEconErrorCode.PROOF_TIMEOUT
     lean_code = result.get("lean_code", "")
     if lean_code and "sorry" in lean_code:
         return LeanEconErrorCode.VERIFICATION_SORRY
@@ -737,6 +755,27 @@ def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Explanation failed: {exc}") from exc
+
+
+@router.get(
+    "/cache/stats",
+    summary="Inspect cache state",
+    description="Return the number of verified results currently stored in the cache.",
+)
+def cache_stats() -> dict[str, int]:
+    """Return basic cache statistics."""
+    return {"size": result_cache.size}
+
+
+@router.delete(
+    "/cache",
+    summary="Clear the verified-result cache",
+    description="Delete all cached verified results.",
+)
+def clear_cache() -> dict[str, str]:
+    """Clear the verified-result cache."""
+    result_cache.clear()
+    return {"status": "cleared"}
 
 
 # ---------------------------------------------------------------------------

@@ -17,9 +17,9 @@ from leanstral_client import call_leanstral
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 MODEL = "labs-leanstral-2603"
-EXPLAIN_TEMPERATURE = 0.0
+EXPLAIN_TEMPERATURE = 0.3
 EXPLAIN_MAX_TOKENS = 1024
-EXPLAIN_TIMEOUT_SECONDS = 4.5
+EXPLAIN_TIMEOUT_SECONDS = 7
 
 EXPLAIN_SYSTEM_PROMPT = """\
 You are an expert at explaining formal mathematics to economists who have

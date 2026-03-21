@@ -117,6 +117,33 @@ def _test_get_preamble_entries_unknown() -> None:
     assert entries == []
 
 
+def _test_preamble_keyword_coverage() -> None:
+    """Verify keyword matching for all major textbook concepts."""
+    test_cases = [
+        ("Cobb-Douglas output elasticity", "cobb_douglas_2factor"),
+        ("contraction mapping theorem", "contraction_mapping"),
+        ("Blackwell sufficient conditions", "blackwell_sufficient"),
+        ("Slutsky equation decomposition", "slutsky_equation"),
+        ("Solow model steady state", "solow_steady_state"),
+        ("Euler equation for consumption", "euler_equation"),
+        ("Pareto efficient allocation", "pareto_efficiency"),
+        ("present value of cash flows", "discount_factor"),
+        ("extreme value theorem", "extreme_value_theorem"),
+        ("CRRA utility function", "crra_utility"),
+        ("indirect utility function", "indirect_utility"),
+        ("expected payoff mixed strategy", "expected_payoff"),
+    ]
+    for claim, expected_name in test_cases:
+        matches = find_matching_preambles(claim)
+        names = [m.name for m in matches]
+        assert expected_name in names, f"{claim!r} should match {expected_name!r}, got {names}"
+
+
+def _test_preamble_library_expanded() -> None:
+    """Verify the library has the expected number of entries after expansion."""
+    assert len(PREAMBLE_LIBRARY) >= 25, f"Expected >=25 entries, got {len(PREAMBLE_LIBRARY)}"
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: _inject_preamble
 # ---------------------------------------------------------------------------
@@ -252,6 +279,12 @@ def main() -> int:
         "get_preamble_entries_unknown": _run_case(
             "get_preamble_entries_unknown", _test_get_preamble_entries_unknown
         ),
+        "preamble_keyword_coverage": _run_case(
+            "preamble_keyword_coverage", _test_preamble_keyword_coverage
+        ),
+        "preamble_library_expanded": _run_case(
+            "preamble_library_expanded", _test_preamble_library_expanded
+        ),
         # inject preamble
         "inject_preamble_placement": _run_case(
             "inject_preamble_placement", _test_inject_preamble_placement
@@ -282,21 +315,24 @@ def main() -> int:
     import os
     if os.environ.get("MISTRAL_API_KEY"):
         print("\n--- Live smoke tests (requires MISTRAL_API_KEY + lake build) ---")
-        results["crra_rra"] = _run_live_case(
-            "CRRA RRA",
-            (
-                "Under CRRA utility u(c) = c^{1-γ}/(1-γ), the coefficient of "
-                "relative risk aversion is constant and equal to γ."
-            ),
-            expect_success=True,
-            expect_failed=False,
-        )
-        results["requires_definitions"] = _run_live_case(
-            "Second welfare theorem",
-            "The second welfare theorem holds under convex preferences.",
-            expect_success=False,
-            expect_failed=True,
-        )
+        try:
+            results["crra_rra"] = _run_live_case(
+                "CRRA RRA",
+                (
+                    "Under CRRA utility u(c) = c^{1-γ}/(1-γ), the coefficient of "
+                    "relative risk aversion is constant and equal to γ."
+                ),
+                expect_success=True,
+                expect_failed=False,
+            )
+            results["requires_definitions"] = _run_live_case(
+                "Second welfare theorem",
+                "The second welfare theorem holds under convex preferences.",
+                expect_success=False,
+                expect_failed=True,
+            )
+        except Exception as exc:
+            print(f"\n--- Skipping live smoke tests (Leanstral unavailable: {exc}) ---")
     else:
         print("\n--- Skipping live smoke tests (no MISTRAL_API_KEY) ---")
 

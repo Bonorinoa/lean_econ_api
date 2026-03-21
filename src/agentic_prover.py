@@ -46,6 +46,7 @@ DEFAULT_MAX_STEPS = 12  # not enforced directly — run_async manages its own lo
 STOP_PROOF_COMPLETE = "proof_complete"
 STOP_PROOF_INCOMPLETE = "proof_incomplete"
 STOP_RUN_ERROR = "run_error"
+STOP_TIMEOUT = "timeout"
 
 # ---------------------------------------------------------------------------
 # Logging helper
@@ -235,6 +236,9 @@ async def _prove_theorem_agentic_async(
         model_text = ""
         tool_trace_entries = []
 
+        steps_used = 0
+        run_ctx = None
+
         try:
             async with open_mistral_run_context(model=MODEL) as run_ctx:
                 run_ctx.register_func(apply_tactic_fn)
@@ -275,6 +279,59 @@ async def _prove_theorem_agentic_async(
                 except (ValueError, AttributeError):
                     model_text = ""
 
+        except asyncio.TimeoutError as exc:
+            steps_used = getattr(run_ctx, "request_count", steps_used)
+            current_tactics = controller.current_tactic_block
+            current_code = controller.current_lean_code
+            partial_verification = None
+
+            if current_tactics != "sorry":
+                try:
+                    partial_verification = verify(current_code)
+                except Exception:
+                    partial_verification = None
+
+            elapsed = time.time() - start_time
+            summary_parts = [
+                "Leanstral agentic prover timed out before finishing the proving loop.",
+            ]
+            if partial_verification and partial_verification["success"]:
+                summary_parts.append("The partial proof nonetheless verified by lake build.")
+            elif current_tactics != "sorry":
+                summary_parts.append("Returning the latest tactic block and verification output.")
+            else:
+                summary_parts.append("No proof progress beyond the initial sorry placeholder was captured.")
+
+            error_message = f"run_async timed out after {TIMEOUT_MS}ms"
+            warnings = list(partial_verification.get("warnings", [])) if partial_verification else []
+            warnings.append(error_message)
+
+            return {
+                "success": bool(partial_verification and partial_verification["success"]),
+                "strategy": model_text,
+                "proof_tactics": current_tactics,
+                "full_lean_code": current_code,
+                "errors": (
+                    partial_verification.get("errors", [])
+                    if partial_verification
+                    else [error_message]
+                ),
+                "warnings": warnings,
+                "prover_mode": PROVER_MODE,
+                "tool_trace": tool_trace_entries,
+                "tactic_calls": tactic_call_log,
+                "steps_used": steps_used,
+                "mcp_enabled": True,
+                "agent_summary": " ".join(summary_parts),
+                "stop_reason": STOP_TIMEOUT,
+                "output_lean": (
+                    partial_verification.get("output_lean")
+                    if partial_verification
+                    else None
+                ),
+                "elapsed_seconds": elapsed,
+                "partial": True,
+            }
         except Exception as exc:
             _log(on_log, "agentic_run", f"run_async error: {exc}", status="error")
             stop_reason = STOP_RUN_ERROR
@@ -295,6 +352,7 @@ async def _prove_theorem_agentic_async(
                 "stop_reason": stop_reason,
                 "output_lean": None,
                 "elapsed_seconds": elapsed,
+                "partial": False,
             }
 
         _log(on_log, "agentic_run",
@@ -354,6 +412,7 @@ async def _prove_theorem_agentic_async(
             "stop_reason": stop_reason,
             "output_lean": verification.get("output_lean"),
             "elapsed_seconds": elapsed,
+            "partial": False,
         }
     finally:
         controller.cleanup()
