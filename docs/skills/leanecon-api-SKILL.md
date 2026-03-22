@@ -339,8 +339,20 @@ The offline evaluation script runs claims from a JSONL input file through the fu
 ```bash
 ./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
   tests/fixtures/claims/uncharted_claims.jsonl \
-  --pass-k 5
+  --pass-k 1 \
+  --limit 2
 ```
+
+Treat this as a frontier-diagnostics harness, not the default CI benchmark. A
+partial rerun on March 22, 2026 across 7 frontier attempts on 2 hard claims
+produced a `0.978` tool-call waste ratio, repeated Lean LSP startup timeouts,
+and one Mistral `3051` input-too-large failure. For everyday iteration:
+
+1. Use `--pass-k 1` unless you are explicitly studying stochastic retry behavior.
+2. Use `--limit 1` or `--limit 2` while tuning prompts or prover settings.
+3. Run `scripts/analyze_traces.py` immediately afterward to inspect waste ratio,
+   blocked calls, and dominant failure modes.
+4. Do not treat a single long `uncharted` run as the sole health signal for the API.
 
 **Input format** (`uncharted_claims.jsonl`):
 ```json
@@ -355,6 +367,8 @@ The offline evaluation script runs claims from a JSONL input file through the fu
 - `semantic_score` — LLM-graded fidelity of formalization to original claim (1-5)
 - `semantic_verdict` — qualitative assessment
 - `tool_call_efficiency` — successful tool calls / total tool calls
+- `tool_call_waste_ratio` — complement of efficiency, useful for spotting expensive loops
+- `blocked_tool_calls` — calls cut off by search budgets, duplicate-read checks, or loop guards
 - `tactic_depth` — proof complexity measure
 - `trivialization_flags` — detected semantic simplifications
 
@@ -398,15 +412,27 @@ Claims the classifier should route to `REQUIRES_DEFINITIONS`.
 
 ### Known failure patterns from evaluation
 
-Based on the uncharted eval (March 2026), the formalization layer is the primary bottleneck:
+The failure picture is now split across layers. Earlier March 2026 runs exposed
+formalization problems first; the March 22, 2026 partial frontier rerun showed
+that on hard preformalized claims the prover loop and MCP reliability can become
+the dominant bottlenecks. Do not assume "formalization is always the problem."
 
-1. **Hallucinated Mathlib paths.** The formalizer generates `import Topology` or uses `StrictConcave` / `hessian` without knowing the correct Mathlib module paths. Fix: expand the formalizer system prompt with correct import paths for common economic concepts, or use lean-lsp-mcp search tools during formalization.
+1. **Hallucinated Mathlib paths and theorem names.** The formalizer or prover guesses identifiers such as `StrictConcaveOn.neg_deriv2` or `StrictConcaveOn.contDiff_iff_deriv2_nonpos` that do not exist. Fix: verify identifiers with search before committing to them, and add search-assisted import/name discovery during formalization.
 
-2. **Type class synthesis failures.** Claims about normed spaces or metric spaces fail with `failed to synthesize instance`. The formalizer doesn't set up the right type class context. Example: `NontriviallyNormedField (ℝ × X)` is wrong — the product needs component-wise structure.
+2. **MCP startup and workspace reliability on frontier claims.** The March 22, 2026 rerun surfaced repeated Lean LSP startup timeouts and occasional file/workspace path failures. Distinguish these from mathematical proving failures in dashboards and reports.
 
-3. **Agentic prover instability on hard claims.** Some long-running claims still generate large `tool_trace` / `tactic_calls` histories before timing out or exhausting retries. Product surfaces should show partial traces gracefully and avoid assuming every failure is user error.
+3. **Type class and calculus API mismatches.** Claims about derivatives, Hessians, normed spaces, or product spaces still trigger `failed to synthesize instance`, `Unknown constant`, or function-shape mismatches. The model often reaches for one-dimensional `deriv` lemmas on higher-dimensional `fderiv` goals.
 
-4. **Solow-Swan as the bright spot.** The one claim that formalized (Solow-Swan steady state) achieved a semantic score of 4/5 — the formalization captured Inada conditions, concavity, and the steady-state equation. The improved formalizer prompt is working for claims it can handle.
+4. **Context blow-up on long hard attempts.** One March 22, 2026 frontier attempt failed with Mistral error `3051` (`Input too large: couldn't fit with truncation`). Large `tool_trace` and retry histories must be capped aggressively.
+
+5. **Guardrails help, but do not solve frontier math.** Duplicate read-only query blocking, search budgets, and total tool budgets now stop some high-waste loops early. That saves cost, but it also means frontier eval failures often end as honest "stopped before burning more budget" results rather than full theorem attempts.
+
+6. **Use staged evals for honest routine measurement.** For regular progress tracking, prefer:
+   - formalization-only evals
+   - prover-only evals on preformalized theorem stubs
+   - MCP smoke tests
+   - small end-to-end `pass@1` regressions
+   Keep `uncharted` pass@k runs for explicit capability probes.
 
 ## UX best practices
 

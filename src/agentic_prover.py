@@ -52,11 +52,80 @@ STOP_TIMEOUT = "timeout"
 RETRYABLE_STATUS_CODES = {429, 503}
 BACKOFF_DELAYS_SECONDS = (2, 4, 8, 16)
 MAX_CONSECUTIVE_APPLY_WITHOUT_DIAGNOSTICS = 5
+DEFAULT_MAX_TOTAL_TOOL_CALLS = 36
+DEFAULT_MAX_SEARCH_TOOL_CALLS = 4
+DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS = 6
+LOCAL_FAST_PATH_MAX_CHARS = 1_400
+LOCAL_FAST_PATH_MAX_LINES = 18
 TRACE_SCHEMA_VERSION = 2
 CIRCUIT_BREAKER_WARNING = (
     "CIRCUIT BREAKER TRIGGERED: You must use lean_diagnostic_messages to check your work "
     "before applying more tactics."
 )
+SEARCH_PRECONDITION_WARNING = (
+    "SEARCH PRECONDITION NOT MET: First try a plausible tactic and inspect "
+    "lean_diagnostic_messages before using search tools."
+)
+SEARCH_BUDGET_WARNING = (
+    "SEARCH BUDGET EXHAUSTED: Stop using search/suggestion tools and either "
+    "apply a tactic or inspect diagnostics."
+)
+DUPLICATE_READ_ONLY_WARNING = (
+    "DUPLICATE READ-ONLY CALL BLOCKED: The proof state has not changed since "
+    "the last identical query. Apply a tactic or choose a different tool."
+)
+AGENTIC_SEARCH_TOOLS = frozenset(
+    {
+        "lean_multi_attempt",
+        "lean_code_actions",
+        "lean_state_search",
+        "lean_hammer_premise",
+    }
+)
+AGENTIC_ALLOWED_TOOLS = frozenset(
+    {
+        "apply_tactic",
+        "lean_goal",
+        "lean_diagnostic_messages",
+        *AGENTIC_SEARCH_TOOLS,
+    }
+)
+LOCAL_FAST_PATH_BLOCKLIST = (
+    "Real.rpow",
+    "HasDerivAt",
+    "HasFDerivAt",
+    "Integrable",
+    "Measure",
+    "Filter",
+    "Matrix",
+    "LinearMap",
+    "Submodule",
+    "∫",
+    "∑",
+    "∏",
+)
+LOCAL_FAST_PATH_CORE_TACTICS = (
+    "aesop",
+    "simp",
+    "simpa",
+    "constructor <;> aesop",
+)
+LOCAL_FAST_PATH_DISCRETE_TACTICS = (
+    "omega",
+    "norm_num",
+)
+LOCAL_FAST_PATH_ALGEBRA_TACTICS = (
+    "linarith",
+    "nlinarith",
+    "ring_nf",
+    "ring",
+)
+LOCAL_FAST_PATH_FIELD_TACTICS = ("field_simp\nring",)
+
+
+class ToolBudgetExceededError(RuntimeError):
+    """Raised when the prover burns through its tool-call budget."""
+
 
 # ---------------------------------------------------------------------------
 # Logging helper
@@ -75,10 +144,21 @@ def _log(on_log, stage: str, message: str, data: str | None = None, status: str 
 class AgenticToolTracker:
     """Track tool usage patterns to prevent runaway local-tool loops."""
 
+    max_total_tool_calls: int = DEFAULT_MAX_TOTAL_TOOL_CALLS
+    max_search_tool_calls: int = DEFAULT_MAX_SEARCH_TOOL_CALLS
+    max_consecutive_read_only_calls: int = DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS
     consecutive_apply_without_diagnostics: int = 0
+    consecutive_read_only_calls: int = 0
+    total_tool_calls: int = 0
     total_apply_calls: int = 0
     total_diagnostic_calls: int = 0
+    total_search_calls: int = 0
     circuit_breaker_hits: int = 0
+    blocked_tool_calls: int = 0
+    search_budget_hits: int = 0
+    duplicate_read_only_hits: int = 0
+    tool_budget_stop_hits: int = 0
+    last_read_only_signature: tuple[str, str] | None = None
 
     def should_block_apply(self) -> bool:
         return (
@@ -86,15 +166,86 @@ class AgenticToolTracker:
         )
 
     def note_apply_tactic_executed(self) -> None:
+        self.total_tool_calls += 1
         self.total_apply_calls += 1
         self.consecutive_apply_without_diagnostics += 1
+        self.consecutive_read_only_calls = 0
+        self.last_read_only_signature = None
 
-    def note_diagnostic_check(self) -> None:
+    def note_diagnostic_check(self, arguments: Any) -> None:
+        self.total_tool_calls += 1
         self.total_diagnostic_calls += 1
         self.consecutive_apply_without_diagnostics = 0
+        self.consecutive_read_only_calls += 1
+        self.last_read_only_signature = _tool_signature("lean_diagnostic_messages", arguments)
+
+    def note_read_only_tool(self, tool_name: str, arguments: Any) -> None:
+        self.total_tool_calls += 1
+        self.consecutive_read_only_calls += 1
+        if tool_name in AGENTIC_SEARCH_TOOLS:
+            self.total_search_calls += 1
+        self.last_read_only_signature = _tool_signature(tool_name, arguments)
+
+    def note_blocked_tool(
+        self,
+        tool_name: str,
+        *,
+        search_budget: bool = False,
+        duplicate_read_only: bool = False,
+    ) -> None:
+        self.total_tool_calls += 1
+        self.blocked_tool_calls += 1
+        if search_budget:
+            self.search_budget_hits += 1
+        if duplicate_read_only:
+            self.duplicate_read_only_hits += 1
 
     def note_circuit_breaker(self) -> None:
         self.circuit_breaker_hits += 1
+
+    def has_exhausted_total_budget(self) -> bool:
+        return self.total_tool_calls >= self.max_total_tool_calls
+
+    def has_exhausted_search_budget(self) -> bool:
+        return self.total_search_calls >= self.max_search_tool_calls
+
+    def has_read_only_loop(self) -> bool:
+        return self.consecutive_read_only_calls >= self.max_consecutive_read_only_calls
+
+    def is_duplicate_read_only_call(self, tool_name: str, arguments: Any) -> bool:
+        if tool_name == "apply_tactic":
+            return False
+        return self.last_read_only_signature == _tool_signature(tool_name, arguments)
+
+    def note_budget_stop(self) -> None:
+        self.tool_budget_stop_hits += 1
+
+
+def _budget_limits(max_steps: int) -> tuple[int, int, int]:
+    """Scale tool budgets from the advisory step budget."""
+    safe_steps = max(1, max_steps)
+    max_total_tool_calls = max(DEFAULT_MAX_TOTAL_TOOL_CALLS, safe_steps * 3)
+    max_search_tool_calls = max(DEFAULT_MAX_SEARCH_TOOL_CALLS, safe_steps // 3)
+    max_consecutive_read_only_calls = max(
+        DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS,
+        safe_steps // 2,
+    )
+    return (
+        max_total_tool_calls,
+        max_search_tool_calls,
+        max_consecutive_read_only_calls,
+    )
+
+
+def _prune_agentic_tools(run_ctx) -> list[str]:
+    """Restrict the prover to the smallest MCP surface that still helps proofs."""
+    before = set(run_ctx._callable_tools)
+    run_ctx._callable_tools = {
+        name: tool
+        for name, tool in run_ctx._callable_tools.items()
+        if name in AGENTIC_ALLOWED_TOOLS
+    }
+    return sorted(before - set(run_ctx._callable_tools))
 
 
 @dataclass
@@ -255,6 +406,159 @@ def _normalize_tool_arguments(arguments: Any) -> dict[str, Any] | list[Any] | st
             return parsed
         return arguments
     return str(arguments)
+
+
+def _tool_signature(tool_name: str, arguments: Any) -> tuple[str, str]:
+    """Normalize a read-only tool call so duplicate queries can be blocked."""
+    normalized = _normalize_tool_arguments(arguments)
+    if isinstance(normalized, dict):
+        rendered_arguments = json.dumps(normalized, sort_keys=True, ensure_ascii=True)
+    elif isinstance(normalized, list):
+        rendered_arguments = json.dumps(normalized, ensure_ascii=True)
+    else:
+        rendered_arguments = str(normalized)
+    return tool_name, rendered_arguments
+
+
+def _has_failed_tactic_attempt(tactic_call_log: list[dict[str, Any]]) -> bool:
+    """Allow search tools only after at least one verified failed tactic attempt."""
+    return any(entry.get("successful") is False for entry in tactic_call_log)
+
+
+def _should_try_local_fast_path(theorem_with_sorry: str) -> bool:
+    """Only spend local verification cycles on compact, non-advanced statements."""
+    stripped = theorem_with_sorry.strip()
+    if stripped.count("sorry") != 1:
+        return False
+    if len(stripped) > LOCAL_FAST_PATH_MAX_CHARS:
+        return False
+    if len(stripped.splitlines()) > LOCAL_FAST_PATH_MAX_LINES:
+        return False
+    return not any(marker in stripped for marker in LOCAL_FAST_PATH_BLOCKLIST)
+
+
+def _local_fast_path_tactics(theorem_with_sorry: str) -> list[str]:
+    """Choose a short deterministic tactic list from theorem surface features."""
+    tactics: list[str] = list(LOCAL_FAST_PATH_CORE_TACTICS)
+    if any(token in theorem_with_sorry for token in ("ℕ", "Nat", "ℤ", "Int", "Even", "Odd")):
+        tactics.extend(LOCAL_FAST_PATH_DISCRETE_TACTICS)
+    if any(
+        token in theorem_with_sorry
+        for token in ("ℝ", "Real", "ℚ", "Rat", "≤", "<", "≥", ">", "+", "-", "*", "=")
+    ):
+        tactics.extend(LOCAL_FAST_PATH_ALGEBRA_TACTICS)
+    if "/" in theorem_with_sorry or "⁻¹" in theorem_with_sorry:
+        tactics.extend(LOCAL_FAST_PATH_FIELD_TACTICS)
+    return list(dict.fromkeys(tactics))
+
+
+def _fast_path_attempt_record(
+    *,
+    attempt_index: int,
+    tactic: str,
+    verification: dict[str, Any],
+) -> dict[str, Any]:
+    """Record a local fast-path tactic attempt using the standard tactic-call shape."""
+    return {
+        "attempt_index": attempt_index,
+        "tactic": tactic,
+        "tactic_preview": _preview_tactic(tactic),
+        "triggering_errors": [],
+        "post_diagnostic_errors": list(verification.get("errors", [])),
+        "post_diagnostic_warnings": list(verification.get("warnings", [])),
+        "successful": verification.get("success", False),
+        "resolution": (
+            "local_fast_path_success"
+            if verification.get("success", False)
+            else "local_fast_path_failed"
+        ),
+        "local_fast_path": True,
+    }
+
+
+def _try_local_tactic_fast_path(
+    theorem_with_sorry: str,
+    controller: ProofFileController,
+    *,
+    on_log,
+    start_time: float,
+) -> dict[str, Any] | None:
+    """Try a tiny deterministic tactic sweep before paying for Leanstral+MCP."""
+    if not _should_try_local_fast_path(theorem_with_sorry):
+        return None
+
+    candidate_tactics = _local_fast_path_tactics(theorem_with_sorry)
+    _log(
+        on_log,
+        "agentic_fast_path",
+        f"Trying {len(candidate_tactics)} local tactic candidates before Leanstral...",
+        status="running",
+    )
+
+    tactic_call_log: list[dict[str, Any]] = []
+    for attempt_index, tactic in enumerate(candidate_tactics, start=1):
+        controller.replace_tactic_block(tactic)
+        try:
+            verification = verify(controller.current_lean_code, check_axioms=False)
+        except Exception as exc:  # pragma: no cover - defensive fallback around local Lean
+            verification = {
+                "success": False,
+                "errors": [str(exc)],
+                "warnings": [],
+                "output_lean": None,
+                "axiom_info": None,
+            }
+
+        if verification.get("success"):
+            verification = verify(controller.current_lean_code)
+
+        tactic_call_log.append(
+            _fast_path_attempt_record(
+                attempt_index=attempt_index,
+                tactic=tactic,
+                verification=verification,
+            )
+        )
+
+        if verification.get("success"):
+            elapsed = time.time() - start_time
+            _log(
+                on_log,
+                "agentic_fast_path",
+                f"Local fast path solved the theorem with `{_preview_tactic(tactic)}`",
+                status="done",
+            )
+            return {
+                "success": True,
+                "strategy": "Local deterministic tactic fast path",
+                "proof_tactics": controller.current_tactic_block,
+                "full_lean_code": controller.current_lean_code,
+                "errors": verification.get("errors", []),
+                "warnings": verification.get("warnings", []),
+                "tool_trace": [],
+                "tactic_calls": tactic_call_log,
+                "trace_schema_version": TRACE_SCHEMA_VERSION,
+                "steps_used": 0,
+                "mcp_enabled": False,
+                "agent_summary": (
+                    "Local fast path solved the theorem without any remote "
+                    "tool calls or Leanstral API round-trips."
+                ),
+                "stop_reason": STOP_PROOF_COMPLETE,
+                "output_lean": verification.get("output_lean"),
+                "axiom_info": verification.get("axiom_info"),
+                "elapsed_seconds": elapsed,
+                "partial": False,
+            }
+
+    controller.restore_last_good_checkpoint()
+    _log(
+        on_log,
+        "agentic_fast_path",
+        "Local fast path exhausted its tactic shortlist; escalating to Leanstral.",
+        status="done",
+    )
+    return None
 
 
 def _extract_json_like_payload(value: Any) -> dict[str, Any] | None:
@@ -520,6 +824,25 @@ tools and a custom apply_tactic tool for writing proofs.
 You are given a Lean 4 theorem with `sorry` as a placeholder proof.
 Your task is to find a complete tactic proof that Lean accepts.
 
+## Budget
+
+- You have a hard budget of {max_total_tool_calls} total tool calls.
+- You may use search/suggestion tools at most {max_search_tool_calls} times.
+- More than {max_consecutive_read_only_calls} consecutive read-only tool calls ends the run.
+- Prefer the cheap loop: lean_goal → apply_tactic → lean_diagnostic_messages.
+
+## Available tools
+
+- apply_tactic
+- lean_goal
+- lean_diagnostic_messages
+- lean_multi_attempt
+- lean_code_actions
+- lean_state_search
+- lean_hammer_premise
+
+No generic build/import/search tools are available in this run.
+
 ## Workflow
 
 1. Use lean_goal to inspect the initial goal at line {goal_line} of {file_path}.
@@ -553,16 +876,12 @@ in the tactic (e.g., exact h, norm_num on arithmetic).
 
 ## Searching for Mathlib lemmas
 
-When you are stuck or need a specific lemma, use the search tools:
-- lean_leansearch: describe what you need in plain English
-  (e.g., "rpow addition rule for positive reals")
-- lean_loogle: search by type signature pattern
-  (e.g., "Real.rpow _ _ * Real.rpow _ _ = Real.rpow _ _")
+When you are stuck, prefer the goal-local search tools:
+- lean_state_search for lemmas that can close the current goal
+- lean_hammer_premise for premise suggestions
 
-Use search when:
-- field_simp leaves a residual goal you don't recognize
-- You need a specific rpow or log lemma name
-- The goal involves Mathlib types you're unsure about
+Use search only after at least one tactic attempt has failed.
+Do not spend the search budget before writing a plausible proof attempt.
 
 ## Discovering tactics with code actions
 
@@ -586,10 +905,24 @@ Use lean_code_actions when:
 """
 
 
-def _build_instructions(file_path: str, goal_line: int) -> str:
+def _build_instructions(
+    file_path: str,
+    goal_line: int,
+    *,
+    max_total_tool_calls: int,
+    max_search_tool_calls: int,
+    max_consecutive_read_only_calls: int,
+) -> str:
     """Inject runtime paths into the agent prompt without using format()."""
-    return AGENTIC_INSTRUCTIONS_TEMPLATE.replace("{file_path}", file_path).replace(
-        "{goal_line}", str(goal_line)
+    return (
+        AGENTIC_INSTRUCTIONS_TEMPLATE.replace("{file_path}", file_path)
+        .replace("{goal_line}", str(goal_line))
+        .replace("{max_total_tool_calls}", str(max_total_tool_calls))
+        .replace("{max_search_tool_calls}", str(max_search_tool_calls))
+        .replace(
+            "{max_consecutive_read_only_calls}",
+            str(max_consecutive_read_only_calls),
+        )
     )
 
 
@@ -670,8 +1003,22 @@ def _install_guarded_execute_function_calls(
             request_index = getattr(run_ctx, "request_count", 0) + 1
             arguments = getattr(function_call, "arguments", {})
 
+            if tracker.has_exhausted_total_budget():
+                tracker.note_budget_stop()
+                raise ToolBudgetExceededError(
+                    "Tool budget exhausted. Stop searching and return the best current proof state."
+                )
+
+            if tool_name != "apply_tactic" and tracker.has_read_only_loop():
+                tracker.note_budget_stop()
+                raise ToolBudgetExceededError(
+                    "Read-only tool loop detected. "
+                    "Stop querying tools and return the best current proof state."
+                )
+
             if run_tool is None:
                 unavailable_result = _unavailable_tool_message(tool_name)
+                tracker.note_blocked_tool(tool_name)
                 results.append(
                     FunctionResultEntry(
                         tool_call_id=function_call.tool_call_id,
@@ -689,8 +1036,71 @@ def _install_guarded_execute_function_calls(
                 )
                 continue
 
+            if tracker.is_duplicate_read_only_call(tool_name, arguments):
+                tracker.note_blocked_tool(tool_name, duplicate_read_only=True)
+                results.append(
+                    FunctionResultEntry(
+                        tool_call_id=function_call.tool_call_id,
+                        result=DUPLICATE_READ_ONLY_WARNING,
+                    )
+                )
+                trace_recorder.append_tool_call(
+                    request_index=request_index,
+                    tool_call_id=function_call.tool_call_id,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    arguments=arguments,
+                    result_text=DUPLICATE_READ_ONLY_WARNING,
+                    status="blocked",
+                    blocked=True,
+                )
+                continue
+
+            if tool_name in AGENTIC_SEARCH_TOOLS and not _has_failed_tactic_attempt(
+                tactic_call_log
+            ):
+                tracker.note_blocked_tool(tool_name)
+                results.append(
+                    FunctionResultEntry(
+                        tool_call_id=function_call.tool_call_id,
+                        result=SEARCH_PRECONDITION_WARNING,
+                    )
+                )
+                trace_recorder.append_tool_call(
+                    request_index=request_index,
+                    tool_call_id=function_call.tool_call_id,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    arguments=arguments,
+                    result_text=SEARCH_PRECONDITION_WARNING,
+                    status="blocked",
+                    blocked=True,
+                )
+                continue
+
+            if tool_name in AGENTIC_SEARCH_TOOLS and tracker.has_exhausted_search_budget():
+                tracker.note_blocked_tool(tool_name, search_budget=True)
+                results.append(
+                    FunctionResultEntry(
+                        tool_call_id=function_call.tool_call_id,
+                        result=SEARCH_BUDGET_WARNING,
+                    )
+                )
+                trace_recorder.append_tool_call(
+                    request_index=request_index,
+                    tool_call_id=function_call.tool_call_id,
+                    tool_name=tool_name,
+                    tool_kind=tool_kind,
+                    arguments=arguments,
+                    result_text=SEARCH_BUDGET_WARNING,
+                    status="blocked",
+                    blocked=True,
+                )
+                continue
+
             if tool_name == "apply_tactic" and tracker.should_block_apply():
                 tracker.note_circuit_breaker()
+                tracker.note_blocked_tool(tool_name)
                 blocked_result = CIRCUIT_BREAKER_WARNING
                 results.append(
                     FunctionResultEntry(
@@ -752,9 +1162,11 @@ def _install_guarded_execute_function_calls(
             )
 
             if tool_name == "lean_diagnostic_messages":
-                tracker.note_diagnostic_check()
+                tracker.note_diagnostic_check(arguments)
             elif tool_name == "apply_tactic":
                 tracker.note_apply_tactic_executed()
+            else:
+                tracker.note_read_only_tool(tool_name, arguments)
 
         if not results:
             for function_call in function_calls:
@@ -809,17 +1221,38 @@ async def _prove_theorem_agentic_async(
             status="done",
         )
 
+        fast_path_result = _try_local_tactic_fast_path(
+            theorem_with_sorry,
+            controller,
+            on_log=on_log,
+            start_time=start_time,
+        )
+        if fast_path_result is not None:
+            return fast_path_result
+
         # --- Step 2: Set up Mistral RunContext with tools ---
         _log(on_log, "agentic_setup", "Setting up Leanstral + MCP tools...", status="running")
 
         trace_recorder = TraceRecorder()
         apply_tactic_fn, tactic_call_log = _make_apply_tactic(controller, trace_recorder)
-        tool_tracker = AgenticToolTracker()
+        (
+            max_total_tool_calls,
+            max_search_tool_calls,
+            max_consecutive_read_only_calls,
+        ) = _budget_limits(max_steps)
+        tool_tracker = AgenticToolTracker(
+            max_total_tool_calls=max_total_tool_calls,
+            max_search_tool_calls=max_search_tool_calls,
+            max_consecutive_read_only_calls=max_consecutive_read_only_calls,
+        )
         client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
 
         instructions = _build_instructions(
             file_path=controller.mcp_file_path,
             goal_line=controller.goal_query_line,
+            max_total_tool_calls=max_total_tool_calls,
+            max_search_tool_calls=max_search_tool_calls,
+            max_consecutive_read_only_calls=max_consecutive_read_only_calls,
         )
 
         user_prompt = (
@@ -827,8 +1260,8 @@ async def _prove_theorem_agentic_async(
             f"```lean\n{theorem_with_sorry.strip()}\n```\n\n"
             f"The theorem is loaded in {controller.mcp_file_path}. "
             f"Use lean_goal at line {controller.goal_query_line} to see the initial goal, "
-            f"then call apply_tactic with a tactic to prove it, "
-            f"then use lean_diagnostic_messages to verify."
+            "then prefer the cheap loop of apply_tactic followed by "
+            "lean_diagnostic_messages. Use search/suggestion tools only as a fallback."
         )
 
         # --- Step 3: Run the agentic loop ---
@@ -844,6 +1277,7 @@ async def _prove_theorem_agentic_async(
             async with open_mistral_run_context(model=MODEL) as run_ctx:
                 run_ctx.agentic_tool_tracker = tool_tracker
                 run_ctx.register_func(apply_tactic_fn)
+                removed_tools = _prune_agentic_tools(run_ctx)
                 _install_guarded_execute_function_calls(
                     run_ctx,
                     tool_tracker,
@@ -854,7 +1288,11 @@ async def _prove_theorem_agentic_async(
                 _log(
                     on_log,
                     "agentic_setup",
-                    f"Tools registered: {len(run_ctx.get_tools())} total",
+                    (
+                        f"Tools registered: {len(run_ctx.get_tools())} total "
+                        f"(pruned {len(removed_tools)} low-ROI tools)"
+                    ),
+                    data=", ".join(removed_tools[:12]) if removed_tools else None,
                     status="done",
                 )
 
@@ -908,6 +1346,25 @@ async def _prove_theorem_agentic_async(
         except Exception as exc:
             _log(on_log, "agentic_run", f"run_async error: {exc}", status="error")
             steps_used = getattr(run_ctx, "request_count", steps_used)
+
+            if isinstance(exc, ToolBudgetExceededError):
+                trace_recorder.finalize_pending_attempt(tactic_call_log)
+                return _build_interrupted_run_result(
+                    controller=controller,
+                    model_text=model_text,
+                    tool_trace_entries=tool_trace_entries,
+                    tactic_call_log=tactic_call_log,
+                    steps_used=steps_used,
+                    start_time=start_time,
+                    interruption_message=str(exc),
+                    stop_reason=STOP_PROOF_INCOMPLETE,
+                    agent_summary=(
+                        "Leanstral agentic prover halted early because the "
+                        "tool budget detected a high-waste loop and returned "
+                        "the latest proof state instead."
+                    ),
+                    partial=True,
+                )
 
             if _is_retryable_run_error(exc):
                 interruption_message = (
@@ -1022,6 +1479,11 @@ async def _prove_theorem_agentic_async(
         summary_parts = [
             f"Leanstral agentic prover: {steps_used} API round-trips, "
             f"{len(tactic_call_log)} tactic applications.",
+            (
+                f"Tool calls: {tool_tracker.total_tool_calls} total, "
+                f"{tool_tracker.total_search_calls} search, "
+                f"{tool_tracker.blocked_tool_calls} blocked."
+            ),
         ]
         if tool_tracker.total_diagnostic_calls:
             summary_parts.append(
@@ -1030,6 +1492,15 @@ async def _prove_theorem_agentic_async(
         if tool_tracker.circuit_breaker_hits:
             summary_parts.append(
                 f"Circuit breaker triggered {tool_tracker.circuit_breaker_hits} time(s)."
+            )
+        if tool_tracker.search_budget_hits:
+            summary_parts.append(
+                f"Search budget blocked {tool_tracker.search_budget_hits} call(s)."
+            )
+        if tool_tracker.duplicate_read_only_hits:
+            summary_parts.append(
+                f"Duplicate read-only queries blocked "
+                f"{tool_tracker.duplicate_read_only_hits} time(s)."
             )
         if success:
             summary_parts.append("Proof verified by the local Lean compiler.")

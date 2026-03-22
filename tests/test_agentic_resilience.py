@@ -7,19 +7,28 @@ Usage:
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from mistralai.client.models.functioncallentry import FunctionCallEntry
 from mistralai.extra.run.context import RunContext
 
+import agentic_prover
 from agentic_prover import (
     CIRCUIT_BREAKER_WARNING,
+    DUPLICATE_READ_ONLY_WARNING,
+    SEARCH_BUDGET_WARNING,
+    SEARCH_PRECONDITION_WARNING,
     AgenticToolTracker,
+    ToolBudgetExceededError,
     TraceRecorder,
     _install_guarded_execute_function_calls,
     _is_code_3001_error,
     _is_retryable_run_error,
     _make_apply_tactic,
     _parse_diagnostic_payload,
+    _prune_agentic_tools,
+    _try_local_tactic_fast_path,
 )
 from mcp_runtime import LEAN_WORKSPACE
 from proof_file_controller import ProofFileController
@@ -88,6 +97,106 @@ def test_default_controller_paths_are_unique() -> None:
     assert second.working_file.name.startswith("AgenticProof_")
 
 
+def test_prune_agentic_tools_removes_low_roi_tools() -> None:
+    run_ctx = type("DummyRunCtx", (), {})()
+    run_ctx._callable_tools = {
+        "apply_tactic": object(),
+        "lean_goal": object(),
+        "lean_diagnostic_messages": object(),
+        "lean_state_search": object(),
+        "lean_loogle": object(),
+        "lean_build": object(),
+    }
+
+    removed = _prune_agentic_tools(run_ctx)
+
+    assert sorted(run_ctx._callable_tools) == [
+        "apply_tactic",
+        "lean_diagnostic_messages",
+        "lean_goal",
+        "lean_state_search",
+    ]
+    assert removed == ["lean_build", "lean_loogle"]
+
+
+def test_local_fast_path_solves_trivial_theorem(monkeypatch, tmp_path) -> None:
+    theorem = """\
+import Mathlib
+
+theorem trivial_truth : True := by
+  sorry
+"""
+    controller = ProofFileController(working_file=tmp_path / "LocalFastPath.lean")
+    controller.initialize(theorem)
+
+    def fake_verify(lean_code: str, filename=None, check_axioms: bool = True) -> dict:
+        del filename
+        if "aesop" in lean_code:
+            return {
+                "success": True,
+                "errors": [],
+                "warnings": [],
+                "output_lean": lean_code,
+                "axiom_info": None,
+            }
+        return {
+            "success": False,
+            "errors": ["tactic failed"],
+            "warnings": [],
+            "output_lean": None,
+            "axiom_info": None,
+        }
+
+    monkeypatch.setattr(agentic_prover, "verify", fake_verify)
+
+    result = _try_local_tactic_fast_path(
+        theorem,
+        controller,
+        on_log=None,
+        start_time=time.time(),
+    )
+
+    assert result is not None
+    assert result["success"] is True
+    assert result["steps_used"] == 0
+    assert result["mcp_enabled"] is False
+    assert result["proof_tactics"] == "aesop"
+    assert result["tactic_calls"][0]["successful"] is True
+
+
+def test_local_fast_path_restores_initial_state_on_failure(monkeypatch, tmp_path) -> None:
+    theorem = """\
+import Mathlib
+
+theorem trivial_truth : True := by
+  sorry
+"""
+    controller = ProofFileController(working_file=tmp_path / "LocalFastPathFail.lean")
+    controller.initialize(theorem)
+
+    monkeypatch.setattr(
+        agentic_prover,
+        "verify",
+        lambda *args, **kwargs: {
+            "success": False,
+            "errors": ["no tactic worked"],
+            "warnings": [],
+            "output_lean": None,
+            "axiom_info": None,
+        },
+    )
+
+    result = _try_local_tactic_fast_path(
+        theorem,
+        controller,
+        on_log=None,
+        start_time=time.time(),
+    )
+
+    assert result is None
+    assert controller.current_tactic_block == "sorry"
+
+
 @pytest.mark.asyncio
 async def test_circuit_breaker() -> None:
     run_ctx = RunContext(model="dummy")
@@ -146,6 +255,140 @@ async def test_circuit_breaker() -> None:
     )
     assert post_diag_apply[0].result != CIRCUIT_BREAKER_WARNING
     assert "applied exact reset_ok" in post_diag_apply[0].result
+
+
+@pytest.mark.asyncio
+async def test_search_budget_blocks_low_roi_search() -> None:
+    run_ctx = RunContext(model="dummy")
+
+    def lean_state_search(file_path: str, line: int, column: int) -> str:
+        return f"search {file_path}:{line}:{column}"
+
+    run_ctx.register_func(lean_state_search)
+
+    tracker = AgenticToolTracker(max_search_tool_calls=0)
+    trace_recorder = TraceRecorder()
+    tactic_call_log: list[dict] = [{"successful": False}]
+    _install_guarded_execute_function_calls(run_ctx, tracker, trace_recorder, tactic_call_log)
+
+    result = await run_ctx.execute_function_calls(
+        [
+            FunctionCallEntry(
+                tool_call_id="search-1",
+                name="lean_state_search",
+                arguments={"file_path": "LeanEcon/Test.lean", "line": 4, "column": 1},
+            )
+        ]
+    )
+
+    assert result[0].result == SEARCH_BUDGET_WARNING
+    assert tracker.blocked_tool_calls == 1
+    assert tracker.total_tool_calls == 1
+    assert tracker.total_search_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_search_requires_failed_tactic_attempt() -> None:
+    run_ctx = RunContext(model="dummy")
+
+    def lean_state_search(file_path: str, line: int, column: int) -> str:
+        return f"search {file_path}:{line}:{column}"
+
+    run_ctx.register_func(lean_state_search)
+
+    tracker = AgenticToolTracker()
+    trace_recorder = TraceRecorder()
+    tactic_call_log: list[dict] = []
+    _install_guarded_execute_function_calls(run_ctx, tracker, trace_recorder, tactic_call_log)
+
+    result = await run_ctx.execute_function_calls(
+        [
+            FunctionCallEntry(
+                tool_call_id="search-precondition",
+                name="lean_state_search",
+                arguments={"file_path": "LeanEcon/Test.lean", "line": 4, "column": 1},
+            )
+        ]
+    )
+
+    assert result[0].result == SEARCH_PRECONDITION_WARNING
+    assert tracker.blocked_tool_calls == 1
+    assert tracker.search_budget_hits == 0
+    assert tracker.total_search_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_duplicate_read_only_call_is_blocked() -> None:
+    run_ctx = RunContext(model="dummy")
+
+    def lean_goal(file_path: str, line: int) -> str:
+        return f"goal {file_path}:{line}"
+
+    run_ctx.register_func(lean_goal)
+
+    tracker = AgenticToolTracker(max_consecutive_read_only_calls=10)
+    trace_recorder = TraceRecorder()
+    tactic_call_log: list[dict] = []
+    _install_guarded_execute_function_calls(run_ctx, tracker, trace_recorder, tactic_call_log)
+
+    await run_ctx.execute_function_calls(
+        [
+            FunctionCallEntry(
+                tool_call_id="goal-1",
+                name="lean_goal",
+                arguments={"file_path": "LeanEcon/Test.lean", "line": 4},
+            )
+        ]
+    )
+    second = await run_ctx.execute_function_calls(
+        [
+            FunctionCallEntry(
+                tool_call_id="goal-2",
+                name="lean_goal",
+                arguments={"file_path": "LeanEcon/Test.lean", "line": 4},
+            )
+        ]
+    )
+
+    assert second[0].result == DUPLICATE_READ_ONLY_WARNING
+    assert tracker.blocked_tool_calls == 1
+    assert tracker.duplicate_read_only_hits == 1
+
+
+@pytest.mark.asyncio
+async def test_read_only_loop_budget_stops_run() -> None:
+    run_ctx = RunContext(model="dummy")
+
+    def lean_goal(file_path: str, line: int) -> str:
+        return f"goal {file_path}:{line}"
+
+    run_ctx.register_func(lean_goal)
+
+    tracker = AgenticToolTracker(max_consecutive_read_only_calls=1)
+    trace_recorder = TraceRecorder()
+    tactic_call_log: list[dict] = []
+    _install_guarded_execute_function_calls(run_ctx, tracker, trace_recorder, tactic_call_log)
+
+    await run_ctx.execute_function_calls(
+        [
+            FunctionCallEntry(
+                tool_call_id="goal-1",
+                name="lean_goal",
+                arguments={"file_path": "LeanEcon/Test.lean", "line": 4},
+            )
+        ]
+    )
+
+    with pytest.raises(ToolBudgetExceededError):
+        await run_ctx.execute_function_calls(
+            [
+                FunctionCallEntry(
+                    tool_call_id="goal-2",
+                    name="lean_goal",
+                    arguments={"file_path": "LeanEcon/Test.lean", "line": 4},
+                )
+            ]
+        )
 
 
 @pytest.mark.asyncio

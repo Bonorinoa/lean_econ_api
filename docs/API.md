@@ -347,7 +347,7 @@ JSON with `score`, `verdict`, `rationale`, and `trivialization_flags`.
 ### Uncharted evaluations
 
 ```bash
-./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py <claims.jsonl> --pass-k 5
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py <claims.jsonl> --pass-k 1 --limit 2
 ```
 
 Input JSONL records should include:
@@ -359,6 +359,18 @@ Input JSONL records should include:
 The runner bypasses `/api/v1/classify`, calls `formalize_claim(...)` directly,
 then retries `run_pipeline(...)` up to `pass@k` with `use_cache=False`. It
 writes both `results.json` and `report.md` under `outputs/uncharted_evals/`.
+
+This harness is currently a frontier-diagnostics tool, not the main release or
+CI benchmark. A partial rerun on March 22, 2026 across 7 frontier attempts on 2
+hard claims produced a `0.978` tool-call waste ratio, repeated Lean LSP startup
+timeouts, and one Mistral `3051` input-too-large failure. Use it to study
+failure modes on difficult claims, but prefer smaller staged evals for routine
+health checks:
+
+- formalization-only checks for `formalize_claim(...)`
+- prover-only checks on preformalized theorem stubs
+- MCP infrastructure smoke tests
+- small end-to-end regression sets with `pass@1`
 
 ## Cache endpoints
 

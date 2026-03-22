@@ -27,9 +27,11 @@ RUN python -m pip install --no-cache-dir uv
 COPY lean_workspace ./lean_workspace
 RUN cd lean_workspace && lake exe cache get && lake build
 
+COPY scripts ./scripts
 COPY src ./src
 COPY docs ./docs
 COPY README.md ./README.md
+RUN chmod +x /app/scripts/run_lean_lsp_mcp.sh
 RUN mkdir -p outputs logs
 
 EXPOSE 8000

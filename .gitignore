@@ -9,6 +9,7 @@ logs/
 data/
 lean_workspace/.lake/
 lean_workspace/LeanEcon/AgenticProof.lean
+lean_workspace/LeanEcon/AgenticProof_*.lean
 .claude/
 .vscode/
 .DS_Store

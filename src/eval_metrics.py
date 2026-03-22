@@ -8,6 +8,15 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+WRITE_TOOL_NAMES = {"apply_tactic"}
+DIAGNOSTIC_TOOL_NAMES = {"lean_diagnostic_messages"}
+SEARCH_TOOL_NAMES = {
+    "lean_multi_attempt",
+    "lean_code_actions",
+    "lean_state_search",
+    "lean_hammer_premise",
+}
+
 
 def load_jsonl_records(path: Path) -> tuple[list[dict[str, Any]], int]:
     """Load JSONL records while tolerating malformed lines."""
@@ -95,6 +104,14 @@ def total_tool_calls(record: dict[str, Any]) -> int:
     return sum(1 for entry in tool_trace_entries(record) if entry.get("type") == "tool_call")
 
 
+def blocked_tool_calls(record: dict[str, Any]) -> int:
+    return sum(1 for entry in tool_trace_entries(record) if entry.get("blocked") is True)
+
+
+def tool_calls_by_name(record: dict[str, Any], names: set[str]) -> int:
+    return sum(1 for entry in tool_trace_entries(record) if entry.get("tool_name") in names)
+
+
 def successful_tactic_applications(record: dict[str, Any]) -> int:
     return sum(1 for entry in tactic_calls(record) if entry.get("successful") is True)
 
@@ -139,6 +156,14 @@ def aggregate_trace_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate the deep-trace metrics requested by the evaluation harness."""
     total_tool_call_count = sum(total_tool_calls(record) for record in records)
     successful_tactic_count = sum(successful_tactic_applications(record) for record in records)
+    blocked_tool_call_count = sum(blocked_tool_calls(record) for record in records)
+    write_tool_call_count = sum(tool_calls_by_name(record, WRITE_TOOL_NAMES) for record in records)
+    diagnostic_tool_call_count = sum(
+        tool_calls_by_name(record, DIAGNOSTIC_TOOL_NAMES) for record in records
+    )
+    search_tool_call_count = sum(
+        tool_calls_by_name(record, SEARCH_TOOL_NAMES) for record in records
+    )
 
     tactic_depths = [depth for record in records if (depth := tactic_depth(record)) is not None]
 
@@ -149,6 +174,7 @@ def aggregate_trace_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     tool_call_efficiency = 0.0
     if total_tool_call_count:
         tool_call_efficiency = successful_tactic_count / total_tool_call_count
+    tool_call_waste_ratio = 1.0 - tool_call_efficiency if total_tool_call_count else 0.0
 
     average_tactic_depth = 0.0
     if tactic_depths:
@@ -159,6 +185,11 @@ def aggregate_trace_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
         "total_tool_calls": total_tool_call_count,
         "successful_tactic_applications": successful_tactic_count,
         "tool_call_efficiency": round(tool_call_efficiency, 3),
+        "tool_call_waste_ratio": round(tool_call_waste_ratio, 3),
+        "blocked_tool_calls": blocked_tool_call_count,
+        "write_tool_calls": write_tool_call_count,
+        "diagnostic_tool_calls": diagnostic_tool_call_count,
+        "search_tool_calls": search_tool_call_count,
         "successful_proofs_considered": len(tactic_depths),
         "tactic_depth_average": round(average_tactic_depth, 3),
         "error_frequency": dict(error_counter.most_common()),
@@ -174,6 +205,14 @@ def render_trace_metrics(metrics: dict[str, Any]) -> str:
             f"{metrics.get('tool_call_efficiency', 0.0):.3f} "
             f"({metrics.get('successful_tactic_applications', 0)}/"
             f"{metrics.get('total_tool_calls', 0)})"
+        ),
+        f"Tool Call Waste Ratio: {metrics.get('tool_call_waste_ratio', 0.0):.3f}",
+        (
+            "Tool Mix: "
+            f"{metrics.get('write_tool_calls', 0)} writes, "
+            f"{metrics.get('diagnostic_tool_calls', 0)} diagnostics, "
+            f"{metrics.get('search_tool_calls', 0)} search, "
+            f"{metrics.get('blocked_tool_calls', 0)} blocked"
         ),
         (
             "Average Tactic Depth: "

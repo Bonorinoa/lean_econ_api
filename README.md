@@ -114,12 +114,20 @@ LeanEcon now ships a small offline evaluation stack on top of the append-only
 log at `logs/runs.jsonl`.
 
 - `scripts/analyze_traces.py` computes deep-trace metrics such as Tool Call Efficiency,
-  average Tactic Depth, and error-frequency summaries from persisted prover traces.
+  Tool Call Waste Ratio, average Tactic Depth, and error-frequency summaries from
+  persisted prover traces.
 - `scripts/semantic_grader.py` uses Leanstral as a semantic referee to score whether
   generated Lean code is a faithful, non-trivial translation of the original claim.
 - `scripts/run_uncharted_evals.py` bypasses classification, runs `formalize_claim(...)`
   plus `run_pipeline(...)` with configurable `pass@k`, and writes JSON/Markdown
   reports under `outputs/uncharted_evals/`.
+
+`run_uncharted_evals.py` is currently best treated as a high-cost frontier probe,
+not as the primary CI benchmark. A partial rerun on March 22, 2026 across 7
+frontier attempts on 2 hard claims produced a `0.978` tool-call waste ratio,
+multiple Lean LSP startup timeouts, and one Mistral `3051` input-too-large
+failure. For routine iteration, prefer small runs (`--limit 1` or `--limit 2`)
+with `--pass-k 1`, then inspect `logs/runs.jsonl` with `analyze_traces.py`.
 
 Example commands:
 
@@ -132,7 +140,8 @@ Example commands:
 
 ./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
   tests/fixtures/claims/uncharted_claims.jsonl \
-  --pass-k 5
+  --pass-k 1 \
+  --limit 2
 ```
 
 Example calls:

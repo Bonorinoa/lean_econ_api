@@ -1,7 +1,16 @@
 import Mathlib
+import Mathlib.Analysis.Calculus.Deriv.Basic
+import Mathlib.Analysis.Convex.Basic
+import Mathlib.Topology.Basic
+
 open Real
 
-/-- For all real c > 0 and γ > 0 with γ ≠ 1, -c * (-γ * c⁻¹) = γ. -/
-theorem algebraic_identity (c γ : ℝ) (hc : 0 < c) (hγ : 0 < γ) (hγ1 : γ ≠ 1) :
-  -c * (-γ * c⁻¹) = γ := by
+/-- The Envelope Theorem: The derivative of the value function with respect to the state variable
+    equals the partial derivative of the objective function evaluated at the optimal policy. -/
+theorem envelope_theorem
+    (f : ℝ → ℝ → ℝ) (g : ℝ → ℝ) (x : ℝ) (hx : DifferentiableAt ℝ g x)
+    (hf : ∀ y, DifferentiableAt ℝ (fun z => f z y) x)
+    (hf' : ∀ y, DifferentiableAt ℝ (fun z => f z y) (g x))
+    (h_opt : IsLocalMax (fun y => f x y) (g x))
+    : deriv (fun z => f z (g z)) x = deriv (fun y => f x y) (g x) := by
   sorry
