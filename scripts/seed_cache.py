@@ -1,4 +1,4 @@
-"""Pre-seed the result cache from curated examples."""
+"""Pre-seed the result cache from curated legacy examples."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from result_cache import result_cache
 
-EXAMPLES_DIR = PROJECT_ROOT / "examples"
+EXAMPLES_DIR = PROJECT_ROOT / "docs" / "legacy_examples"
 
 
 def main() -> None:

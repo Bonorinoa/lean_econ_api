@@ -93,7 +93,7 @@ All passing cases above were verified by the Lean compiler on isolated files via
 ./leanEconAPI_venv/bin/python scripts/analyze_traces.py --runs-file logs/runs.jsonl --format both
 
 # Semantic alignment grading
-./leanEconAPI_venv/bin/python scripts/semantic_grader.py --claim "1 + 1 = 2" --theorem-file examples/even_form_pass.lean
+./leanEconAPI_venv/bin/python scripts/semantic_grader.py --claim "1 + 1 = 2" --theorem-file docs/legacy_examples/even_form_pass.lean
 
 # Advanced pass@k evaluation harness
 ./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py <claims.jsonl> --pass-k 5

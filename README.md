@@ -37,10 +37,10 @@ interface:
 | Doubling a natural number yields an even number | General mathematics | Verified |
 | Cobb-Douglas output elasticity with respect to capital | Production theory | Improved in agentic mode, but still stochastic |
 
-See `examples/` for committed Lean files and verification reports. Those
-artifacts are intentionally conservative: the saved Cobb-Douglas example still
-documents the earlier limitation, even though the new agentic path now
-succeeds on some runs.
+See `docs/legacy_examples/` for the committed Lean files and verification
+reports. Those artifacts are intentionally conservative: the saved
+Cobb-Douglas example still documents the earlier limitation, even though the
+new agentic path now succeeds on some runs.
 
 The optional `/classify` endpoint categorizes claims into four paths for
 frontend UX (but is **not** required before formalization):
@@ -128,7 +128,7 @@ Example commands:
 
 ./leanEconAPI_venv/bin/python scripts/semantic_grader.py \
   --claim "Under CRRA utility, relative risk aversion is constant." \
-  --theorem-file examples/crra_pass.lean
+  --theorem-file docs/legacy_examples/crra_pass.lean
 
 ./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py test_cases/uncharted_claims.jsonl --pass-k 5
 ```

@@ -29,7 +29,6 @@ RUN cd lean_workspace && lake exe cache get && lake build
 
 COPY src ./src
 COPY docs ./docs
-COPY examples ./examples
 COPY README.md ./README.md
 RUN mkdir -p outputs logs
 

@@ -338,7 +338,7 @@ This script computes:
 ```bash
 ./leanEconAPI_venv/bin/python scripts/semantic_grader.py \
   --claim "Under CRRA utility, relative risk aversion is constant." \
-  --theorem-file examples/crra_pass.lean
+  --theorem-file docs/legacy_examples/crra_pass.lean
 ```
 
 This script uses Leanstral as a mathematical referee and returns structured
