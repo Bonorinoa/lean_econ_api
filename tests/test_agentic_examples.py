@@ -2,18 +2,15 @@
 Lightweight raw-Lean regression checks for the agentic prover.
 
 Usage:
-  ./econProver_venv/bin/python tests/test_agentic_examples.py
+  pytest -m live tests/test_agentic_examples.py
+  python tests/test_agentic_examples.py
 """
 
 from __future__ import annotations
 
-import sys
 import time
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-sys.path.insert(0, str(SRC_DIR))
+import pytest
 
 from pipeline import prove_and_verify
 
@@ -43,6 +40,29 @@ theorem cobb_douglas_elasticity_capital (α K : ℝ) (hα : 0 < α) (hα1 : α <
     α * K * K⁻¹ = α := by
   sorry
 """
+
+
+@pytest.mark.live
+def test_one_plus_one_agentic() -> None:
+    result = prove_and_verify(ONE_PLUS_ONE_THEOREM)
+    assert result["success"]
+
+
+@pytest.mark.live
+def test_crra_raw_agentic() -> None:
+    result = prove_and_verify(CRRA_RAW_THEOREM)
+    assert result["success"]
+
+
+@pytest.mark.live
+def test_cobb_raw_agentic() -> None:
+    result = prove_and_verify(COBB_RAW_SIMPLIFIED_THEOREM)
+    assert result["success"]
+
+
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
 
 def _run_case(name: str, theorem_with_sorry: str) -> bool:
     start = time.time()

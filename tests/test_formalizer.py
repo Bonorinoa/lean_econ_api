@@ -2,7 +2,8 @@
 Standalone smoke tests for formalizer.py.
 
 Usage:
-  ./econProver_venv/bin/python tests/test_formalizer.py
+  pytest tests/test_formalizer.py
+  python tests/test_formalizer.py
 
 Includes:
   - Live smoke tests (require MISTRAL_API_KEY and a local Lean toolchain)
@@ -11,13 +12,10 @@ Includes:
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-sys.path.insert(0, str(SRC_DIR))
+import pytest
 
 from formalizer import _inject_preamble_imports, formalize
 from preamble_library import (
@@ -30,16 +28,6 @@ from preamble_library import (
     read_preamble_source,
 )
 from prompts import build_classify_prompt
-
-
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +71,7 @@ def _run_live_case(
 # Unit tests: preamble library
 # ---------------------------------------------------------------------------
 
-def _test_preamble_library_has_entries() -> None:
+def test_preamble_library_has_entries() -> None:
     assert len(PREAMBLE_LIBRARY) >= 10, f"Expected >=10 entries, got {len(PREAMBLE_LIBRARY)}"
     for name, entry in PREAMBLE_LIBRARY.items():
         assert entry.name == name
@@ -93,24 +81,24 @@ def _test_preamble_library_has_entries() -> None:
         assert len(entry.keywords) > 0
 
 
-def _test_find_matching_preambles_cobb_douglas() -> None:
+def test_find_matching_preambles_cobb_douglas() -> None:
     matches = find_matching_preambles("Cobb-Douglas output elasticity equals alpha.")
     names = [m.name for m in matches]
     assert "cobb_douglas_2factor" in names
 
 
-def _test_find_matching_preambles_crra() -> None:
+def test_find_matching_preambles_crra() -> None:
     matches = find_matching_preambles("Under CRRA utility, RRA equals gamma.")
     names = [m.name for m in matches]
     assert "crra_utility" in names
 
 
-def _test_find_matching_preambles_no_match() -> None:
+def test_find_matching_preambles_no_match() -> None:
     matches = find_matching_preambles("Nash equilibrium exists in finite games.")
     assert len(matches) == 0
 
 
-def _test_build_preamble_block() -> None:
+def test_build_preamble_block() -> None:
     entries = get_preamble_entries(["cobb_douglas_2factor", "crra_utility"])
     block = build_preamble_block(entries)
     assert "noncomputable def cobb_douglas" in block
@@ -118,7 +106,7 @@ def _test_build_preamble_block() -> None:
     assert "import Mathlib" not in block
 
 
-def _test_build_preamble_imports() -> None:
+def test_build_preamble_imports() -> None:
     entries = get_preamble_entries(["cobb_douglas_2factor", "crra_utility", "crra_utility"])
     imports = build_preamble_imports(entries)
     assert imports == [
@@ -127,12 +115,12 @@ def _test_build_preamble_imports() -> None:
     ]
 
 
-def _test_get_preamble_entries_unknown() -> None:
+def test_get_preamble_entries_unknown() -> None:
     entries = get_preamble_entries(["nonexistent_entry"])
     assert entries == []
 
 
-def _test_preamble_keyword_coverage() -> None:
+def test_preamble_keyword_coverage() -> None:
     """Verify keyword matching for all major textbook concepts."""
     test_cases = [
         ("Cobb-Douglas output elasticity", "cobb_douglas_2factor"),
@@ -150,12 +138,12 @@ def _test_preamble_keyword_coverage() -> None:
         assert expected_name in names, f"{claim!r} should match {expected_name!r}, got {names}"
 
 
-def _test_preamble_library_expanded() -> None:
+def test_preamble_library_expanded() -> None:
     """Verify the library has the expected number of entries after expansion."""
     assert len(PREAMBLE_LIBRARY) >= 20, f"Expected >=20 entries, got {len(PREAMBLE_LIBRARY)}"
 
 
-def _test_read_preamble_source_strips_import_header() -> None:
+def test_read_preamble_source_strips_import_header() -> None:
     entry = PREAMBLE_LIBRARY["crra_utility"]
     source = read_preamble_source(entry)
     assert "import Mathlib" not in source
@@ -166,7 +154,7 @@ def _test_read_preamble_source_strips_import_header() -> None:
 # Unit tests: _inject_preamble_imports
 # ---------------------------------------------------------------------------
 
-def _test_inject_preamble_imports_placement() -> None:
+def test_inject_preamble_imports_placement() -> None:
     lean_code = (
         "import Mathlib\n"
         "open Real\n"
@@ -193,7 +181,7 @@ def _test_inject_preamble_imports_placement() -> None:
 # Unit tests: three-tier classify_claim
 # ---------------------------------------------------------------------------
 
-def _test_classify_algebraic() -> None:
+def test_classify_algebraic() -> None:
     import formalizer
     with patch.object(formalizer, "call_leanstral", return_value="ALGEBRAIC"):
         result = formalizer.classify_claim("-c * (-gamma * c⁻¹) = gamma")
@@ -202,7 +190,7 @@ def _test_classify_algebraic() -> None:
     assert result["suggested_reformulation"] is None
 
 
-def _test_classify_definable_with_match() -> None:
+def test_classify_definable_with_match() -> None:
     import formalizer
     with patch.object(
         formalizer,
@@ -217,7 +205,7 @@ def _test_classify_definable_with_match() -> None:
     assert result["definitions_needed"] is not None
 
 
-def _test_classify_definable_without_match() -> None:
+def test_classify_definable_without_match() -> None:
     import formalizer
     with patch.object(
         formalizer,
@@ -232,7 +220,7 @@ def _test_classify_definable_without_match() -> None:
     assert result["suggested_reformulation"] is not None
 
 
-def _test_classify_requires_definitions() -> None:
+def test_classify_requires_definitions() -> None:
     import formalizer
     with patch.object(
         formalizer,
@@ -244,7 +232,7 @@ def _test_classify_requires_definitions() -> None:
     assert result["preamble_matches"] == []
 
 
-def _test_classify_requires_definitions_rescued() -> None:
+def test_classify_requires_definitions_rescued() -> None:
     """When LLM says REQUIRES_DEFINITIONS but preamble matches exist, rescue to DEFINABLE."""
     import formalizer
     with patch.object(
@@ -260,7 +248,7 @@ def _test_classify_requires_definitions_rescued() -> None:
     assert "extreme_value_theorem" in result["preamble_matches"]
 
 
-def _test_classify_mathlib_native() -> None:
+def test_classify_mathlib_native() -> None:
     import formalizer
     with patch.object(
         formalizer,
@@ -276,7 +264,7 @@ def _test_classify_mathlib_native() -> None:
     assert result["preamble_matches"] == []
 
 
-def _test_classify_mathlib_native_rescued() -> None:
+def test_classify_mathlib_native_rescued() -> None:
     """When LLM says MATHLIB_NATIVE but preamble matches exist, rescue to DEFINABLE."""
     import formalizer
     with patch.object(
@@ -292,7 +280,7 @@ def _test_classify_mathlib_native_rescued() -> None:
     assert result["mathlib_hint"] is None
 
 
-def _test_classify_mathlib_native_formalizable() -> None:
+def test_classify_mathlib_native_formalizable() -> None:
     import api
     from error_codes import LeanEconErrorCode
 
@@ -317,7 +305,7 @@ def _test_classify_mathlib_native_formalizable() -> None:
 # Unit tests: diagnostics
 # ---------------------------------------------------------------------------
 
-def _test_diagnose_valid_json() -> None:
+def test_diagnose_valid_json() -> None:
     import formalizer
     mock_response = '{"diagnosis": "Type mismatch", "suggested_fix": "Use Real instead of Nat", "fixable": true}'
     with patch.object(formalizer, "call_leanstral", return_value=mock_response):
@@ -329,7 +317,7 @@ def _test_diagnose_valid_json() -> None:
     assert result["fixable"] is True
 
 
-def _test_diagnose_invalid_json_fallback() -> None:
+def test_diagnose_invalid_json_fallback() -> None:
     import formalizer
     with patch.object(formalizer, "call_leanstral", return_value="not valid json at all"):
         result = formalizer._diagnose_formalization_failure(
@@ -343,21 +331,19 @@ def _test_diagnose_invalid_json_fallback() -> None:
 # Unit tests: sorry_validate lean_run_code integration
 # ---------------------------------------------------------------------------
 
-def _test_sorry_validate_uses_run_code() -> None:
+def test_sorry_validate_uses_run_code() -> None:
     """sorry_validate returns method='lean_run_code' when lean_runner succeeds."""
     import formalizer
     mock_result = {"valid": True, "errors": [], "warnings": ["declaration uses `sorry`"]}
     with patch("formalizer.run_code", create=True) as mock_run:
-        # Patch the lazy import inside sorry_validate
         import lean_runner
         with patch.object(lean_runner, "run_code", return_value=mock_result):
             with patch.dict("sys.modules", {"lean_runner": lean_runner}):
                 result = formalizer.sorry_validate("import Mathlib\ntheorem t : True := by sorry")
-    # The function does a lazy import, so we patch at module level
     assert result["method"] in {"lean_run_code", "lake_env_lean"}
 
 
-def _test_sorry_validate_fallback_on_error() -> None:
+def test_sorry_validate_fallback_on_error() -> None:
     """sorry_validate falls back to lake_env_lean when lean_runner raises."""
     import formalizer
     mock_raw = {
@@ -366,7 +352,6 @@ def _test_sorry_validate_fallback_on_error() -> None:
         "warnings": [],
         "verification_method": "lake_env_lean",
     }
-    # Make lean_runner import fail, forcing fallback
     with patch.dict("sys.modules", {"lean_runner": None}):
         with patch.object(formalizer, "write_lean_file", return_value=Path("/tmp/fake.lean")):
             with patch.object(formalizer, "run_direct_lean_check", return_value=mock_raw):
@@ -376,7 +361,7 @@ def _test_sorry_validate_fallback_on_error() -> None:
     assert result["errors"] == []
 
 
-def _test_formalize_no_classify_call() -> None:
+def test_formalize_no_classify_call() -> None:
     """formalize() must NOT call classify_claim() internally."""
     import formalizer
     lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
@@ -391,7 +376,7 @@ def _test_formalize_no_classify_call() -> None:
     mock_classify.assert_not_called()
 
 
-def _test_formalize_with_explicit_preamble() -> None:
+def test_formalize_with_explicit_preamble() -> None:
     """formalize() with explicit preamble_names should inject preamble imports."""
     import formalizer
     lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
@@ -409,7 +394,7 @@ def _test_formalize_with_explicit_preamble() -> None:
     assert "LeanEcon.Preamble.Producer.CobbDouglas2Factor" in result["theorem_code"]
 
 
-def _test_formalize_without_preamble_names() -> None:
+def test_formalize_without_preamble_names() -> None:
     """formalize() without preamble_names should NOT inject any preamble."""
     import formalizer
     lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
@@ -424,13 +409,13 @@ def _test_formalize_without_preamble_names() -> None:
     assert "LeanEcon.Preamble" not in result["theorem_code"]
 
 
-def _test_expanded_keyword_strictly_concave() -> None:
+def test_expanded_keyword_strictly_concave() -> None:
     matches = find_matching_preambles("A strictly concave function attains a maximum on a compact set.")
     names = [m.name for m in matches]
     assert "extreme_value_theorem" in names, f"Expected extreme_value_theorem, got {names}"
 
 
-def _test_expanded_keyword_risk_premium() -> None:
+def test_expanded_keyword_risk_premium() -> None:
     matches = find_matching_preambles("The risk premium for a risk-averse agent.")
     names = [m.name for m in matches]
     assert any(n in names for n in ("arrow_pratt_rra", "arrow_pratt_ara")), (
@@ -438,43 +423,57 @@ def _test_expanded_keyword_risk_premium() -> None:
     )
 
 
-def _test_expanded_keyword_marginal_product() -> None:
+def test_expanded_keyword_marginal_product() -> None:
     matches = find_matching_preambles("The marginal product of capital in a Cobb-Douglas economy.")
     names = [m.name for m in matches]
     assert "cobb_douglas_2factor" in names, f"Expected cobb_douglas_2factor, got {names}"
 
 
-def _test_expanded_keyword_diminishing_returns() -> None:
+def test_expanded_keyword_diminishing_returns() -> None:
     matches = find_matching_preambles("Diminishing returns to labor in production.")
     names = [m.name for m in matches]
     assert "cobb_douglas_2factor" in names, f"Expected cobb_douglas_2factor, got {names}"
 
 
-def _test_expanded_keyword_returns_to_scale_ces() -> None:
+def test_expanded_keyword_returns_to_scale_ces() -> None:
     matches = find_matching_preambles("CES production exhibits constant returns to scale.")
     names = [m.name for m in matches]
     assert "ces_2factor" in names, f"Expected ces_2factor, got {names}"
 
 
-def _test_build_preamble_catalog_summary() -> None:
+def test_build_preamble_catalog_summary() -> None:
     summary = build_preamble_catalog_summary()
     for name in PREAMBLE_LIBRARY:
         assert name in summary, f"Entry {name!r} missing from catalog summary"
 
 
-def _test_build_classify_prompt_includes_catalog() -> None:
+def test_build_classify_prompt_includes_catalog() -> None:
     prompt = build_classify_prompt()
     assert "AVAILABLE PREAMBLES" in prompt
     assert "cobb_douglas_2factor" in prompt
     assert "crra_utility" in prompt
 
 
-def _test_extract_theorem_name() -> None:
+def test_extract_theorem_name() -> None:
     """extract_theorem_name picks up theorem and lemma declarations."""
     from lean_runner import extract_theorem_name
     assert extract_theorem_name("theorem foo : True := by sorry") == "foo"
     assert extract_theorem_name("lemma bar_baz (x : ℝ) : x = x := by rfl") == "bar_baz"
     assert extract_theorem_name("def not_a_theorem := 42") is None
+
+
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
+
+def _run_case(name: str, fn) -> bool:
+    try:
+        fn()
+    except Exception as exc:
+        print(f"{name}: FAIL ({exc})")
+        return False
+    print(f"{name}: PASS")
+    return True
 
 
 def main() -> int:
@@ -486,122 +485,122 @@ def main() -> int:
     results = {
         # preamble library
         "preamble_library_has_entries": _run_case(
-            "preamble_library_has_entries", _test_preamble_library_has_entries
+            "preamble_library_has_entries", test_preamble_library_has_entries
         ),
         "find_matching_preambles_cobb_douglas": _run_case(
-            "find_matching_preambles_cobb_douglas", _test_find_matching_preambles_cobb_douglas
+            "find_matching_preambles_cobb_douglas", test_find_matching_preambles_cobb_douglas
         ),
         "find_matching_preambles_crra": _run_case(
-            "find_matching_preambles_crra", _test_find_matching_preambles_crra
+            "find_matching_preambles_crra", test_find_matching_preambles_crra
         ),
         "find_matching_preambles_no_match": _run_case(
-            "find_matching_preambles_no_match", _test_find_matching_preambles_no_match
+            "find_matching_preambles_no_match", test_find_matching_preambles_no_match
         ),
         "build_preamble_block": _run_case(
-            "build_preamble_block", _test_build_preamble_block
+            "build_preamble_block", test_build_preamble_block
         ),
         "build_preamble_imports": _run_case(
-            "build_preamble_imports", _test_build_preamble_imports
+            "build_preamble_imports", test_build_preamble_imports
         ),
         "get_preamble_entries_unknown": _run_case(
-            "get_preamble_entries_unknown", _test_get_preamble_entries_unknown
+            "get_preamble_entries_unknown", test_get_preamble_entries_unknown
         ),
         "preamble_keyword_coverage": _run_case(
-            "preamble_keyword_coverage", _test_preamble_keyword_coverage
+            "preamble_keyword_coverage", test_preamble_keyword_coverage
         ),
         "preamble_library_expanded": _run_case(
-            "preamble_library_expanded", _test_preamble_library_expanded
+            "preamble_library_expanded", test_preamble_library_expanded
         ),
         "read_preamble_source_strips_import_header": _run_case(
             "read_preamble_source_strips_import_header",
-            _test_read_preamble_source_strips_import_header,
+            test_read_preamble_source_strips_import_header,
         ),
         # inject preamble imports
         "inject_preamble_imports_placement": _run_case(
             "inject_preamble_imports_placement",
-            _test_inject_preamble_imports_placement,
+            test_inject_preamble_imports_placement,
         ),
         # three-tier classifier
         "classify_algebraic": _run_case(
-            "classify_algebraic", _test_classify_algebraic
+            "classify_algebraic", test_classify_algebraic
         ),
         "classify_definable_with_match": _run_case(
-            "classify_definable_with_match", _test_classify_definable_with_match
+            "classify_definable_with_match", test_classify_definable_with_match
         ),
         "classify_definable_without_match": _run_case(
-            "classify_definable_without_match", _test_classify_definable_without_match
+            "classify_definable_without_match", test_classify_definable_without_match
         ),
         "classify_requires_definitions": _run_case(
-            "classify_requires_definitions", _test_classify_requires_definitions
+            "classify_requires_definitions", test_classify_requires_definitions
         ),
         "classify_requires_definitions_rescued": _run_case(
             "classify_requires_definitions_rescued",
-            _test_classify_requires_definitions_rescued,
+            test_classify_requires_definitions_rescued,
         ),
         "classify_mathlib_native": _run_case(
-            "classify_mathlib_native", _test_classify_mathlib_native
+            "classify_mathlib_native", test_classify_mathlib_native
         ),
         "classify_mathlib_native_rescued": _run_case(
             "classify_mathlib_native_rescued",
-            _test_classify_mathlib_native_rescued,
+            test_classify_mathlib_native_rescued,
         ),
         "classify_mathlib_native_formalizable": _run_case(
             "classify_mathlib_native_formalizable",
-            _test_classify_mathlib_native_formalizable,
+            test_classify_mathlib_native_formalizable,
         ),
         # diagnostics
         "diagnose_valid_json": _run_case(
-            "diagnose_valid_json", _test_diagnose_valid_json
+            "diagnose_valid_json", test_diagnose_valid_json
         ),
         "diagnose_invalid_json_fallback": _run_case(
-            "diagnose_invalid_json_fallback", _test_diagnose_invalid_json_fallback
+            "diagnose_invalid_json_fallback", test_diagnose_invalid_json_fallback
         ),
         # sorry_validate lean_run_code integration
         "sorry_validate_fallback_on_error": _run_case(
-            "sorry_validate_fallback_on_error", _test_sorry_validate_fallback_on_error
+            "sorry_validate_fallback_on_error", test_sorry_validate_fallback_on_error
         ),
         "extract_theorem_name": _run_case(
-            "extract_theorem_name", _test_extract_theorem_name
+            "extract_theorem_name", test_extract_theorem_name
         ),
         # formalize without classify gate
         "formalize_no_classify_call": _run_case(
-            "formalize_no_classify_call", _test_formalize_no_classify_call
+            "formalize_no_classify_call", test_formalize_no_classify_call
         ),
         "formalize_with_explicit_preamble": _run_case(
-            "formalize_with_explicit_preamble", _test_formalize_with_explicit_preamble
+            "formalize_with_explicit_preamble", test_formalize_with_explicit_preamble
         ),
         "formalize_without_preamble_names": _run_case(
-            "formalize_without_preamble_names", _test_formalize_without_preamble_names
+            "formalize_without_preamble_names", test_formalize_without_preamble_names
         ),
         # expanded keyword coverage
         "expanded_keyword_strictly_concave": _run_case(
             "expanded_keyword_strictly_concave",
-            _test_expanded_keyword_strictly_concave,
+            test_expanded_keyword_strictly_concave,
         ),
         "expanded_keyword_risk_premium": _run_case(
             "expanded_keyword_risk_premium",
-            _test_expanded_keyword_risk_premium,
+            test_expanded_keyword_risk_premium,
         ),
         "expanded_keyword_marginal_product": _run_case(
             "expanded_keyword_marginal_product",
-            _test_expanded_keyword_marginal_product,
+            test_expanded_keyword_marginal_product,
         ),
         "expanded_keyword_diminishing_returns": _run_case(
             "expanded_keyword_diminishing_returns",
-            _test_expanded_keyword_diminishing_returns,
+            test_expanded_keyword_diminishing_returns,
         ),
         "expanded_keyword_returns_to_scale_ces": _run_case(
             "expanded_keyword_returns_to_scale_ces",
-            _test_expanded_keyword_returns_to_scale_ces,
+            test_expanded_keyword_returns_to_scale_ces,
         ),
         # catalog & classify prompt
         "build_preamble_catalog_summary": _run_case(
             "build_preamble_catalog_summary",
-            _test_build_preamble_catalog_summary,
+            test_build_preamble_catalog_summary,
         ),
         "build_classify_prompt_includes_catalog": _run_case(
             "build_classify_prompt_includes_catalog",
-            _test_build_classify_prompt_includes_catalog,
+            test_build_classify_prompt_includes_catalog,
         ),
     }
 
@@ -623,7 +622,7 @@ def main() -> int:
                 "Nash equilibrium existence (out of scope)",
                 "Every finite normal-form game has a Nash equilibrium.",
                 expect_success=False,
-                expect_failed=False,  # no longer pre-rejected; attempts all 3 cycles
+                expect_failed=False,
             )
         except Exception as exc:
             print(f"\n--- Skipping live smoke tests (Leanstral unavailable: {exc}) ---")

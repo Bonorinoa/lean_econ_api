@@ -27,9 +27,9 @@ from mcp_runtime import LEAN_WORKSPACE, lean_workspace_relative_path, open_lean_
 from pipeline import run_pipeline
 
 TEST_CASES = [
-    PROJECT_ROOT / "test_cases" / "test_04_water_extraction_dynamics.lean",
-    PROJECT_ROOT / "test_cases" / "test_05_expected_utility_representation.lean",
-    PROJECT_ROOT / "test_cases" / "test_06_advanced_optimization.lean",
+    PROJECT_ROOT / "tests" / "fixtures" / "lean_advanced" / "test_04_water_extraction_dynamics.lean",
+    PROJECT_ROOT / "tests" / "fixtures" / "lean_advanced" / "test_05_expected_utility_representation.lean",
+    PROJECT_ROOT / "tests" / "fixtures" / "lean_advanced" / "test_06_advanced_optimization.lean",
 ]
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "phase1_stress"
 SUMMARY_PATH = PROJECT_ROOT / "outputs" / "phase1_stress_test_results.md"

@@ -3,28 +3,13 @@
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-sys.path.insert(0, str(SRC_DIR))
 
 from eval_metrics import aggregate_trace_metrics, extract_tactic_heads, load_jsonl_records
 
 
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
-
-
-def _test_load_jsonl_records_tolerates_malformed_lines() -> None:
+def test_load_jsonl_records_tolerates_malformed_lines() -> None:
     entries = [
         json.dumps({"verification": {"success": True}}),
         "{bad json",
@@ -38,7 +23,7 @@ def _test_load_jsonl_records_tolerates_malformed_lines() -> None:
     assert malformed == 1
 
 
-def _test_extract_tactic_heads() -> None:
+def test_extract_tactic_heads() -> None:
     tactic_block = """\
 constructor
 · exact h1
@@ -47,7 +32,7 @@ constructor
     assert extract_tactic_heads(tactic_block) == ["constructor", "exact", "simp"]
 
 
-def _test_aggregate_trace_metrics() -> None:
+def test_aggregate_trace_metrics() -> None:
     records = [
         {
             "success": True,
@@ -84,6 +69,20 @@ def _test_aggregate_trace_metrics() -> None:
     assert metrics["error_frequency"]["line 7: unknown identifier x"] == 1
 
 
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
+
+def _run_case(name: str, fn) -> bool:
+    try:
+        fn()
+    except Exception as exc:
+        print(f"{name}: FAIL ({exc})")
+        return False
+    print(f"{name}: PASS")
+    return True
+
+
 def main() -> int:
     print("=" * 60)
     print("LeanEcon Eval Metrics Tests")
@@ -92,15 +91,15 @@ def main() -> int:
     results = {
         "load_jsonl_records_tolerates_malformed_lines": _run_case(
             "load_jsonl_records_tolerates_malformed_lines",
-            _test_load_jsonl_records_tolerates_malformed_lines,
+            test_load_jsonl_records_tolerates_malformed_lines,
         ),
         "extract_tactic_heads": _run_case(
             "extract_tactic_heads",
-            _test_extract_tactic_heads,
+            test_extract_tactic_heads,
         ),
         "aggregate_trace_metrics": _run_case(
             "aggregate_trace_metrics",
-            _test_aggregate_trace_metrics,
+            test_aggregate_trace_metrics,
         ),
     }
 

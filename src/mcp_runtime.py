@@ -9,6 +9,7 @@ Mistral RunContext setup, and shared MCP query helpers.
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +19,15 @@ from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment, stdio_client
 from mistralai.extra.mcp.stdio import MCPClientSTDIO
+
+# Suppress noisy "Failed to parse JSONRPC message" warnings from the MCP stdio
+# client. These fire whenever `lake build` writes plain-text progress messages
+# (e.g. "Current branch: HEAD", "Using cache (Azure) from...") to stdout,
+# which the MCP client tries to parse as JSON-RPC. The messages are harmless —
+# actual JSON-RPC responses still get through — but they create massive log
+# noise during evaluation runs. The root cause is upstream in lean-lsp-mcp
+# (should redirect Lake's stdout to stderr in stdio transport mode).
+logging.getLogger("mcp.client.stdio").setLevel(logging.CRITICAL)
 
 if TYPE_CHECKING:
     from mistralai.extra.run.context import RunContext

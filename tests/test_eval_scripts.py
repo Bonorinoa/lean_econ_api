@@ -10,26 +10,10 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-sys.path.insert(0, str(SRC_DIR))
-sys.path.insert(0, str(SCRIPTS_DIR))
-
 import analyze_traces
 
 
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
-
-
-def _test_analyze_traces_cli() -> None:
+def test_analyze_traces_cli() -> None:
     entries = [
         json.dumps(
             {
@@ -64,6 +48,20 @@ def _test_analyze_traces_cli() -> None:
     assert payload["malformed_lines_skipped"] == 1
 
 
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
+
+def _run_case(name: str, fn) -> bool:
+    try:
+        fn()
+    except Exception as exc:
+        print(f"{name}: FAIL ({exc})")
+        return False
+    print(f"{name}: PASS")
+    return True
+
+
 def main() -> int:
     print("=" * 60)
     print("LeanEcon Eval Script Tests")
@@ -72,7 +70,7 @@ def main() -> int:
     results = {
         "analyze_traces_cli": _run_case(
             "analyze_traces_cli",
-            _test_analyze_traces_cli,
+            test_analyze_traces_cli,
         ),
     }
 

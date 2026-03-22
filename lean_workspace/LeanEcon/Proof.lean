@@ -1,11 +1,7 @@
 import Mathlib
+open Real
 
-/--
-Legacy placeholder module reserved for fixed-path sorry-validation fallback.
-
-This file is intentionally not imported by `LeanEcon.lean`; runtime
-verification uses isolated `AgenticProof_*.lean` files compiled directly with
-`lake env lean`.
--/
-theorem legacy_proof_module_placeholder : True := by
-  trivial
+/-- For all real c > 0 and γ > 0 with γ ≠ 1, -c * (-γ * c⁻¹) = γ. -/
+theorem algebraic_identity (c γ : ℝ) (hc : 0 < c) (hγ : 0 < γ) (hγ1 : γ ≠ 1) :
+  -c * (-γ * c⁻¹) = γ := by
+  sorry

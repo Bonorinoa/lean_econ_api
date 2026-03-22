@@ -8,26 +8,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-sys.path.insert(0, str(SRC_DIR))
-sys.path.insert(0, str(SCRIPTS_DIR))
-
 import run_uncharted_evals
 
 
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
-
-
-def _test_runner_writes_report_and_results() -> None:
+def test_runner_writes_report_and_results() -> None:
     claims = [
         {"id": "dynamic_001", "raw_claim": "Bellman operator is a contraction.", "tags": ["dynamic"]},
         {"id": "dynamic_002", "raw_claim": "Value function exists.", "tags": ["dynamic"]},
@@ -132,6 +116,20 @@ def _test_runner_writes_report_and_results() -> None:
         assert "Formalization Robustness" in report_text
 
 
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
+
+def _run_case(name: str, fn) -> bool:
+    try:
+        fn()
+    except Exception as exc:
+        print(f"{name}: FAIL ({exc})")
+        return False
+    print(f"{name}: PASS")
+    return True
+
+
 def main() -> int:
     print("=" * 60)
     print("LeanEcon Uncharted Runner Tests")
@@ -140,7 +138,7 @@ def main() -> int:
     results = {
         "runner_writes_report_and_results": _run_case(
             "runner_writes_report_and_results",
-            _test_runner_writes_report_and_results,
+            test_runner_writes_report_and_results,
         ),
     }
 

@@ -2,17 +2,11 @@
 Standalone smoke tests for pipeline.py.
 
 Usage:
-  ./econProver_venv/bin/python tests/test_pipeline_smoke.py
+  pytest tests/test_pipeline_smoke.py
+  python tests/test_pipeline_smoke.py
 """
 
 from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-sys.path.insert(0, str(SRC_DIR))
 
 from pipeline import formalize_claim, parse_claim
 
@@ -25,17 +19,7 @@ theorem one_plus_one : 1 + 1 = 2 := by
 """
 
 
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
-
-
-def _test_parse_claim() -> None:
+def test_parse_claim() -> None:
     raw_input = r"""
 % A comment that should be removed
 \begin{theorem}
@@ -49,12 +33,26 @@ Under CRRA utility, relative risk aversion is constant.
     assert parsed["text"] == expected, parsed["text"]
 
 
-def _test_raw_lean_bypass() -> None:
+def test_raw_lean_bypass() -> None:
     result = formalize_claim(RAW_LEAN_THEOREM)
     assert result["success"] is True
     assert result["attempts"] == 0
     assert result["formalization_failed"] is False
     assert result["theorem_code"] == RAW_LEAN_THEOREM.strip()
+
+
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
+
+def _run_case(name: str, fn) -> bool:
+    try:
+        fn()
+    except Exception as exc:
+        print(f"{name}: FAIL ({exc})")
+        return False
+    print(f"{name}: PASS")
+    return True
 
 
 def main() -> int:
@@ -63,8 +61,8 @@ def main() -> int:
     print("=" * 60)
 
     results = {
-        "parse_claim": _run_case("parse_claim", _test_parse_claim),
-        "raw_lean_bypass": _run_case("raw_lean_bypass", _test_raw_lean_bypass),
+        "parse_claim": _run_case("parse_claim", test_parse_claim),
+        "raw_lean_bypass": _run_case("raw_lean_bypass", test_raw_lean_bypass),
     }
 
     print("\n" + "=" * 60)

@@ -2,7 +2,8 @@
 Standalone smoke tests for lean_verifier.py.
 
 Usage:
-  ./leanEconAPI_venv/bin/python tests/test_verifier.py
+  pytest -m live tests/test_verifier.py
+  python tests/test_verifier.py
 
 These smoke checks intentionally disable axiom probing so they stay focused on
 the local Lean compiler path and remain deterministic in offline environments.
@@ -10,15 +11,13 @@ the local Lean compiler path and remain deterministic in offline environments.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-EXAMPLES_DIR = PROJECT_ROOT / "examples"
-sys.path.insert(0, str(SRC_DIR))
+import pytest
 
 from lean_verifier import LEAN_WORKSPACE, verify
+
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "lean_examples"
 
 KNOWN_GOOD_LEAN = """\
 import Mathlib
@@ -55,11 +54,68 @@ theorem imported_crra_definition (c γ : ℝ) :
 """
 
 CURATED_PARITY_EXAMPLES = {
-    "even_form_example": EXAMPLES_DIR / "even_form_pass.lean",
-    "even_sum_example": EXAMPLES_DIR / "even_sum_pass.lean",
-    "double_even_example": EXAMPLES_DIR / "double_even_pass.lean",
+    "even_form_example": FIXTURES_DIR / "even_form_pass.lean",
+    "even_sum_example": FIXTURES_DIR / "even_sum_pass.lean",
+    "double_even_example": FIXTURES_DIR / "double_even_pass.lean",
 }
 
+
+@pytest.mark.live
+def test_verify_known_good() -> None:
+    result = verify(KNOWN_GOOD_LEAN, filename="_test_known_good", check_axioms=False)
+    assert result["success"] is True
+
+
+@pytest.mark.live
+def test_verify_known_bad() -> None:
+    result = verify(KNOWN_BAD_LEAN, filename="_test_known_bad", check_axioms=False)
+    assert result["success"] is False
+
+
+@pytest.mark.live
+def test_verify_sorry_proof() -> None:
+    result = verify(SORRY_LEAN, filename="_test_sorry_proof", check_axioms=False)
+    assert result["success"] is False
+
+
+@pytest.mark.live
+def test_verify_preamble_import() -> None:
+    result = verify(LEAN_WITH_PREAMBLE_IMPORT, filename="_test_preamble_import", check_axioms=False)
+    assert result["success"] is True
+
+
+@pytest.mark.live
+def test_verify_does_not_touch_proof_module() -> None:
+    proof_path = LEAN_WORKSPACE / "LeanEcon" / "Proof.lean"
+    original = proof_path.read_text(encoding="utf-8")
+    result = verify(KNOWN_GOOD_LEAN, filename="_test_restore_check", check_axioms=False)
+    restored = proof_path.read_text(encoding="utf-8")
+    assert result["success"]
+    assert restored == original, "verify() unexpectedly modified LeanEcon/Proof.lean"
+
+
+@pytest.mark.live
+def test_verify_cleans_up_temp_file() -> None:
+    proof_dir = LEAN_WORKSPACE / "LeanEcon"
+    prefix = "TempCleanupCheck"
+    before = set(proof_dir.glob(f"{prefix}_*.lean"))
+    result = verify(KNOWN_GOOD_LEAN, filename=prefix, check_axioms=False)
+    after = set(proof_dir.glob(f"{prefix}_*.lean"))
+    assert result["success"]
+    assert before == after, f"Leaked temp files: {sorted(str(p.name) for p in after - before)}"
+
+
+@pytest.mark.live
+@pytest.mark.parametrize("name,path", list(CURATED_PARITY_EXAMPLES.items()))
+def test_curated_parity_example(name: str, path: Path) -> None:
+    code = path.read_text(encoding="utf-8")
+    result = verify(code, filename=f"_example_{name}", check_axioms=False)
+    assert result["success"] is True, f"Example {name} failed: {result.get('errors', [])[:1]}"
+
+
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
 
 def _run_case(name: str, code: str, expected_success: bool) -> bool:
     result = verify(code, filename=f"_test_{name}", check_axioms=False)
@@ -91,41 +147,6 @@ def _run_example_case(name: str, path: Path, expected_success: bool = True) -> b
     return ok
 
 
-def _test_verify_does_not_touch_proof_module() -> bool:
-    proof_path = LEAN_WORKSPACE / "LeanEcon" / "Proof.lean"
-    original = proof_path.read_text(encoding="utf-8")
-    result = verify(KNOWN_GOOD_LEAN, filename="_test_restore_check", check_axioms=False)
-    restored = proof_path.read_text(encoding="utf-8")
-    ok = result["success"] and restored == original
-
-    print("\nproof_module_unchanged")
-    print("  expected: PASS")
-    print(f"  got:      {'PASS' if ok else 'FAIL'}")
-    if not ok and restored != original:
-        print("  errors:   verify() unexpectedly modified LeanEcon/Proof.lean")
-    print(f"  status:   {'PASS' if ok else 'FAIL'}")
-    return ok
-
-
-def _test_verify_cleans_up_temp_file() -> bool:
-    proof_dir = LEAN_WORKSPACE / "LeanEcon"
-    prefix = "TempCleanupCheck"
-    before = set(proof_dir.glob(f"{prefix}_*.lean"))
-    result = verify(KNOWN_GOOD_LEAN, filename=prefix, check_axioms=False)
-    after = set(proof_dir.glob(f"{prefix}_*.lean"))
-    ok = result["success"] and before == after
-
-    print("\nverify_temp_file_cleanup")
-    print("  expected: PASS")
-    print(f"  got:      {'PASS' if ok else 'FAIL'}")
-    if not ok:
-        leaked = sorted(str(path.name) for path in after - before)
-        if leaked:
-            print(f"  errors:   leaked temp files: {', '.join(leaked)}")
-    print(f"  status:   {'PASS' if ok else 'FAIL'}")
-    return ok
-
-
 def main() -> int:
     print("=" * 60)
     print("LeanEcon Verifier Smoke Tests")
@@ -137,8 +158,6 @@ def main() -> int:
         "known_bad": _run_case("known_bad", KNOWN_BAD_LEAN, False),
         "sorry_proof": _run_case("sorry_proof", SORRY_LEAN, False),
         "preamble_import": _run_case("preamble_import", LEAN_WITH_PREAMBLE_IMPORT, True),
-        "proof_module_unchanged": _test_verify_does_not_touch_proof_module(),
-        "verify_temp_file_cleanup": _test_verify_cleans_up_temp_file(),
     }
     for name, path in CURATED_PARITY_EXAMPLES.items():
         results[name] = _run_example_case(name, path, True)

@@ -2,13 +2,13 @@
 Standalone smoke tests for the FastAPI service.
 
 Usage:
+  pytest tests/test_api_smoke.py
   python tests/test_api_smoke.py
 """
 
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 import threading
 import time
@@ -16,10 +16,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_DIR = PROJECT_ROOT / "src"
-sys.path.insert(0, str(SRC_DIR))
 
 import api
 
@@ -30,16 +26,6 @@ open Real
 theorem one_plus_one : 1 + 1 = 2 := by
   sorry
 """
-
-
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
 
 
 def _make_verify_result() -> dict:
@@ -75,9 +61,8 @@ def _make_verify_result() -> dict:
 # Existing tests (updated for v1 paths)
 # ---------------------------------------------------------------------------
 
-def _test_app_imports_and_routes() -> None:
+def test_app_imports_and_routes() -> None:
     route_paths = {route.path for route in api.app.routes}
-    # v1 versioned routes
     assert "/api/v1/classify" in route_paths
     assert "/api/v1/formalize" in route_paths
     assert "/api/v1/verify" in route_paths
@@ -87,18 +72,17 @@ def _test_app_imports_and_routes() -> None:
     assert "/api/v1/metrics" in route_paths
     assert "/api/v1/cache/stats" in route_paths
     assert "/api/v1/cache" in route_paths
-    # meta
     assert "/health" in route_paths
 
 
-def _test_health() -> None:
+def test_health() -> None:
     client = TestClient(api.app)
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-def _test_startup_cleans_orphaned_agentic_files() -> None:
+def test_startup_cleans_orphaned_agentic_files() -> None:
     orphan = api.LEAN_SOURCE_DIR / "AgenticProof_startup_cleanup_test.lean"
     orphan.write_text("import Mathlib\n", encoding="utf-8")
     try:
@@ -110,12 +94,12 @@ def _test_startup_cleans_orphaned_agentic_files() -> None:
         orphan.unlink(missing_ok=True)
 
 
-def _test_cors_middleware_present() -> None:
+def test_cors_middleware_present() -> None:
     middleware_names = {middleware.cls.__name__ for middleware in api.app.user_middleware}
     assert "CORSMiddleware" in middleware_names
 
 
-def _test_classify_raw_lean() -> None:
+def test_classify_raw_lean() -> None:
     client = TestClient(api.app)
     response = client.post("/api/v1/classify", json={"raw_claim": RAW_LEAN_THEOREM})
     assert response.status_code == 200
@@ -126,7 +110,7 @@ def _test_classify_raw_lean() -> None:
     assert body["error_code"] == "none"
 
 
-def _test_classify_requires_definitions() -> None:
+def test_classify_requires_definitions() -> None:
     client = TestClient(api.app)
     with patch.object(
         api,
@@ -150,7 +134,7 @@ def _test_classify_requires_definitions() -> None:
     assert "definitions" in body["reason"].lower()
 
 
-def _test_formalize_raw_lean_bypass() -> None:
+def test_formalize_raw_lean_bypass() -> None:
     client = TestClient(api.app)
     response = client.post("/api/v1/formalize", json={"raw_claim": RAW_LEAN_THEOREM})
     assert response.status_code == 200
@@ -161,14 +145,12 @@ def _test_formalize_raw_lean_bypass() -> None:
     assert body["theorem_code"] == RAW_LEAN_THEOREM.strip()
 
 
-def _test_verify_exceptions_return_500() -> None:
+def test_verify_exceptions_return_500() -> None:
     client = TestClient(api.app, raise_server_exceptions=False)
     with patch.object(api, "run_pipeline", side_effect=RuntimeError("boom")):
-        # First submit
         resp = client.post("/api/v1/verify", json={"theorem_code": RAW_LEAN_THEOREM})
         assert resp.status_code == 202
         job_id = resp.json()["job_id"]
-        # Poll for failed status
         for _ in range(20):
             status_resp = client.get(f"/api/v1/jobs/{job_id}")
             assert status_resp.status_code == 200
@@ -180,7 +162,7 @@ def _test_verify_exceptions_return_500() -> None:
         assert "boom" in data["error"]
 
 
-def _test_openapi_schema() -> None:
+def test_openapi_schema() -> None:
     client = TestClient(api.app)
     response = client.get("/openapi.json")
     assert response.status_code == 200
@@ -194,10 +176,10 @@ def _test_openapi_schema() -> None:
 
 
 # ---------------------------------------------------------------------------
-# New tests: error codes
+# Error codes
 # ---------------------------------------------------------------------------
 
-def _test_error_codes_on_failure() -> None:
+def test_error_codes_on_failure() -> None:
     client = TestClient(api.app)
     with patch.object(
         api,
@@ -218,7 +200,7 @@ def _test_error_codes_on_failure() -> None:
     assert response.json()["error_code"] == "classification_rejected"
 
 
-def _test_error_codes_on_success() -> None:
+def test_error_codes_on_success() -> None:
     client = TestClient(api.app)
     response = client.post("/api/v1/classify", json={"raw_claim": RAW_LEAN_THEOREM})
     assert response.status_code == 200
@@ -226,10 +208,10 @@ def _test_error_codes_on_success() -> None:
 
 
 # ---------------------------------------------------------------------------
-# New tests: async verify
+# Async verify
 # ---------------------------------------------------------------------------
 
-def _test_verify_returns_202_with_job_id() -> None:
+def test_verify_returns_202_with_job_id() -> None:
     client = TestClient(api.app)
     with patch.object(api, "run_pipeline", return_value=_make_verify_result()):
         response = client.post("/api/v1/verify", json={"theorem_code": RAW_LEAN_THEOREM})
@@ -239,7 +221,7 @@ def _test_verify_returns_202_with_job_id() -> None:
     assert body["status"] == "queued"
 
 
-def _test_verify_uses_preformalized_theorem() -> None:
+def test_verify_uses_preformalized_theorem() -> None:
     client = TestClient(api.app)
     captured: dict[str, str] = {}
 
@@ -256,7 +238,6 @@ def _test_verify_uses_preformalized_theorem() -> None:
     assert "job_id" in body
     job_id = body["job_id"]
 
-    # Poll until completed
     for _ in range(20):
         status_resp = client.get(f"/api/v1/jobs/{job_id}")
         assert status_resp.status_code == 200
@@ -271,11 +252,8 @@ def _test_verify_uses_preformalized_theorem() -> None:
     assert captured["preformalized_theorem"] == RAW_LEAN_THEOREM.strip()
 
 
-def _test_job_status_queued_or_running() -> None:
+def test_job_status_queued_or_running() -> None:
     client = TestClient(api.app)
-
-    # Use a slow mock so we can catch queued/running state
-    import threading
 
     barrier = threading.Event()
 
@@ -288,7 +266,6 @@ def _test_job_status_queued_or_running() -> None:
     assert resp.status_code == 202
     job_id = resp.json()["job_id"]
 
-    # Job should be queued or running before we release the barrier
     status_resp = client.get(f"/api/v1/jobs/{job_id}")
     assert status_resp.status_code == 200
     assert status_resp.json()["status"] in ("queued", "running", "completed")
@@ -296,13 +273,13 @@ def _test_job_status_queued_or_running() -> None:
     barrier.set()
 
 
-def _test_job_not_found() -> None:
+def test_job_not_found() -> None:
     client = TestClient(api.app)
     response = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000")
     assert response.status_code == 404
 
 
-def _test_stream_completed_job() -> None:
+def test_stream_completed_job() -> None:
     client = TestClient(api.app)
     with patch.object(api, "run_pipeline", return_value=_make_verify_result()):
         resp = client.post("/api/v1/verify", json={"theorem_code": RAW_LEAN_THEOREM})
@@ -323,13 +300,13 @@ def _test_stream_completed_job() -> None:
     assert b'"status": "completed"' in body or b'"status":"completed"' in body
 
 
-def _test_stream_not_found() -> None:
+def test_stream_not_found() -> None:
     client = TestClient(api.app)
     response = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000/stream")
     assert response.status_code == 404
 
 
-def _test_stream_live_progress() -> None:
+def test_stream_live_progress() -> None:
     client = TestClient(api.app)
     emit_progress = threading.Event()
     complete_job = threading.Event()
@@ -386,14 +363,14 @@ def _test_stream_live_progress() -> None:
     assert not worker.is_alive()
 
 
-def _test_cache_stats_endpoint() -> None:
+def test_cache_stats_endpoint() -> None:
     client = TestClient(api.app)
     response = client.get("/api/v1/cache/stats")
     assert response.status_code == 200
     assert "size" in response.json()
 
 
-def _test_metrics_empty_log() -> None:
+def test_metrics_empty_log() -> None:
     client = TestClient(api.app)
     with tempfile.TemporaryDirectory() as tmpdir:
         missing_path = Path(tmpdir) / "missing.jsonl"
@@ -413,7 +390,7 @@ def _test_metrics_empty_log() -> None:
     }
 
 
-def _test_metrics_aggregates_runs() -> None:
+def test_metrics_aggregates_runs() -> None:
     client = TestClient(api.app)
     entries = [
         {
@@ -461,7 +438,7 @@ def _test_metrics_aggregates_runs() -> None:
     }
 
 
-def _test_cache_clear_endpoint() -> None:
+def test_cache_clear_endpoint() -> None:
     client = TestClient(api.app)
     response = client.delete("/api/v1/cache")
     assert response.status_code == 200
@@ -469,10 +446,10 @@ def _test_cache_clear_endpoint() -> None:
 
 
 # ---------------------------------------------------------------------------
-# New tests: explain endpoint
+# Explain endpoint
 # ---------------------------------------------------------------------------
 
-def _test_explain_verified() -> None:
+def test_explain_verified() -> None:
     client = TestClient(api.app)
 
     def fake_explain(*, original_claim, theorem_code, verification_result, on_log=None):
@@ -496,7 +473,7 @@ def _test_explain_verified() -> None:
     assert body["error_code"] == "none"
 
 
-def _test_explain_classification_rejected() -> None:
+def test_explain_classification_rejected() -> None:
     client = TestClient(api.app)
 
     def fake_explain(*, original_claim, theorem_code, verification_result, on_log=None):
@@ -519,7 +496,7 @@ def _test_explain_classification_rejected() -> None:
     assert len(body["explanation"]) > 0
 
 
-def _test_explain_formalization_failed() -> None:
+def test_explain_formalization_failed() -> None:
     client = TestClient(api.app)
 
     def fake_explain(*, original_claim, theorem_code, verification_result, on_log=None):
@@ -542,10 +519,10 @@ def _test_explain_formalization_failed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# New test: legacy backward-compat
+# Legacy backward-compat
 # ---------------------------------------------------------------------------
 
-def _test_legacy_classify_still_works() -> None:
+def test_legacy_classify_still_works() -> None:
     client = TestClient(api.app)
     response = client.post("/api/classify", json={"raw_claim": RAW_LEAN_THEOREM})
     assert response.status_code == 200
@@ -553,10 +530,10 @@ def _test_legacy_classify_still_works() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bundle 2: three-tier classifier, preamble, diagnostics
+# Three-tier classifier, preamble, diagnostics
 # ---------------------------------------------------------------------------
 
-def _test_classify_definable_with_preamble() -> None:
+def test_classify_definable_with_preamble() -> None:
     """DEFINABLE claims with preamble matches are formalizable."""
     client = TestClient(api.app)
     with patch.object(
@@ -583,7 +560,7 @@ def _test_classify_definable_with_preamble() -> None:
     assert body["error_code"] == "none"
 
 
-def _test_formalize_with_preamble_names() -> None:
+def test_formalize_with_preamble_names() -> None:
     """Formalize endpoint threads preamble_names through."""
     client = TestClient(api.app)
     captured: dict = {}
@@ -617,7 +594,7 @@ def _test_formalize_with_preamble_names() -> None:
     assert captured["preamble_names"] == ["cobb_douglas_2factor"]
 
 
-def _test_formalize_failure_with_diagnosis() -> None:
+def test_formalize_failure_with_diagnosis() -> None:
     """Failed formalization includes diagnostic fields."""
     client = TestClient(api.app)
 
@@ -648,7 +625,7 @@ def _test_formalize_failure_with_diagnosis() -> None:
     assert body["fixable"] is True
 
 
-def _test_formalize_success_no_diagnosis() -> None:
+def test_formalize_success_no_diagnosis() -> None:
     """Successful formalization has no diagnostic fields."""
     client = TestClient(api.app)
     response = client.post("/api/v1/formalize", json={"raw_claim": RAW_LEAN_THEOREM})
@@ -659,7 +636,7 @@ def _test_formalize_success_no_diagnosis() -> None:
     assert body["preamble_used"] == []
 
 
-def _test_prover_registry() -> None:
+def test_prover_registry() -> None:
     from prover_backend import PROVER_REGISTRY, get_prover
 
     assert "leanstral" in PROVER_REGISTRY
@@ -667,7 +644,7 @@ def _test_prover_registry() -> None:
     assert prover.name == "leanstral"
 
 
-def _test_prover_registry_unknown() -> None:
+def test_prover_registry_unknown() -> None:
     from prover_backend import get_prover
 
     try:
@@ -677,89 +654,98 @@ def _test_prover_registry_unknown() -> None:
         assert "nonexistent" in str(exc)
 
 
+# ---------------------------------------------------------------------------
+# Standalone runner (fallback)
+# ---------------------------------------------------------------------------
+
+def _run_case(name: str, fn) -> bool:
+    try:
+        fn()
+    except Exception as exc:
+        print(f"{name}: FAIL ({exc})")
+        return False
+    print(f"{name}: PASS")
+    return True
+
+
 def main() -> int:
     print("=" * 60)
     print("LeanEcon FastAPI Smoke Tests")
     print("=" * 60)
 
     results = {
-        "app_imports_and_routes": _run_case("app_imports_and_routes", _test_app_imports_and_routes),
-        "health": _run_case("health", _test_health),
+        "app_imports_and_routes": _run_case("app_imports_and_routes", test_app_imports_and_routes),
+        "health": _run_case("health", test_health),
         "startup_cleans_orphaned_agentic_files": _run_case(
             "startup_cleans_orphaned_agentic_files",
-            _test_startup_cleans_orphaned_agentic_files,
+            test_startup_cleans_orphaned_agentic_files,
         ),
-        "cors_middleware_present": _run_case("cors_middleware_present", _test_cors_middleware_present),
-        "classify_raw_lean": _run_case("classify_raw_lean", _test_classify_raw_lean),
+        "cors_middleware_present": _run_case("cors_middleware_present", test_cors_middleware_present),
+        "classify_raw_lean": _run_case("classify_raw_lean", test_classify_raw_lean),
         "classify_requires_definitions": _run_case(
             "classify_requires_definitions",
-            _test_classify_requires_definitions,
+            test_classify_requires_definitions,
         ),
         "formalize_raw_lean_bypass": _run_case(
             "formalize_raw_lean_bypass",
-            _test_formalize_raw_lean_bypass,
+            test_formalize_raw_lean_bypass,
         ),
         "verify_exceptions_return_500": _run_case(
             "verify_exceptions_return_500",
-            _test_verify_exceptions_return_500,
+            test_verify_exceptions_return_500,
         ),
-        "openapi_schema": _run_case("openapi_schema", _test_openapi_schema),
-        # error codes
-        "error_codes_on_failure": _run_case("error_codes_on_failure", _test_error_codes_on_failure),
-        "error_codes_on_success": _run_case("error_codes_on_success", _test_error_codes_on_success),
-        # async verify
+        "openapi_schema": _run_case("openapi_schema", test_openapi_schema),
+        "error_codes_on_failure": _run_case("error_codes_on_failure", test_error_codes_on_failure),
+        "error_codes_on_success": _run_case("error_codes_on_success", test_error_codes_on_success),
         "verify_returns_202_with_job_id": _run_case(
-            "verify_returns_202_with_job_id", _test_verify_returns_202_with_job_id
+            "verify_returns_202_with_job_id", test_verify_returns_202_with_job_id
         ),
         "verify_uses_preformalized_theorem": _run_case(
             "verify_uses_preformalized_theorem",
-            _test_verify_uses_preformalized_theorem,
+            test_verify_uses_preformalized_theorem,
         ),
         "job_status_queued_or_running": _run_case(
-            "job_status_queued_or_running", _test_job_status_queued_or_running
+            "job_status_queued_or_running", test_job_status_queued_or_running
         ),
-        "job_not_found": _run_case("job_not_found", _test_job_not_found),
-        "stream_completed_job": _run_case("stream_completed_job", _test_stream_completed_job),
-        "stream_not_found": _run_case("stream_not_found", _test_stream_not_found),
-        "stream_live_progress": _run_case("stream_live_progress", _test_stream_live_progress),
+        "job_not_found": _run_case("job_not_found", test_job_not_found),
+        "stream_completed_job": _run_case("stream_completed_job", test_stream_completed_job),
+        "stream_not_found": _run_case("stream_not_found", test_stream_not_found),
+        "stream_live_progress": _run_case("stream_live_progress", test_stream_live_progress),
         "cache_stats_endpoint": _run_case(
-            "cache_stats_endpoint", _test_cache_stats_endpoint
+            "cache_stats_endpoint", test_cache_stats_endpoint
         ),
-        "metrics_empty_log": _run_case("metrics_empty_log", _test_metrics_empty_log),
+        "metrics_empty_log": _run_case("metrics_empty_log", test_metrics_empty_log),
         "metrics_aggregates_runs": _run_case(
-            "metrics_aggregates_runs", _test_metrics_aggregates_runs
+            "metrics_aggregates_runs", test_metrics_aggregates_runs
         ),
         "cache_clear_endpoint": _run_case(
-            "cache_clear_endpoint", _test_cache_clear_endpoint
+            "cache_clear_endpoint", test_cache_clear_endpoint
         ),
-        # explain
-        "explain_verified": _run_case("explain_verified", _test_explain_verified),
+        "explain_verified": _run_case("explain_verified", test_explain_verified),
         "explain_classification_rejected": _run_case(
-            "explain_classification_rejected", _test_explain_classification_rejected
+            "explain_classification_rejected", test_explain_classification_rejected
         ),
         "explain_formalization_failed": _run_case(
-            "explain_formalization_failed", _test_explain_formalization_failed
+            "explain_formalization_failed", test_explain_formalization_failed
         ),
-        # legacy
         "legacy_classify_still_works": _run_case(
-            "legacy_classify_still_works", _test_legacy_classify_still_works
+            "legacy_classify_still_works", test_legacy_classify_still_works
         ),
-        # bundle 2: three-tier classifier, preamble, diagnostics
         "classify_definable_with_preamble": _run_case(
-            "classify_definable_with_preamble", _test_classify_definable_with_preamble
+            "classify_definable_with_preamble", test_classify_definable_with_preamble
         ),
         "formalize_with_preamble_names": _run_case(
-            "formalize_with_preamble_names", _test_formalize_with_preamble_names
+            "formalize_with_preamble_names", test_formalize_with_preamble_names
         ),
         "formalize_failure_with_diagnosis": _run_case(
-            "formalize_failure_with_diagnosis", _test_formalize_failure_with_diagnosis
+            "formalize_failure_with_diagnosis", test_formalize_failure_with_diagnosis
         ),
         "formalize_success_no_diagnosis": _run_case(
-            "formalize_success_no_diagnosis", _test_formalize_success_no_diagnosis
+            "formalize_success_no_diagnosis", test_formalize_success_no_diagnosis
         ),
-        "prover_registry": _run_case("prover_registry", _test_prover_registry),
+        "prover_registry": _run_case("prover_registry", test_prover_registry),
         "prover_registry_unknown": _run_case(
-            "prover_registry_unknown", _test_prover_registry_unknown
+            "prover_registry_unknown", test_prover_registry_unknown
         ),
     }
 
