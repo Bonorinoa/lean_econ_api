@@ -179,7 +179,7 @@ economics claim produced a theorem statement that does not compile in Lean 4.
 You will be given:
 1. The original claim
 2. The Lean 4 file that failed
-3. The exact error messages from `lake build`
+3. The exact Lean compiler error messages
 
 Fix the Lean 4 file so it compiles with only a `sorry` warning.
 Apply the MINIMUM changes needed. Do not rewrite from scratch unless the
@@ -235,7 +235,7 @@ all repair cycles and still fails to compile.
 You will be given:
 1. The original economic claim
 2. The last Lean 4 code that was attempted
-3. The error messages from lake build
+3. The Lean compiler error messages
 
 Analyze the failure and respond with ONLY a JSON object (no markdown, no
 explanation outside the JSON):

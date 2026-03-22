@@ -3,6 +3,9 @@ Standalone smoke tests for lean_verifier.py.
 
 Usage:
   ./leanEconAPI_venv/bin/python tests/test_verifier.py
+
+These smoke checks intentionally disable axiom probing so they stay focused on
+the local Lean compiler path and remain deterministic in offline environments.
 """
 
 from __future__ import annotations
@@ -59,7 +62,7 @@ CURATED_PARITY_EXAMPLES = {
 
 
 def _run_case(name: str, code: str, expected_success: bool) -> bool:
-    result = verify(code, filename=f"_test_{name}")
+    result = verify(code, filename=f"_test_{name}", check_axioms=False)
     ok = result["success"] == expected_success
     status = "PASS" if result["success"] else "FAIL"
 
@@ -74,7 +77,7 @@ def _run_case(name: str, code: str, expected_success: bool) -> bool:
 
 def _run_example_case(name: str, path: Path, expected_success: bool = True) -> bool:
     code = path.read_text(encoding="utf-8")
-    result = verify(code, filename=f"_example_{name}")
+    result = verify(code, filename=f"_example_{name}", check_axioms=False)
     ok = result["success"] == expected_success
     status = "PASS" if result["success"] else "FAIL"
 
@@ -91,7 +94,7 @@ def _run_example_case(name: str, path: Path, expected_success: bool = True) -> b
 def _test_verify_does_not_touch_proof_module() -> bool:
     proof_path = LEAN_WORKSPACE / "LeanEcon" / "Proof.lean"
     original = proof_path.read_text(encoding="utf-8")
-    result = verify(KNOWN_GOOD_LEAN, filename="_test_restore_check")
+    result = verify(KNOWN_GOOD_LEAN, filename="_test_restore_check", check_axioms=False)
     restored = proof_path.read_text(encoding="utf-8")
     ok = result["success"] and restored == original
 
@@ -108,7 +111,7 @@ def _test_verify_cleans_up_temp_file() -> bool:
     proof_dir = LEAN_WORKSPACE / "LeanEcon"
     prefix = "TempCleanupCheck"
     before = set(proof_dir.glob(f"{prefix}_*.lean"))
-    result = verify(KNOWN_GOOD_LEAN, filename=prefix)
+    result = verify(KNOWN_GOOD_LEAN, filename=prefix, check_axioms=False)
     after = set(proof_dir.glob(f"{prefix}_*.lean"))
     ok = result["success"] and before == after
 

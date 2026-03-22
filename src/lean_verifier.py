@@ -3,13 +3,13 @@ lean_verifier.py
 
 Verify Lean 4 source files for LeanEcon.
 
-Full-proof verification now writes each candidate to a unique temporary file
-under `lean_workspace/LeanEcon/` and compiles that file directly with
+Full-proof verification writes each candidate to a unique temporary file under
+`lean_workspace/LeanEcon/` and compiles that file directly with
 `lake env lean <file>`. This avoids the old shared `Proof.lean` bottleneck and
 allows concurrent verifier runs without clobbering a tracked module.
 
-The older `Proof.lean` + `lake build` path remains available only as a legacy
-helper for sorry-validation fallback in `formalizer.py`.
+The checked-in `Proof.lean` file remains only as a stable fallback write target
+for sorry-validation when MCP-backed `lean_run_code` is unavailable.
 """
 
 import logging
@@ -59,7 +59,8 @@ def write_lean_file(lean_code: str, filename: str | None = None) -> Path:
     Write Lean 4 source code to the legacy `LeanEcon/Proof.lean` path.
 
     This helper is kept for the formalizer's sorry-validation fallback, which
-    still uses a project-wide `lake build` when `lean_run_code` is unavailable.
+    compiles this file directly with `lake env lean` when `lean_run_code` is
+    unavailable.
 
     Args:
         lean_code: Complete .lean file content (must start with `import Mathlib`).
@@ -88,86 +89,14 @@ def write_verification_file(lean_code: str, filename: str | None = None) -> Path
     lean_path.write_text(lean_code, encoding="utf-8")
     return lean_path
 
-
-def run_lake_build(lean_path: Path, timeout: int = 300) -> dict:
-    """
-    Run project-wide `lake build` from lean_workspace/ and capture the result.
-
-    This is a legacy helper used by sorry-validation fallback. Full proof
-    verification now prefers `run_direct_lean_check()` on a unique file.
-
-    Args:
-        lean_path: Path to the .lean file (used only for reporting; lake builds
-                   the whole project).
-        timeout: Maximum seconds to wait for lake build (default: 300 = 5 min).
-
-    Returns:
-        dict with keys:
-          - success (bool): True if lake build exited with code 0.
-          - returncode (int): Exit code from lake.
-          - stdout (str): Captured standard output.
-          - stderr (str): Captured standard error.
-          - errors (list[str]): Parsed error lines from combined output.
-          - warnings (list[str]): Parsed warning lines from combined output.
-          - lean_file (str): Path to the .lean file that was verified.
-    """
-    try:
-        result = subprocess.run(
-            ["lake", "build"],
-            cwd=str(LEAN_WORKSPACE),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return {
-            "success": False,
-            "returncode": -1,
-            "stdout": "",
-            "stderr": f"lake build timed out after {timeout}s",
-            "errors": [f"Timeout after {timeout}s"],
-            "warnings": [],
-            "lean_file": str(lean_path),
-        }
-    except FileNotFoundError:
-        return {
-            "success": False,
-            "returncode": -1,
-            "stdout": "",
-            "stderr": "lake not found on PATH",
-            "errors": ["lake executable not found — is Lean 4 installed?"],
-            "warnings": [],
-            "lean_file": str(lean_path),
-        }
-
-    combined = result.stdout + "\n" + result.stderr
-    errors = _parse_diagnostics(combined, "error")
-    warnings = _parse_diagnostics(combined, "warning")
-
-    # `sorry` compiles with exit 0 in Lean 4 but emits a warning.
-    # We treat any sorry usage as a failure.
-    has_sorry = "declaration uses `sorry`" in combined
-    if has_sorry:
-        errors.append("Proof contains 'sorry' — not a complete proof.")
-
-    return {
-        "success": result.returncode == 0 and not has_sorry,
-        "returncode": result.returncode,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "errors": errors,
-        "warnings": warnings,
-        "lean_file": str(lean_path),
-    }
-
-
 def run_direct_lean_check(lean_path: Path, timeout: int = 300) -> dict:
     """
     Compile one Lean file directly with `lake env lean`.
 
-    Unlike `lake build`, this checks a standalone file whether or not it is
-    imported from `LeanEcon.lean`, which makes it safe for concurrent
-    per-verification temp files.
+    This checks a standalone file whether or not it is imported from
+    `LeanEcon.lean`, which makes it safe for concurrent per-verification temp
+    files and for fixed fallback files that are intentionally outside the
+    default import graph.
 
     We intentionally do not use `lean_run_code` here. Local probing on
     2026-03-21 found that complete-proof calls failed with

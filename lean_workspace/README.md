@@ -1,13 +1,10 @@
-# LeanEcon
+# LeanEcon Workspace
 
-## GitHub configuration
+This directory contains the Lean 4 workspace used by the API and Docker build.
 
-To set up your new GitHub repository, follow these steps:
-
-* Under your repository name, click **Settings**.
-* In the **Actions** section of the sidebar, click "General".
-* Check the box **Allow GitHub Actions to create and approve pull requests**.
-* Click the **Pages** section of the settings sidebar.
-* In the **Source** dropdown menu, select "GitHub Actions".
-
-After following the steps above, you can remove this section from the README file.
+- `LeanEcon.lean` is the default library target built during image creation.
+- `LeanEcon/Preamble/` contains reusable economics definitions.
+- Runtime verification uses isolated `AgenticProof_*.lean` files compiled with
+  `lake env lean`.
+- `LeanEcon/Proof.lean` is kept only as a fixed fallback file for
+  sorry-validation when MCP-backed `lean_run_code` is unavailable.

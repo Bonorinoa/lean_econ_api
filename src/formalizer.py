@@ -21,7 +21,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 
-from lean_verifier import run_lake_build, write_lean_file
+from lean_verifier import run_direct_lean_check, write_lean_file
 from leanstral_utils import call_leanstral, strip_fences
 from preamble_library import (
     build_preamble_block,
@@ -42,7 +42,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 FORMALIZE_TEMPERATURE = 0.3   # lower than proving (1.0) — we want conservative output
 FORMALIZE_MAX_TOKENS = 4096   # theorem statements are short
 MAX_FORMALIZATION_ATTEMPTS = 3
-SORRY_VALIDATION_TIMEOUT = 120  # seconds for lake build with sorry
+SORRY_VALIDATION_TIMEOUT = 120  # seconds for direct Lean fallback with sorry
 _client: Mistral | None = None
 
 # ---------------------------------------------------------------------------
@@ -285,15 +285,16 @@ def sorry_validate(lean_code: str) -> dict:
     """
     Check that a Lean 4 file with sorry compiles (no errors except sorry warning).
 
-    Tries lean_run_code first (fast, no file writes). Falls back to
-    lake build if lean_run_code is unavailable or fails.
+    Tries lean_run_code first (fast, no file writes). Falls back to a direct
+    `lake env lean` check on the legacy fixed file if lean_run_code is
+    unavailable or fails.
 
     Returns:
         dict with keys:
           - valid (bool): True if only sorry warnings, no real errors.
           - errors (list[str]): Lean errors (empty if valid).
           - warnings (list[str]): Lean warnings (including sorry).
-          - method (str): "lean_run_code" or "lake_build".
+          - method (str): "lean_run_code" or "lake_env_lean".
     """
     # Fast path: lean_run_code via MCP (no file writes, ~2-5s)
     try:
@@ -306,13 +307,13 @@ def sorry_validate(lean_code: str) -> dict:
             "method": "lean_run_code",
         }
     except Exception:
-        pass  # Fall through to lake build
+        pass  # Fall through to direct Lean check
 
-    # Slow path: write to Proof.lean + lake build (~15-25s)
+    # Slow path: write to Proof.lean + direct Lean check.
     lean_path = write_lean_file(lean_code)
-    raw = run_lake_build(lean_path, timeout=SORRY_VALIDATION_TIMEOUT)
+    raw = run_direct_lean_check(lean_path, timeout=SORRY_VALIDATION_TIMEOUT)
     valid = raw["returncode"] == 0
-    # Filter out the sorry pseudo-error injected by run_lake_build
+    # Filter out the sorry pseudo-error injected by run_direct_lean_check.
     real_errors = [
         e for e in raw["errors"]
         if "declaration uses `sorry`" not in e and "Proof contains" not in e
@@ -321,7 +322,7 @@ def sorry_validate(lean_code: str) -> dict:
         "valid": valid,
         "errors": real_errors if not valid else [],
         "warnings": raw["warnings"],
-        "method": "lake_build",
+        "method": raw.get("verification_method", "lake_env_lean"),
     }
 
 

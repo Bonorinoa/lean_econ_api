@@ -37,8 +37,8 @@ available at `http://localhost:8000/health`.
 - The image does not bake a real `.env` file into the container.
 - The image exposes port `8000` and starts `uvicorn src.api:app`.
 - Verification still happens locally inside the container with the Lean toolchain.
-- The image build still runs `lake build` to warm the workspace and because
-  `lean_workspace/LeanEcon.lean` still imports `LeanEcon.Proof`.
+- The image build still runs `lake build` to warm the workspace and precompile
+  the default `LeanEcon` library target.
 - The first image build can take a while because Lean and Mathlib artifacts must
   be fetched and compiled into the image.
 - This is a Docker deployment path, not a serverless one. The app is not a fit

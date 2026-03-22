@@ -5,7 +5,7 @@ Usage:
   ./econProver_venv/bin/python tests/test_formalizer.py
 
 Includes:
-  - Live smoke tests (require MISTRAL_API_KEY and lake build)
+  - Live smoke tests (require MISTRAL_API_KEY and a local Lean toolchain)
   - Unit tests for preamble library, injection, and diagnostics (mock-based)
 """
 
@@ -43,7 +43,7 @@ def _run_case(name: str, fn) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Live smoke tests (require MISTRAL_API_KEY + lake build)
+# Live smoke tests (require MISTRAL_API_KEY + local Lean toolchain)
 # ---------------------------------------------------------------------------
 
 def _run_live_case(
@@ -354,24 +354,24 @@ def _test_sorry_validate_uses_run_code() -> None:
             with patch.dict("sys.modules", {"lean_runner": lean_runner}):
                 result = formalizer.sorry_validate("import Mathlib\ntheorem t : True := by sorry")
     # The function does a lazy import, so we patch at module level
-    assert result["method"] == "lean_run_code" or result["method"] == "lake_build"
+    assert result["method"] in {"lean_run_code", "lake_env_lean"}
 
 
 def _test_sorry_validate_fallback_on_error() -> None:
-    """sorry_validate falls back to lake_build when lean_runner raises."""
+    """sorry_validate falls back to lake_env_lean when lean_runner raises."""
     import formalizer
-    from lean_verifier import write_lean_file, run_lake_build
     mock_raw = {
         "returncode": 0,
         "errors": ["declaration uses `sorry`"],
         "warnings": [],
+        "verification_method": "lake_env_lean",
     }
     # Make lean_runner import fail, forcing fallback
     with patch.dict("sys.modules", {"lean_runner": None}):
         with patch.object(formalizer, "write_lean_file", return_value=Path("/tmp/fake.lean")):
-            with patch.object(formalizer, "run_lake_build", return_value=mock_raw):
+            with patch.object(formalizer, "run_direct_lean_check", return_value=mock_raw):
                 result = formalizer.sorry_validate("import Mathlib\ntheorem t : True := by sorry")
-    assert result["method"] == "lake_build"
+    assert result["method"] == "lake_env_lean"
     assert result["valid"] is True
     assert result["errors"] == []
 
@@ -608,7 +608,7 @@ def main() -> int:
     # Live smoke tests (skip if no API key)
     import os
     if os.environ.get("MISTRAL_API_KEY"):
-        print("\n--- Live smoke tests (requires MISTRAL_API_KEY + lake build) ---")
+        print("\n--- Live smoke tests (requires MISTRAL_API_KEY + local Lean toolchain) ---")
         try:
             results["crra_rra"] = _run_live_case(
                 "CRRA RRA",

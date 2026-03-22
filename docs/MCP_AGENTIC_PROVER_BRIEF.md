@@ -4,7 +4,8 @@
 
 LeanEcon now ships an agentic-only prover built around Leanstral and
 `lean-lsp-mcp`. The prover interacts with Lean through MCP tools during the
-proof search and uses `lake build` as the final authority.
+proof search and uses `lake env lean` on isolated per-run files as the final
+authority.
 
 ## Current Status
 
@@ -28,7 +29,8 @@ proof search and uses `lake build` as the final authority.
 | Natural language | CRRA RRA | PASS | formalizes and verifies end to end |
 | Natural language | Cobb-Douglas | MIXED | still unstable on harder samples |
 
-All passing cases above were verified by `lake build`.
+All passing cases above were verified by the Lean compiler on isolated files via
+`lake env lean`.
 
 ## Architecture
 
@@ -53,7 +55,8 @@ All passing cases above were verified by `lake build`.
 - `apply_tactic` is intentionally lightweight and only edits the working file.
 - MCP tools are used for in-loop diagnostics and goal inspection.
 - The prover now persists ordered deep traces with parsed diagnostic payloads so retries can be analyzed offline.
-- `lake build` remains the final source of truth for proof acceptance.
+- `lake env lean` on isolated files is the final source of truth for proof
+  acceptance.
 - Economic preambles live in Lean modules so their source is validated by the Lean kernel.
 
 ## Local Environment
