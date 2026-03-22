@@ -130,7 +130,9 @@ Example commands:
   --claim "Under CRRA utility, relative risk aversion is constant." \
   --theorem-file docs/legacy_examples/crra_pass.lean
 
-./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py test_cases/uncharted_claims.jsonl --pass-k 5
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
+  tests/fixtures/claims/uncharted_claims.jsonl \
+  --pass-k 5
 ```
 
 Example calls:
@@ -273,9 +275,9 @@ evaluation scripts can analyze proving behavior without re-running old jobs.
 - [`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md): generated catalog of reusable preamble modules
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): Docker-based local deployment notes
 - [`docs/ROADMAP.md`](docs/ROADMAP.md): current sprint and post-sprint priorities
-- [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md): chronological implementation log
-- [`docs/skill/SKILL.md`](docs/skill/SKILL.md): agent integration skill for LeanEcon clients
-- [`docs/skill/references/endpoints.md`](docs/skill/references/endpoints.md): compact endpoint reference
+- [`docs/skills/leanecon-api-SKILL.md`](docs/skills/leanecon-api-SKILL.md): agent integration skill for LeanEcon API clients
+- [`docs/skills/lean4-econ-SKILL.md`](docs/skills/lean4-econ-SKILL.md): economics-specific Lean formalization guidance
+- [`docs/skills/SKILL_LEAN.md`](docs/skills/SKILL_LEAN.md): general Lean 4 workflow skill
 - [`docs/leanstral_architecture.html`](docs/leanstral_architecture.html): visual architecture artifact
 
 ## Roadmap

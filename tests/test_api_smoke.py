@@ -3,7 +3,6 @@ Standalone smoke tests for the FastAPI service.
 
 Usage:
   pytest tests/test_api_smoke.py
-  python tests/test_api_smoke.py
 """
 
 from __future__ import annotations
@@ -60,6 +59,7 @@ def _make_verify_result() -> dict:
 # ---------------------------------------------------------------------------
 # Existing tests (updated for v1 paths)
 # ---------------------------------------------------------------------------
+
 
 def test_app_imports_and_routes() -> None:
     route_paths = {route.path for route in api.app.routes}
@@ -179,6 +179,7 @@ def test_openapi_schema() -> None:
 # Error codes
 # ---------------------------------------------------------------------------
 
+
 def test_error_codes_on_failure() -> None:
     client = TestClient(api.app)
     with patch.object(
@@ -210,6 +211,7 @@ def test_error_codes_on_success() -> None:
 # ---------------------------------------------------------------------------
 # Async verify
 # ---------------------------------------------------------------------------
+
 
 def test_verify_returns_202_with_job_id() -> None:
     client = TestClient(api.app)
@@ -348,7 +350,9 @@ def test_stream_live_progress() -> None:
             body = b""
             for chunk in response.iter_bytes():
                 body += chunk
-                if (b'"type": "progress"' in body or b'"type":"progress"' in body) and not complete_job.is_set():
+                if (
+                    b'"type": "progress"' in body or b'"type":"progress"' in body
+                ) and not complete_job.is_set():
                     complete_job.set()
                 if b'"type": "complete"' in body or b'"type":"complete"' in body:
                     break
@@ -357,7 +361,9 @@ def test_stream_live_progress() -> None:
 
     assert b'"type": "progress"' in body or b'"type":"progress"' in body
     assert b'"stage": "formalize"' in body or b'"stage":"formalize"' in body
-    assert b'"message": "Calling Leanstral..."' in body or b'"message":"Calling Leanstral..."' in body
+    assert (
+        b'"message": "Calling Leanstral..."' in body or b'"message":"Calling Leanstral..."' in body
+    )
     assert b'"status": "running"' in body or b'"status":"running"' in body
     assert b'"type": "complete"' in body or b'"type":"complete"' in body
     assert not worker.is_alive()
@@ -449,6 +455,7 @@ def test_cache_clear_endpoint() -> None:
 # Explain endpoint
 # ---------------------------------------------------------------------------
 
+
 def test_explain_verified() -> None:
     client = TestClient(api.app)
 
@@ -522,6 +529,7 @@ def test_explain_formalization_failed() -> None:
 # Legacy backward-compat
 # ---------------------------------------------------------------------------
 
+
 def test_legacy_classify_still_works() -> None:
     client = TestClient(api.app)
     response = client.post("/api/classify", json={"raw_claim": RAW_LEAN_THEOREM})
@@ -532,6 +540,7 @@ def test_legacy_classify_still_works() -> None:
 # ---------------------------------------------------------------------------
 # Three-tier classifier, preamble, diagnostics
 # ---------------------------------------------------------------------------
+
 
 def test_classify_definable_with_preamble() -> None:
     """DEFINABLE claims with preamble matches are formalizable."""
@@ -652,113 +661,3 @@ def test_prover_registry_unknown() -> None:
         assert False, "Should have raised ValueError"
     except ValueError as exc:
         assert "nonexistent" in str(exc)
-
-
-# ---------------------------------------------------------------------------
-# Standalone runner (fallback)
-# ---------------------------------------------------------------------------
-
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
-
-
-def main() -> int:
-    print("=" * 60)
-    print("LeanEcon FastAPI Smoke Tests")
-    print("=" * 60)
-
-    results = {
-        "app_imports_and_routes": _run_case("app_imports_and_routes", test_app_imports_and_routes),
-        "health": _run_case("health", test_health),
-        "startup_cleans_orphaned_agentic_files": _run_case(
-            "startup_cleans_orphaned_agentic_files",
-            test_startup_cleans_orphaned_agentic_files,
-        ),
-        "cors_middleware_present": _run_case("cors_middleware_present", test_cors_middleware_present),
-        "classify_raw_lean": _run_case("classify_raw_lean", test_classify_raw_lean),
-        "classify_requires_definitions": _run_case(
-            "classify_requires_definitions",
-            test_classify_requires_definitions,
-        ),
-        "formalize_raw_lean_bypass": _run_case(
-            "formalize_raw_lean_bypass",
-            test_formalize_raw_lean_bypass,
-        ),
-        "verify_exceptions_return_500": _run_case(
-            "verify_exceptions_return_500",
-            test_verify_exceptions_return_500,
-        ),
-        "openapi_schema": _run_case("openapi_schema", test_openapi_schema),
-        "error_codes_on_failure": _run_case("error_codes_on_failure", test_error_codes_on_failure),
-        "error_codes_on_success": _run_case("error_codes_on_success", test_error_codes_on_success),
-        "verify_returns_202_with_job_id": _run_case(
-            "verify_returns_202_with_job_id", test_verify_returns_202_with_job_id
-        ),
-        "verify_uses_preformalized_theorem": _run_case(
-            "verify_uses_preformalized_theorem",
-            test_verify_uses_preformalized_theorem,
-        ),
-        "job_status_queued_or_running": _run_case(
-            "job_status_queued_or_running", test_job_status_queued_or_running
-        ),
-        "job_not_found": _run_case("job_not_found", test_job_not_found),
-        "stream_completed_job": _run_case("stream_completed_job", test_stream_completed_job),
-        "stream_not_found": _run_case("stream_not_found", test_stream_not_found),
-        "stream_live_progress": _run_case("stream_live_progress", test_stream_live_progress),
-        "cache_stats_endpoint": _run_case(
-            "cache_stats_endpoint", test_cache_stats_endpoint
-        ),
-        "metrics_empty_log": _run_case("metrics_empty_log", test_metrics_empty_log),
-        "metrics_aggregates_runs": _run_case(
-            "metrics_aggregates_runs", test_metrics_aggregates_runs
-        ),
-        "cache_clear_endpoint": _run_case(
-            "cache_clear_endpoint", test_cache_clear_endpoint
-        ),
-        "explain_verified": _run_case("explain_verified", test_explain_verified),
-        "explain_classification_rejected": _run_case(
-            "explain_classification_rejected", test_explain_classification_rejected
-        ),
-        "explain_formalization_failed": _run_case(
-            "explain_formalization_failed", test_explain_formalization_failed
-        ),
-        "legacy_classify_still_works": _run_case(
-            "legacy_classify_still_works", test_legacy_classify_still_works
-        ),
-        "classify_definable_with_preamble": _run_case(
-            "classify_definable_with_preamble", test_classify_definable_with_preamble
-        ),
-        "formalize_with_preamble_names": _run_case(
-            "formalize_with_preamble_names", test_formalize_with_preamble_names
-        ),
-        "formalize_failure_with_diagnosis": _run_case(
-            "formalize_failure_with_diagnosis", test_formalize_failure_with_diagnosis
-        ),
-        "formalize_success_no_diagnosis": _run_case(
-            "formalize_success_no_diagnosis", test_formalize_success_no_diagnosis
-        ),
-        "prover_registry": _run_case("prover_registry", test_prover_registry),
-        "prover_registry_unknown": _run_case(
-            "prover_registry_unknown", test_prover_registry_unknown
-        ),
-    }
-
-    print("\n" + "=" * 60)
-    print("Results:")
-    for name, passed in results.items():
-        print(f"  {name}: {'PASS' if passed else 'FAIL'}")
-
-    all_passed = all(results.values())
-    print(f"\nOverall: {'ALL PASSED' if all_passed else 'SOME FAILED'}")
-    print("=" * 60)
-    return 0 if all_passed else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

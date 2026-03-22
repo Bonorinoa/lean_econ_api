@@ -11,7 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from eval_metrics import aggregate_trace_metrics, load_jsonl_records, render_trace_metrics
+from eval_metrics import (  # noqa: E402
+    aggregate_trace_metrics,
+    load_jsonl_records,
+    render_trace_metrics,
+)
 
 
 def _parse_args() -> argparse.Namespace:

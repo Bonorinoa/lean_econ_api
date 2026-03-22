@@ -140,11 +140,7 @@ def aggregate_trace_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     total_tool_call_count = sum(total_tool_calls(record) for record in records)
     successful_tactic_count = sum(successful_tactic_applications(record) for record in records)
 
-    tactic_depths = [
-        depth
-        for record in records
-        if (depth := tactic_depth(record)) is not None
-    ]
+    tactic_depths = [depth for record in records if (depth := tactic_depth(record)) is not None]
 
     error_counter: Counter[str] = Counter()
     for record in records:

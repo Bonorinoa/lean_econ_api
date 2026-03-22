@@ -16,9 +16,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from eval_metrics import aggregate_trace_metrics
-from pipeline import formalize_claim, run_pipeline
-from semantic_alignment import grade_semantic_alignment
+from eval_metrics import aggregate_trace_metrics  # noqa: E402
+from pipeline import formalize_claim, run_pipeline  # noqa: E402
+from semantic_alignment import grade_semantic_alignment  # noqa: E402
 
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "uncharted_evals"
 
@@ -132,10 +132,7 @@ def _render_report(
             f"({aggregate_trace_metrics_result['successful_tactic_applications']}/"
             f"{aggregate_trace_metrics_result['total_tool_calls']})"
         ),
-        (
-            "- Average Tactic Depth: "
-            f"{aggregate_trace_metrics_result['tactic_depth_average']:.3f}"
-        ),
+        (f"- Average Tactic Depth: {aggregate_trace_metrics_result['tactic_depth_average']:.3f}"),
         "",
         "## Global Error Frequency",
         "",
@@ -274,7 +271,9 @@ def main() -> int:
             }
         )
 
-    formalization_successes = sum(1 for record in case_records if record["formalization"]["success"])
+    formalization_successes = sum(
+        1 for record in case_records if record["formalization"]["success"]
+    )
     verified_cases = sum(1 for record in case_records if record["pass_at_k_success"])
     semantic_summary = _semantic_summary(case_records)
     aggregate_trace_metrics_result = aggregate_trace_metrics(all_attempt_results)

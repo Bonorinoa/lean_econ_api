@@ -27,6 +27,7 @@ STANDARD_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _extract_text(result: Any) -> str:
     """Defensively extract text content from an MCP tool result."""
     content = getattr(result, "content", None)
@@ -52,6 +53,7 @@ def _parse_structured(raw_text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # lean_run_code wrapper
 # ---------------------------------------------------------------------------
+
 
 async def _run_code_async(lean_code: str) -> dict[str, Any]:
     """
@@ -88,8 +90,7 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
 
     # Filter sorry-related messages — sorry is expected during sorry-validation
     real_errors = [
-        e for e in errors
-        if "sorry" not in e.lower() and "declaration uses" not in e.lower()
+        e for e in errors if "sorry" not in e.lower() and "declaration uses" not in e.lower()
     ]
 
     # Use the tool's own success flag as primary signal, but also check real_errors
@@ -118,6 +119,7 @@ def run_code(lean_code: str) -> dict[str, Any]:
 # lean_verify wrapper
 # ---------------------------------------------------------------------------
 
+
 async def _verify_axioms_async(
     file_path: str,
     theorem_name: str,
@@ -138,11 +140,14 @@ async def _verify_axioms_async(
       - source_warnings (list[dict]): Source scan warnings
     """
     async with open_lean_mcp_session() as session:
-        result = await session.call_tool("lean_verify", {
-            "file_path": file_path,
-            "theorem_name": theorem_name,
-            "scan_source": True,
-        })
+        result = await session.call_tool(
+            "lean_verify",
+            {
+                "file_path": file_path,
+                "theorem_name": theorem_name,
+                "scan_source": True,
+            },
+        )
 
     if getattr(result, "isError", False):
         raise RuntimeError(f"lean_verify MCP error: {result}")
@@ -157,10 +162,7 @@ async def _verify_axioms_async(
 
     has_sorry = any("sorry" in a.lower() for a in axioms)
     standard = [a for a in axioms if a in STANDARD_AXIOMS]
-    nonstandard = [
-        a for a in axioms
-        if a not in STANDARD_AXIOMS and "sorry" not in a.lower()
-    ]
+    nonstandard = [a for a in axioms if a not in STANDARD_AXIOMS and "sorry" not in a.lower()]
 
     return {
         "axioms": axioms,
@@ -180,6 +182,7 @@ def verify_axioms(file_path: str, theorem_name: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Theorem name extraction
 # ---------------------------------------------------------------------------
+
 
 def extract_theorem_name(lean_code: str) -> str | None:
     """Extract the first theorem or lemma name from Lean source code."""

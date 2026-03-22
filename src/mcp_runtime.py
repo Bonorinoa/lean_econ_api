@@ -13,7 +13,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
@@ -35,8 +35,8 @@ if TYPE_CHECKING:
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LEAN_WORKSPACE = PROJECT_ROOT / "lean_workspace"
-LEAN_LSP_MCP_COMMAND = "uvx"
-LEAN_LSP_MCP_ARGS = ["lean-lsp-mcp", "--transport", "stdio"]
+LEAN_LSP_MCP_COMMAND = str(PROJECT_ROOT / "scripts" / "run_lean_lsp_mcp.sh")
+LEAN_LSP_MCP_ARGS = ["--transport", "stdio"]
 LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
 
 # NOTE (2026-03-21): we intentionally create a fresh MCPClientSTDIO for each
@@ -104,7 +104,7 @@ def _missing_run_context_hint(exc: ModuleNotFoundError) -> str:
     return (
         "Mistral RunContext is unavailable because "
         f"`{missing_name}` is not installed in the project venv. "
-        "Run `./econProver_venv/bin/python -m pip install -r requirements.txt` "
+        "Run `./leanEconAPI_venv/bin/python -m pip install -r requirements.txt` "
         "and retry."
     )
 
@@ -143,6 +143,7 @@ async def open_mistral_run_context(
 # ---------------------------------------------------------------------------
 # MCP query helpers
 # ---------------------------------------------------------------------------
+
 
 def parse_diagnostics(diagnostics_structured: dict[str, Any]) -> tuple[list[str], list[str]]:
     """

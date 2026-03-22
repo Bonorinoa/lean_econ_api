@@ -94,7 +94,9 @@ def formalize_claim(
     result = formalize(parsed["text"], on_log=on_log, preamble_names=preamble_names)
 
     if result["formalization_failed"]:
-        _log(on_log, "formalize", f"Formalization failed: {result['failure_reason']}", status="error")
+        _log(
+            on_log, "formalize", f"Formalization failed: {result['failure_reason']}", status="error"
+        )
     elif result["success"]:
         _log(
             on_log,
@@ -226,39 +228,41 @@ def run_pipeline(
             "agent_elapsed_seconds": 0.0,
             "axiom_info": None,
         }
-        log_run({
-            "original_raw_claim": raw_input,
-            "input_text": raw_input[:500] if preformalized_theorem is None else "",
-            "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
-            "formalization": {
-                "success": f_result["success"],
-                "attempts": f_result["attempts"],
-                "theorem_code": f_result.get("theorem_code", ""),
-                "errors": f_result.get("errors", []),
-                "model": "labs-leanstral-2603",
-                "formalization_failed": f_result.get("formalization_failed", False),
-                "failure_reason": f_result.get("failure_reason"),
-            },
-            "proving": {
-                "success": False,
-                "attempts_used": 0,
-                "proof_strategy": "",
-                "proof_tactics": "",
-                "tool_trace": [],
-                "tactic_calls": [],
-                "trace_schema_version": 1,
-                "agent_summary": "",
-            },
-            "verification": {
-                "success": False,
-                "errors": f_result.get("errors", []),
-                "warnings": [],
-            },
-            "elapsed_seconds": result["elapsed_seconds"],
-            "from_cache": result["from_cache"],
-            "partial": result["partial"],
-            "stop_reason": result["stop_reason"],
-        })
+        log_run(
+            {
+                "original_raw_claim": raw_input,
+                "input_text": raw_input[:500] if preformalized_theorem is None else "",
+                "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
+                "formalization": {
+                    "success": f_result["success"],
+                    "attempts": f_result["attempts"],
+                    "theorem_code": f_result.get("theorem_code", ""),
+                    "errors": f_result.get("errors", []),
+                    "model": "labs-leanstral-2603",
+                    "formalization_failed": f_result.get("formalization_failed", False),
+                    "failure_reason": f_result.get("failure_reason"),
+                },
+                "proving": {
+                    "success": False,
+                    "attempts_used": 0,
+                    "proof_strategy": "",
+                    "proof_tactics": "",
+                    "tool_trace": [],
+                    "tactic_calls": [],
+                    "trace_schema_version": 1,
+                    "agent_summary": "",
+                },
+                "verification": {
+                    "success": False,
+                    "errors": f_result.get("errors", []),
+                    "warnings": [],
+                },
+                "elapsed_seconds": result["elapsed_seconds"],
+                "from_cache": result["from_cache"],
+                "partial": result["partial"],
+                "stop_reason": result["stop_reason"],
+            }
+        )
         return result
 
     theorem_with_sorry = f_result["theorem_code"]
@@ -301,39 +305,41 @@ def run_pipeline(
     if use_cache and result["success"]:
         result_cache.put(cache_key_input, result)
 
-    log_run({
-        "original_raw_claim": raw_input,
-        "input_text": raw_input[:500] if preformalized_theorem is None else "",
-        "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
-        "formalization": {
-            "success": f_result["success"],
-            "attempts": f_result["attempts"],
-            "theorem_code": f_result["theorem_code"],
-            "errors": f_result["errors"],
-            "model": "labs-leanstral-2603",
-            "formalization_failed": f_result["formalization_failed"],
-            "failure_reason": f_result["failure_reason"],
-        },
-        "proving": {
-            "success": pv_result["success"],
-            "attempts_used": pv_result["attempts_used"],
-            "proof_strategy": pv_result["proof_strategy"],
-            "proof_tactics": pv_result["proof_tactics"],
-            "tool_trace": pv_result["tool_trace"],
-            "tactic_calls": pv_result["tactic_calls"],
-            "trace_schema_version": pv_result["trace_schema_version"],
-            "agent_summary": pv_result["agent_summary"],
-        },
-        "verification": {
-            "success": pv_result["success"],
-            "errors": pv_result["errors"],
-            "warnings": pv_result["warnings"],
-        },
-        "elapsed_seconds": result["elapsed_seconds"],
-        "from_cache": result["from_cache"],
-        "partial": result["partial"],
-        "stop_reason": result["stop_reason"],
-    })
+    log_run(
+        {
+            "original_raw_claim": raw_input,
+            "input_text": raw_input[:500] if preformalized_theorem is None else "",
+            "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
+            "formalization": {
+                "success": f_result["success"],
+                "attempts": f_result["attempts"],
+                "theorem_code": f_result["theorem_code"],
+                "errors": f_result["errors"],
+                "model": "labs-leanstral-2603",
+                "formalization_failed": f_result["formalization_failed"],
+                "failure_reason": f_result["failure_reason"],
+            },
+            "proving": {
+                "success": pv_result["success"],
+                "attempts_used": pv_result["attempts_used"],
+                "proof_strategy": pv_result["proof_strategy"],
+                "proof_tactics": pv_result["proof_tactics"],
+                "tool_trace": pv_result["tool_trace"],
+                "tactic_calls": pv_result["tactic_calls"],
+                "trace_schema_version": pv_result["trace_schema_version"],
+                "agent_summary": pv_result["agent_summary"],
+            },
+            "verification": {
+                "success": pv_result["success"],
+                "errors": pv_result["errors"],
+                "warnings": pv_result["warnings"],
+            },
+            "elapsed_seconds": result["elapsed_seconds"],
+            "from_cache": result["from_cache"],
+            "partial": result["partial"],
+            "stop_reason": result["stop_reason"],
+        }
+    )
 
     return result
 
@@ -349,4 +355,4 @@ if __name__ == "__main__":
             print(f"Errors: {result['errors']}")
     else:
         print("Usage: python src/pipeline.py <claim_file.tex>")
-        print("Run tests via: python tests/test_pipeline_smoke.py")
+        print("Run tests via: pytest tests/test_pipeline_smoke.py")

@@ -41,8 +41,8 @@ from prompts import (
 # Load .env from project root (one level up from src/)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-FORMALIZE_TEMPERATURE = 0.3   # lower than proving (1.0) — we want conservative output
-FORMALIZE_MAX_TOKENS = 4096   # theorem statements are short
+FORMALIZE_TEMPERATURE = 0.3  # lower than proving (1.0) — we want conservative output
+FORMALIZE_MAX_TOKENS = 4096  # theorem statements are short
 MAX_FORMALIZATION_ATTEMPTS = 3
 SORRY_VALIDATION_TIMEOUT = 120  # seconds for direct Lean fallback with sorry
 _client = None
@@ -66,7 +66,7 @@ def _detect_formalization_failed(lean_code: str) -> tuple[bool, str | None]:
     for i, line in enumerate(lines):
         if "-- FORMALIZATION_FAILED" in line:
             reason = None
-            for subsequent in lines[i + 1:]:
+            for subsequent in lines[i + 1 :]:
                 if subsequent.strip().startswith("-- Reason:"):
                     reason = subsequent.strip().removeprefix("-- Reason:").strip()
                     break
@@ -80,11 +80,7 @@ def _inject_preamble_imports(lean_code: str, import_lines: list[str]) -> str:
         return lean_code
 
     lines = lean_code.splitlines()
-    existing_imports = {
-        line.strip()
-        for line in lines
-        if line.strip().startswith("import ")
-    }
+    existing_imports = {line.strip() for line in lines if line.strip().startswith("import ")}
     new_imports = [line for line in import_lines if line not in existing_imports]
     if not new_imports:
         return lean_code
@@ -126,7 +122,9 @@ def _diagnose_formalization_failure(
     ]
     try:
         raw = call_leanstral(
-            client, messages, "diagnose",
+            client,
+            messages,
+            "diagnose",
             temperature=0.0,
             max_tokens=512,
         )
@@ -148,6 +146,7 @@ def _diagnose_formalization_failure(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def classify_claim(claim_text: str) -> dict:
     """
@@ -174,7 +173,9 @@ def classify_claim(claim_text: str) -> dict:
         {"role": "user", "content": claim_text},
     ]
     raw = call_leanstral(
-        client, messages, "classify",
+        client,
+        messages,
+        "classify",
         temperature=0.0,
         max_tokens=512,
     )
@@ -199,7 +200,11 @@ def classify_claim(claim_text: str) -> dict:
         }
 
     if line.startswith("REQUIRES_DEFINITIONS") or line.startswith("REQUIRES_CUSTOM_THEORY"):
-        prefix = "REQUIRES_DEFINITIONS" if line.startswith("REQUIRES_DEFINITIONS") else "REQUIRES_CUSTOM_THEORY"
+        prefix = (
+            "REQUIRES_DEFINITIONS"
+            if line.startswith("REQUIRES_DEFINITIONS")
+            else "REQUIRES_CUSTOM_THEORY"
+        )
         reason = line.removeprefix(prefix).lstrip(":").strip() or None
 
         # Preamble rescue: check if we actually have definitions for this claim
@@ -301,6 +306,7 @@ def sorry_validate(lean_code: str) -> dict:
     # Fast path: lean_run_code via MCP (no file writes, ~2-5s)
     try:
         from lean_runner import run_code
+
         result = run_code(lean_code)
         return {
             "valid": result["valid"],
@@ -317,7 +323,8 @@ def sorry_validate(lean_code: str) -> dict:
     valid = raw["returncode"] == 0
     # Filter out the sorry pseudo-error injected by run_direct_lean_check.
     real_errors = [
-        e for e in raw["errors"]
+        e
+        for e in raw["errors"]
         if "declaration uses `sorry`" not in e and "Proof contains" not in e
     ]
     return {
@@ -357,6 +364,7 @@ def formalize(
           - suggested_fix (str | None): Concrete fix suggestion.
           - fixable (bool | None): Whether a human edit could fix it.
     """
+
     def _log(message: str, data: str | None = None, status: str = "done"):
         if on_log:
             on_log({"stage": "formalize", "message": message, "data": data, "status": status})
@@ -396,13 +404,19 @@ def formalize(
 
     for attempt in range(1, MAX_FORMALIZATION_ATTEMPTS + 1):
         if attempt == 1:
-            _log(f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: calling Leanstral...", status="running")
+            _log(
+                f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: calling Leanstral...",
+                status="running",
+            )
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": claim_text},
             ]
         else:
-            _log(f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: requesting repair...", status="running")
+            _log(
+                f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: requesting repair...",
+                status="running",
+            )
             repair_content = (
                 f"Original claim:\n{claim_text}\n\n"
                 f"Failed Lean 4 file:\n{lean_code}\n\n"
@@ -414,7 +428,9 @@ def formalize(
             ]
 
         raw = call_leanstral(
-            client, messages, f"formalize_{attempt}",
+            client,
+            messages,
+            f"formalize_{attempt}",
             temperature=FORMALIZE_TEMPERATURE,
             max_tokens=FORMALIZE_MAX_TOKENS,
         )
@@ -487,4 +503,4 @@ def formalize(
 
 
 if __name__ == "__main__":
-    print("Run tests via: python tests/test_formalizer.py")
+    print("Run tests via: pytest tests/test_formalizer.py")

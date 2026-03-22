@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 import threading
 from pathlib import Path
 
-from result_cache import ResultCache, MAX_CACHE_SIZE
+from result_cache import MAX_CACHE_SIZE, ResultCache
 
 
 def _make_cache(tmpdir: str) -> ResultCache:

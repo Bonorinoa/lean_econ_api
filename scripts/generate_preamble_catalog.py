@@ -14,7 +14,6 @@ sys.path.insert(0, str(SRC_DIR))
 
 from preamble_library import PREAMBLE_LIBRARY  # noqa: E402
 
-
 CATEGORY_ORDER = [
     "Consumer",
     "Producer",

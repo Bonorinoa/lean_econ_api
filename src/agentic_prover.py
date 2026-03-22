@@ -72,6 +72,7 @@ CIRCUIT_BREAKER_WARNING = (
 # Logging helper
 # ---------------------------------------------------------------------------
 
+
 def _log(on_log, stage: str, message: str, data: str | None = None, status: str = "done"):
     """Emit a pipeline log entry."""
     if on_log:
@@ -91,8 +92,7 @@ class AgenticToolTracker:
 
     def should_block_apply(self) -> bool:
         return (
-            self.consecutive_apply_without_diagnostics
-            >= MAX_CONSECUTIVE_APPLY_WITHOUT_DIAGNOSTICS
+            self.consecutive_apply_without_diagnostics >= MAX_CONSECUTIVE_APPLY_WITHOUT_DIAGNOSTICS
         )
 
     def note_apply_tactic_executed(self) -> None:
@@ -239,7 +239,8 @@ def _unavailable_tool_message(tool_name: str) -> str:
     """Return a warning result when the model asks for an unregistered tool."""
     return (
         f"ERROR: Tool `{tool_name}` is not registered in this run context. "
-        f"Use one of the listed tools and call lean_diagnostic_messages to inspect the current proof state."
+        "Use one of the listed tools and call lean_diagnostic_messages "
+        "to inspect the current proof state."
     )
 
 
@@ -351,7 +352,7 @@ def _is_retryable_run_error(exc: Exception) -> bool:
 def _is_code_3001_error(exc: Exception) -> bool:
     """Detect the malformed empty-input/tool-confirmation Conversations error."""
     text = str(exc)
-    return "code\":3001" in text or "Either inputs or tool_confirmations must be provided." in text
+    return 'code":3001' in text or "Either inputs or tool_confirmations must be provided." in text
 
 
 async def _run_conversation_with_backoff(
@@ -392,7 +393,8 @@ async def _run_conversation_with_backoff(
                     on_log,
                     "agentic_backoff",
                     (
-                        f"Retryable Mistral API error ({status_code}) during conversation {request_label} "
+                        f"Retryable Mistral API error ({status_code}) during "
+                        f"conversation {request_label} "
                         f"attempt {attempt}/{total_attempts}; retrying in {delay}s"
                     ),
                     data=str(exc),
@@ -596,16 +598,15 @@ Use lean_code_actions when:
 
 def _build_instructions(file_path: str, goal_line: int) -> str:
     """Inject runtime paths into the agent prompt without using format()."""
-    return (
-        AGENTIC_INSTRUCTIONS_TEMPLATE
-        .replace("{file_path}", file_path)
-        .replace("{goal_line}", str(goal_line))
+    return AGENTIC_INSTRUCTIONS_TEMPLATE.replace("{file_path}", file_path).replace(
+        "{goal_line}", str(goal_line)
     )
 
 
 # ---------------------------------------------------------------------------
 # Tool function factory
 # ---------------------------------------------------------------------------
+
 
 def _make_apply_tactic(controller: ProofFileController, trace_recorder: TraceRecorder):
     """
@@ -643,7 +644,9 @@ def _make_apply_tactic(controller: ProofFileController, trace_recorder: TraceRec
         response = (
             f"OK: Tactic written to {controller.mcp_file_path}. "
             f"Preview: {tactic_preview}. "
-            f"Next step: use lean_diagnostic_messages on {controller.mcp_file_path} to check for errors before applying more tactics."
+            "Next step: use lean_diagnostic_messages on "
+            f"{controller.mcp_file_path} to check for errors before applying "
+            "more tactics."
         )
         return response if response.strip() else _empty_tool_result_message("apply_tactic")
 
@@ -770,7 +773,8 @@ def _install_guarded_execute_function_calls(
                         tool_call_id=function_call.tool_call_id,
                         result=(
                             "WARNING: No executable tool results were produced. "
-                            "Use lean_diagnostic_messages to inspect the current proof state before continuing."
+                            "Use lean_diagnostic_messages to inspect the "
+                            "current proof state before continuing."
                         ),
                     )
                 )
@@ -783,6 +787,7 @@ def _install_guarded_execute_function_calls(
 # ---------------------------------------------------------------------------
 # Core async implementation
 # ---------------------------------------------------------------------------
+
 
 async def _prove_theorem_agentic_async(
     theorem_with_sorry: str,
@@ -807,7 +812,8 @@ async def _prove_theorem_agentic_async(
         _log(on_log, "agentic_init", "Initializing working proof file...", status="running")
         controller.initialize(theorem_with_sorry)
         _log(
-            on_log, "agentic_init",
+            on_log,
+            "agentic_init",
             f"Working file: {controller.mcp_file_path}",
             data=controller.current_lean_code,
             status="done",
@@ -855,9 +861,12 @@ async def _prove_theorem_agentic_async(
                     tactic_call_log,
                 )
 
-                _log(on_log, "agentic_setup",
-                     f"Tools registered: {len(run_ctx.get_tools())} total",
-                     status="done")
+                _log(
+                    on_log,
+                    "agentic_setup",
+                    f"Tools registered: {len(run_ctx.get_tools())} total",
+                    status="done",
+                )
 
                 result = await _run_conversation_with_backoff(
                     client,
@@ -912,7 +921,8 @@ async def _prove_theorem_agentic_async(
 
             if _is_retryable_run_error(exc):
                 interruption_message = (
-                    "Agentic run halted after exhausting retry backoff for a transient Mistral API error."
+                    "Agentic run halted after exhausting retry backoff for a "
+                    "transient Mistral API error."
                 )
                 trace_recorder.finalize_pending_attempt(tactic_call_log)
                 return _build_interrupted_run_result(
@@ -934,7 +944,8 @@ async def _prove_theorem_agentic_async(
             if _is_code_3001_error(exc):
                 interruption_message = (
                     "Agentic run halted after an empty tool-result cycle. "
-                    "The current proof state was preserved so Leanstral can resume from diagnostics."
+                    "The current proof state was preserved so Leanstral can "
+                    "resume from diagnostics."
                 )
                 trace_recorder.finalize_pending_attempt(tactic_call_log)
                 return _build_interrupted_run_result(
@@ -948,7 +959,8 @@ async def _prove_theorem_agentic_async(
                     stop_reason=STOP_PROOF_INCOMPLETE,
                     agent_summary=(
                         "Leanstral agentic prover intercepted an empty tool-result cycle "
-                        "and returned the latest proof state instead of surfacing a raw API 3001 failure."
+                        "and returned the latest proof state instead of "
+                        "surfacing a raw API 3001 failure."
                     ),
                     partial=True,
                 )
@@ -975,9 +987,13 @@ async def _prove_theorem_agentic_async(
                 "partial": False,
             }
 
-        _log(on_log, "agentic_run",
-             f"Leanstral loop completed ({steps_used} API round-trips, {len(tactic_call_log)} tactic calls)",
-             status="done")
+        _log(
+            on_log,
+            "agentic_run",
+            "Leanstral loop completed "
+            f"({steps_used} API round-trips, {len(tactic_call_log)} tactic calls)",
+            status="done",
+        )
         trace_recorder.finalize_pending_attempt(tactic_call_log)
 
         # --- Step 4: Check if proof looks complete (pre-verification) ---
@@ -998,12 +1014,17 @@ async def _prove_theorem_agentic_async(
             _log(on_log, "agentic_verify", "Verified — Lean check passed", status="done")
         else:
             if stop_reason == STOP_PROOF_COMPLETE:
-                stop_reason = STOP_PROOF_INCOMPLETE  # MCP said done but final verification disagreed
+                stop_reason = (
+                    STOP_PROOF_INCOMPLETE  # MCP said done but final verification disagreed
+                )
             error_preview = str(verification["errors"][:2])
-            _log(on_log, "agentic_verify",
-                 f"Verification failed: {error_preview}",
-                 data=str(verification["errors"]),
-                 status="error")
+            _log(
+                on_log,
+                "agentic_verify",
+                f"Verification failed: {error_preview}",
+                data=str(verification["errors"]),
+                status="error",
+            )
 
         elapsed = time.time() - start_time
         success = verification["success"]
@@ -1052,6 +1073,7 @@ async def _prove_theorem_agentic_async(
 # Backend registration
 # ---------------------------------------------------------------------------
 
+
 @register_prover("leanstral")
 class LeanstralProver:
     """Leanstral + lean-lsp-mcp agentic prover via Mistral's Conversations API."""
@@ -1074,6 +1096,7 @@ class LeanstralProver:
 # ---------------------------------------------------------------------------
 # Public sync API
 # ---------------------------------------------------------------------------
+
 
 def prove_theorem_agentic(
     theorem_with_sorry: str,
@@ -1106,4 +1129,4 @@ def prove_theorem_agentic(
 
 
 if __name__ == "__main__":
-    print("Run tests via: python tests/test_agentic_examples.py")
+    print("Run tests via: pytest -m live tests/test_agentic_examples.py")

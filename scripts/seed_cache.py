@@ -8,7 +8,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from result_cache import result_cache
+from result_cache import result_cache  # noqa: E402
 
 EXAMPLES_DIR = PROJECT_ROOT / "docs" / "legacy_examples"
 

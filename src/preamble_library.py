@@ -37,262 +37,371 @@ def _register(entry: PreambleEntry) -> None:
     PREAMBLE_LIBRARY[entry.name] = entry
 
 
-_register(PreambleEntry(
-    name="cobb_douglas_2factor",
-    lean_module="LeanEcon.Preamble.Producer.CobbDouglas2Factor",
-    description="Two-factor Cobb-Douglas production function with elasticity proof",
-    keywords=(
-        "cobb-douglas", "cobb douglas", "cd production", "output elasticity",
-        "marginal product", "returns to scale", "production function",
-        "diminishing returns", "factor share", "homogeneous of degree",
-    ),
-    parameters=("A", "K", "L", "α"),
-))
-_register(PreambleEntry(
-    name="ces_2factor",
-    lean_module="LeanEcon.Preamble.Producer.CES2Factor",
-    description="Two-factor CES production function with elasticity of substitution σ",
-    keywords=(
-        "ces production", "ces function", "constant elasticity of substitution",
-        "returns to scale", "homogeneous", "production function",
-        "elasticity of substitution", "homogeneous of degree",
-    ),
-    parameters=("A", "K", "L", "σ", "α"),
-))
-_register(PreambleEntry(
-    name="crra_utility",
-    lean_module="LeanEcon.Preamble.Consumer.CRRAUtility",
-    description="CRRA utility function with derivative and RRA lemmas",
-    keywords=(
-        "crra", "isoelastic", "crra utility", "constant relative risk aversion",
-        "risk aversion", "concave utility", "diminishing marginal utility",
-        "power utility", "marginal utility", "derivative",
-    ),
-    parameters=("c", "γ"),
-))
-_register(PreambleEntry(
-    name="cara_utility",
-    lean_module="LeanEcon.Preamble.Consumer.CARAUtility",
-    description="CARA utility function with derivative and ARA lemmas",
-    keywords=(
-        "cara", "cara utility", "constant absolute risk aversion",
-        "exponential utility", "risk aversion", "exponential", "absolute risk",
-        "marginal utility", "derivative",
-    ),
-    parameters=("c", "α"),
-))
-_register(PreambleEntry(
-    name="stone_geary_utility",
-    lean_module="LeanEcon.Preamble.Consumer.StoneGearyUtility",
-    description="Stone-Geary utility for two goods with marginal utility lemmas",
-    keywords=("stone-geary", "stone geary", "les utility", "linear expenditure"),
-    parameters=("x₁", "x₂", "α", "γ₁", "γ₂"),
-))
-_register(PreambleEntry(
-    name="price_elasticity",
-    lean_module="LeanEcon.Preamble.Consumer.PriceElasticity",
-    description="Price elasticity of demand as (dq/dp)·(p/q)",
-    keywords=("price elasticity", "elasticity of demand", "demand elasticity"),
-    parameters=("dq_dp", "p", "q"),
-))
-_register(PreambleEntry(
-    name="income_elasticity",
-    lean_module="LeanEcon.Preamble.Consumer.IncomeElasticity",
-    description="Income elasticity of demand as (dq/dm)·(m/q)",
-    keywords=("income elasticity",),
-    parameters=("dq_dm", "m", "q"),
-))
-_register(PreambleEntry(
-    name="arrow_pratt_rra",
-    lean_module="LeanEcon.Preamble.Risk.ArrowPrattRRA",
-    description="Arrow-Pratt measure of relative risk aversion",
-    keywords=(
-        "relative risk aversion", "rra", "arrow-pratt", "arrow pratt",
-        "risk premium", "risk aversion coefficient", "concavity of utility",
-    ),
-    parameters=("c", "u'", "u''"),
-))
-_register(PreambleEntry(
-    name="arrow_pratt_ara",
-    lean_module="LeanEcon.Preamble.Risk.ArrowPrattARA",
-    description="Arrow-Pratt measure of absolute risk aversion",
-    keywords=(
-        "absolute risk aversion", "ara",
-        "risk premium", "absolute risk", "concavity of utility",
-    ),
-    parameters=("u'", "u''"),
-))
-_register(PreambleEntry(
-    name="budget_set",
-    lean_module="LeanEcon.Preamble.Consumer.BudgetSet",
-    description="Budget set for two goods under linear budget constraint",
-    keywords=("budget set", "budget constraint", "feasible set"),
-    parameters=("p₁", "p₂", "m"),
-))
-_register(PreambleEntry(
-    name="geometric_series",
-    lean_module="LeanEcon.Preamble.Dynamic.GeometricSeries",
-    description="Geometric series and its closed-form partial sum",
-    keywords=("geometric series", "geometric sum", "present value"),
-    parameters=("a", "r", "n"),
-))
-_register(PreambleEntry(
-    name="extreme_value_theorem",
-    lean_module="LeanEcon.Preamble.Optimization.ExtremeValueTheorem",
-    description="Extreme value theorem (Weierstrass) via Mathlib IsCompact.exists_isMaxOn",
-    keywords=(
-        "extreme value",
-        "extreme value theorem",
-        "weierstrass",
-        "maximum theorem",
-        "attains maximum",
-        "attains minimum",
-        "compact",
-        "continuous maximum",
-        "berge",
-        "concave",
-        "convex",
-        "strictly concave",
-        "strictly convex",
-        "concavity",
-        "convexity",
-        "maximum",
-        "minimum",
-        "optimization",
-    ),
-    parameters=("f", "S"),
-))
-_register(PreambleEntry(
-    name="pareto_efficiency",
-    lean_module="LeanEcon.Preamble.Welfare.ParetoEfficiency",
-    description="Pareto efficiency and Pareto dominance for finite economies",
-    keywords=(
-        "pareto",
-        "pareto efficient",
-        "pareto optimal",
-        "pareto dominance",
-        "welfare",
-        "efficiency",
-        "first welfare",
-        "second welfare",
-    ),
-    parameters=("n", "u", "X"),
-))
-_register(PreambleEntry(
-    name="social_welfare_function",
-    lean_module="LeanEcon.Preamble.Welfare.SocialWelfareFunction",
-    description="Utilitarian social welfare function as weighted sum of utilities",
-    keywords=(
-        "social welfare function",
-        "swf",
-        "utilitarian",
-        "welfare function",
-        "weighted sum utilities",
-    ),
-    parameters=("n", "w", "u"),
-))
-_register(PreambleEntry(
-    name="marshallian_demand",
-    lean_module="LeanEcon.Preamble.Consumer.MarshallianDemand",
-    description="Marshallian demand functions for two-good Cobb-Douglas preferences",
-    keywords=(
-        "marshallian demand",
-        "ordinary demand",
-        "demand function",
-        "optimal consumption",
-        "utility maximization demand",
-        "budget constraint",
-        "tangency condition",
-    ),
-    parameters=("α", "m", "p₁", "p₂"),
-))
-_register(PreambleEntry(
-    name="indirect_utility",
-    lean_module="LeanEcon.Preamble.Consumer.IndirectUtility",
-    description="Indirect utility function for Cobb-Douglas preferences",
-    keywords=("indirect utility", "indirect utility function", "value function consumer", "v(p,m)"),
-    parameters=("α", "p₁", "p₂", "m"),
-))
-_register(PreambleEntry(
-    name="profit_function",
-    lean_module="LeanEcon.Preamble.Producer.ProfitFunction",
-    description="Profit function for a single-input firm",
-    keywords=(
-        "profit function", "profit maximization", "firm profit", "producer surplus",
-        "marginal cost", "marginal revenue", "supply function",
-        "first order condition", "foc",
-    ),
-    parameters=("p", "w", "A", "α"),
-))
-_register(PreambleEntry(
-    name="cost_function",
-    lean_module="LeanEcon.Preamble.Producer.CostFunction",
-    description="Cost function for Cobb-Douglas technology",
-    keywords=(
-        "cost function", "cost minimization", "conditional factor demand", "total cost",
-        "marginal cost", "average cost", "isoquant",
-        "shephard", "shephard's lemma",
-    ),
-    parameters=("w", "r", "A", "α", "q"),
-))
-_register(PreambleEntry(
-    name="bellman_equation",
-    lean_module="LeanEcon.Preamble.Dynamic.BellmanEquation",
-    description="Bellman equation RHS for deterministic dynamic programming",
-    keywords=(
-        "bellman",
-        "bellman equation",
-        "dynamic programming",
-        "value function iteration",
-        "euler equation",
-        "optimal savings",
-        "ramsey",
-        "cake eating",
-        "recursive",
-        "value function",
-        "optimal control",
-    ),
-    parameters=("V", "u", "f", "β"),
-))
-_register(PreambleEntry(
-    name="discount_factor",
-    lean_module="LeanEcon.Preamble.Dynamic.DiscountFactor",
-    description="Present value with geometric discounting",
-    keywords=("present value", "discount factor", "discounting", "geometric discounting", "net present value"),
-    parameters=("x", "β", "T"),
-))
-_register(PreambleEntry(
-    name="expected_payoff",
-    lean_module="LeanEcon.Preamble.GameTheory.ExpectedPayoff",
-    description="Expected payoff for 2x2 games with mixed strategies",
-    keywords=("expected payoff", "mixed strategy", "mixed strategies", "2x2 game", "game payoff", "bilinear"),
-    parameters=("u", "p", "q"),
-))
-_register(PreambleEntry(
-    name="solow_steady_state",
-    lean_module="LeanEcon.Preamble.Macro.SolowSteadyState",
-    description="Solow model investment and depreciation definitions",
-    keywords=(
-        "solow",
-        "solow model",
-        "steady state",
-        "steady-state",
-        "solow steady state",
-        "capital accumulation",
-        "growth model",
-        "golden rule",
-        "convergence",
-        "per capita",
-    ),
-    parameters=("s", "A", "n", "g", "δ", "α"),
-))
-_register(PreambleEntry(
-    name="phillips_curve",
-    lean_module="LeanEcon.Preamble.Macro.PhillipsCurve",
-    description="New Keynesian Phillips Curve with nkpc function and identity theorem",
-    keywords=("phillips curve", "nkpc", "new keynesian", "inflation", "output gap"),
-    parameters=("π", "β", "κ", "x"),
-))
+_register(
+    PreambleEntry(
+        name="cobb_douglas_2factor",
+        lean_module="LeanEcon.Preamble.Producer.CobbDouglas2Factor",
+        description="Two-factor Cobb-Douglas production function with elasticity proof",
+        keywords=(
+            "cobb-douglas",
+            "cobb douglas",
+            "cd production",
+            "output elasticity",
+            "marginal product",
+            "returns to scale",
+            "production function",
+            "diminishing returns",
+            "factor share",
+            "homogeneous of degree",
+        ),
+        parameters=("A", "K", "L", "α"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="ces_2factor",
+        lean_module="LeanEcon.Preamble.Producer.CES2Factor",
+        description="Two-factor CES production function with elasticity of substitution σ",
+        keywords=(
+            "ces production",
+            "ces function",
+            "constant elasticity of substitution",
+            "returns to scale",
+            "homogeneous",
+            "production function",
+            "elasticity of substitution",
+            "homogeneous of degree",
+        ),
+        parameters=("A", "K", "L", "σ", "α"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="crra_utility",
+        lean_module="LeanEcon.Preamble.Consumer.CRRAUtility",
+        description="CRRA utility function with derivative and RRA lemmas",
+        keywords=(
+            "crra",
+            "isoelastic",
+            "crra utility",
+            "constant relative risk aversion",
+            "risk aversion",
+            "concave utility",
+            "diminishing marginal utility",
+            "power utility",
+            "marginal utility",
+            "derivative",
+        ),
+        parameters=("c", "γ"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="cara_utility",
+        lean_module="LeanEcon.Preamble.Consumer.CARAUtility",
+        description="CARA utility function with derivative and ARA lemmas",
+        keywords=(
+            "cara",
+            "cara utility",
+            "constant absolute risk aversion",
+            "exponential utility",
+            "risk aversion",
+            "exponential",
+            "absolute risk",
+            "marginal utility",
+            "derivative",
+        ),
+        parameters=("c", "α"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="stone_geary_utility",
+        lean_module="LeanEcon.Preamble.Consumer.StoneGearyUtility",
+        description="Stone-Geary utility for two goods with marginal utility lemmas",
+        keywords=("stone-geary", "stone geary", "les utility", "linear expenditure"),
+        parameters=("x₁", "x₂", "α", "γ₁", "γ₂"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="price_elasticity",
+        lean_module="LeanEcon.Preamble.Consumer.PriceElasticity",
+        description="Price elasticity of demand as (dq/dp)·(p/q)",
+        keywords=("price elasticity", "elasticity of demand", "demand elasticity"),
+        parameters=("dq_dp", "p", "q"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="income_elasticity",
+        lean_module="LeanEcon.Preamble.Consumer.IncomeElasticity",
+        description="Income elasticity of demand as (dq/dm)·(m/q)",
+        keywords=("income elasticity",),
+        parameters=("dq_dm", "m", "q"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="arrow_pratt_rra",
+        lean_module="LeanEcon.Preamble.Risk.ArrowPrattRRA",
+        description="Arrow-Pratt measure of relative risk aversion",
+        keywords=(
+            "relative risk aversion",
+            "rra",
+            "arrow-pratt",
+            "arrow pratt",
+            "risk premium",
+            "risk aversion coefficient",
+            "concavity of utility",
+        ),
+        parameters=("c", "u'", "u''"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="arrow_pratt_ara",
+        lean_module="LeanEcon.Preamble.Risk.ArrowPrattARA",
+        description="Arrow-Pratt measure of absolute risk aversion",
+        keywords=(
+            "absolute risk aversion",
+            "ara",
+            "risk premium",
+            "absolute risk",
+            "concavity of utility",
+        ),
+        parameters=("u'", "u''"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="budget_set",
+        lean_module="LeanEcon.Preamble.Consumer.BudgetSet",
+        description="Budget set for two goods under linear budget constraint",
+        keywords=("budget set", "budget constraint", "feasible set"),
+        parameters=("p₁", "p₂", "m"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="geometric_series",
+        lean_module="LeanEcon.Preamble.Dynamic.GeometricSeries",
+        description="Geometric series and its closed-form partial sum",
+        keywords=("geometric series", "geometric sum", "present value"),
+        parameters=("a", "r", "n"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="extreme_value_theorem",
+        lean_module="LeanEcon.Preamble.Optimization.ExtremeValueTheorem",
+        description="Extreme value theorem (Weierstrass) via Mathlib IsCompact.exists_isMaxOn",
+        keywords=(
+            "extreme value",
+            "extreme value theorem",
+            "weierstrass",
+            "maximum theorem",
+            "attains maximum",
+            "attains minimum",
+            "compact",
+            "continuous maximum",
+            "berge",
+            "concave",
+            "convex",
+            "strictly concave",
+            "strictly convex",
+            "concavity",
+            "convexity",
+            "maximum",
+            "minimum",
+            "optimization",
+        ),
+        parameters=("f", "S"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="pareto_efficiency",
+        lean_module="LeanEcon.Preamble.Welfare.ParetoEfficiency",
+        description="Pareto efficiency and Pareto dominance for finite economies",
+        keywords=(
+            "pareto",
+            "pareto efficient",
+            "pareto optimal",
+            "pareto dominance",
+            "welfare",
+            "efficiency",
+            "first welfare",
+            "second welfare",
+        ),
+        parameters=("n", "u", "X"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="social_welfare_function",
+        lean_module="LeanEcon.Preamble.Welfare.SocialWelfareFunction",
+        description="Utilitarian social welfare function as weighted sum of utilities",
+        keywords=(
+            "social welfare function",
+            "swf",
+            "utilitarian",
+            "welfare function",
+            "weighted sum utilities",
+        ),
+        parameters=("n", "w", "u"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="marshallian_demand",
+        lean_module="LeanEcon.Preamble.Consumer.MarshallianDemand",
+        description="Marshallian demand functions for two-good Cobb-Douglas preferences",
+        keywords=(
+            "marshallian demand",
+            "ordinary demand",
+            "demand function",
+            "optimal consumption",
+            "utility maximization demand",
+            "budget constraint",
+            "tangency condition",
+        ),
+        parameters=("α", "m", "p₁", "p₂"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="indirect_utility",
+        lean_module="LeanEcon.Preamble.Consumer.IndirectUtility",
+        description="Indirect utility function for Cobb-Douglas preferences",
+        keywords=(
+            "indirect utility",
+            "indirect utility function",
+            "value function consumer",
+            "v(p,m)",
+        ),
+        parameters=("α", "p₁", "p₂", "m"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="profit_function",
+        lean_module="LeanEcon.Preamble.Producer.ProfitFunction",
+        description="Profit function for a single-input firm",
+        keywords=(
+            "profit function",
+            "profit maximization",
+            "firm profit",
+            "producer surplus",
+            "marginal cost",
+            "marginal revenue",
+            "supply function",
+            "first order condition",
+            "foc",
+        ),
+        parameters=("p", "w", "A", "α"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="cost_function",
+        lean_module="LeanEcon.Preamble.Producer.CostFunction",
+        description="Cost function for Cobb-Douglas technology",
+        keywords=(
+            "cost function",
+            "cost minimization",
+            "conditional factor demand",
+            "total cost",
+            "marginal cost",
+            "average cost",
+            "isoquant",
+            "shephard",
+            "shephard's lemma",
+        ),
+        parameters=("w", "r", "A", "α", "q"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="bellman_equation",
+        lean_module="LeanEcon.Preamble.Dynamic.BellmanEquation",
+        description="Bellman equation RHS for deterministic dynamic programming",
+        keywords=(
+            "bellman",
+            "bellman equation",
+            "dynamic programming",
+            "value function iteration",
+            "euler equation",
+            "optimal savings",
+            "ramsey",
+            "cake eating",
+            "recursive",
+            "value function",
+            "optimal control",
+        ),
+        parameters=("V", "u", "f", "β"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="discount_factor",
+        lean_module="LeanEcon.Preamble.Dynamic.DiscountFactor",
+        description="Present value with geometric discounting",
+        keywords=(
+            "present value",
+            "discount factor",
+            "discounting",
+            "geometric discounting",
+            "net present value",
+        ),
+        parameters=("x", "β", "T"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="expected_payoff",
+        lean_module="LeanEcon.Preamble.GameTheory.ExpectedPayoff",
+        description="Expected payoff for 2x2 games with mixed strategies",
+        keywords=(
+            "expected payoff",
+            "mixed strategy",
+            "mixed strategies",
+            "2x2 game",
+            "game payoff",
+            "bilinear",
+        ),
+        parameters=("u", "p", "q"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="solow_steady_state",
+        lean_module="LeanEcon.Preamble.Macro.SolowSteadyState",
+        description="Solow model investment and depreciation definitions",
+        keywords=(
+            "solow",
+            "solow model",
+            "steady state",
+            "steady-state",
+            "solow steady state",
+            "capital accumulation",
+            "growth model",
+            "golden rule",
+            "convergence",
+            "per capita",
+        ),
+        parameters=("s", "A", "n", "g", "δ", "α"),
+    )
+)
+_register(
+    PreambleEntry(
+        name="phillips_curve",
+        lean_module="LeanEcon.Preamble.Macro.PhillipsCurve",
+        description="New Keynesian Phillips Curve with nkpc function and identity theorem",
+        keywords=("phillips curve", "nkpc", "new keynesian", "inflation", "output gap"),
+        parameters=("π", "β", "κ", "x"),
+    )
+)
 
 
 def _strip_lean_header(lean_code: str) -> str:
@@ -372,7 +481,4 @@ def get_preamble_entries(names: list[str]) -> list[PreambleEntry]:
 
 def build_preamble_catalog_summary() -> str:
     """Compact text listing of all preamble modules for LLM context."""
-    return "\n".join(
-        f"- {entry.name}: {entry.description}"
-        for entry in PREAMBLE_LIBRARY.values()
-    )
+    return "\n".join(f"- {entry.name}: {entry.description}" for entry in PREAMBLE_LIBRARY.values())

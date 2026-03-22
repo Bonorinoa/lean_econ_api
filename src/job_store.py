@@ -107,10 +107,7 @@ class JobStore:
 
     def _cleanup_expired(self) -> None:
         now = time.time()
-        expired = [
-            jid for jid, data in self._jobs.items()
-            if now - data["created_at"] > self._ttl
-        ]
+        expired = [jid for jid, data in self._jobs.items() if now - data["created_at"] > self._ttl]
         for jid in expired:
             del self._jobs[jid]
             self._subscribers.pop(jid, None)

@@ -1,0 +1,5 @@
+{"raw_claim": "The Bellman operator for a bounded return function with discount factor beta < 1 is a contraction mapping under the supremum norm."}
+{"raw_claim": "If a continuous function f maps a compact, convex subset of R^n into itself, then f has a fixed point."}
+{"raw_claim": "A strictly concave, twice continuously differentiable utility function implies a negative semi-definite Hessian matrix."}
+{"raw_claim": "In a standard Solow-Swan model, if the production function satisfies the Inada conditions, there exists a unique, globally stable steady-state capital-labor ratio."}
+{"raw_claim": "By the Envelope Theorem, the derivative of the value function with respect to the state variable equals the partial derivative of the objective function evaluated at the optimal policy."}

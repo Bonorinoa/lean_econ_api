@@ -1,4 +1,5 @@
 """Shared fixtures and path setup for LeanEcon tests."""
+
 from __future__ import annotations
 
 import os
