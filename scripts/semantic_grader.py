@@ -12,13 +12,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from semantic_alignment import grade_semantic_alignment
+from semantic_alignment import grade_semantic_alignment  # noqa: E402
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Grade semantic alignment for LeanEcon formalizations.")
+    parser = argparse.ArgumentParser(
+        description="Grade semantic alignment for LeanEcon formalizations."
+    )
     parser.add_argument("--claim", default=None, help="Original raw claim text.")
-    parser.add_argument("--claim-file", default=None, help="Path to a file containing the original claim.")
+    parser.add_argument(
+        "--claim-file", default=None, help="Path to a file containing the original claim."
+    )
     parser.add_argument(
         "--theorem-file",
         default=None,

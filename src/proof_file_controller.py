@@ -14,7 +14,6 @@ from uuid import uuid4
 
 from mcp_runtime import LEAN_WORKSPACE, lean_workspace_relative_path
 
-
 DEFAULT_WORKING_FILE_BASENAME = "AgenticProof"
 DEFAULT_HEADER = "import Mathlib\nopen Real\n\n"
 TACTIC_REGION_BEGIN = "-- LEANECON_AGENTIC_TACTICS_BEGIN"
@@ -109,8 +108,8 @@ class ProofFileController:
             raise ValueError("theorem_with_sorry must contain a standalone `sorry` line")
 
         self._theorem_with_sorry = normalized
-        self._prefix = normalized[:match.start()]
-        self._suffix = normalized[match.end():]
+        self._prefix = normalized[: match.start()]
+        self._suffix = normalized[match.end() :]
         self._indent = match.group(1) or "  "
         self._current_tactic_block = "sorry"
         self._current_lean_code = self._render_current_code()
@@ -200,10 +199,7 @@ class ProofFileController:
 
     def _indent_block(self, text: str) -> str:
         lines = text.splitlines()
-        return "\n".join(
-            f"{self._indent}{line}" if line.strip() else line
-            for line in lines
-        )
+        return "\n".join(f"{self._indent}{line}" if line.strip() else line for line in lines)
 
     def _write_current_code(self) -> None:
         self._working_file.parent.mkdir(parents=True, exist_ok=True)

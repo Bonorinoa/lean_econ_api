@@ -96,7 +96,7 @@ def call_leanstral(
             if attempt >= max_attempts:
                 break
             if is_rate_limit:
-                delay = 2 ** attempt  # 2, 4, 8, 16s
+                delay = 2**attempt  # 2, 4, 8, 16s
                 print(f"  [leanstral] Rate limited — backing off {delay}s")
                 time.sleep(delay)
             else:

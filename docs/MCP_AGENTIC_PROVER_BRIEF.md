@@ -65,6 +65,7 @@ All passing cases above were verified by the Lean compiler on isolated files via
 - Lean workspace: `lean_workspace/`
 - Lean version: 4.28.0
 - Mathlib version: 4.28.0
+- MCP launcher: `./scripts/run_lean_lsp_mcp.sh --transport stdio`
 - MCP smoke test: `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`
 
 ## Known Limitations
@@ -81,10 +82,10 @@ All passing cases above were verified by the Lean compiler on isolated files via
 ./leanEconAPI_venv/bin/python src/mcp_smoke_test.py
 
 # Agentic prover regression checks
-./leanEconAPI_venv/bin/python tests/test_agentic_examples.py
+./leanEconAPI_venv/bin/python -m pytest -m live tests/test_agentic_examples.py
 
 # FastAPI smoke checks
-./leanEconAPI_venv/bin/python tests/test_api_smoke.py
+./leanEconAPI_venv/bin/python -m pytest tests/test_api_smoke.py
 
 # Phase 1 stress suite
 ./leanEconAPI_venv/bin/python scripts/run_phase1_stress_tests.py

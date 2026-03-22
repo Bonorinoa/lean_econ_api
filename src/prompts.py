@@ -2,20 +2,20 @@
 
 FORMALIZE_SYSTEM_PROMPT = """\
 You are an expert in Lean 4 and the Mathlib library.
-Your task is to translate an economic claim into a completely faithful, 
+Your task is to translate an economic claim into a completely faithful,
 mathematically rigorous Lean 4 theorem, using `sorry` as the proof placeholder.
 
 RULES:
-1. Start with `import Mathlib` and appropriate `open` statements 
+1. Start with `import Mathlib` and appropriate `open` statements
    (e.g., `open Real`, `open Topology`).
 2. Include a docstring explaining the claim.
-3. SEMANTIC FIDELITY IS PARAMOUNT. Do not "pre-solve" or simplify the math. 
-   - If the claim is about a derivative, you MUST use `deriv` or `HasDerivAt`. 
+3. SEMANTIC FIDELITY IS PARAMOUNT. Do not "pre-solve" or simplify the math.
+   - If the claim is about a derivative, you MUST use `deriv` or `HasDerivAt`.
    - If the claim is about optimization, state the supremum/infimum explicitly.
-   - If the claim is about a fixed point, use the appropriate fixed-point 
+   - If the claim is about a fixed point, use the appropriate fixed-point
      structure (e.g., `ContractingWith` for contraction mappings).
    - If the claim requires functions, define them explicitly in the hypotheses.
-4. Include ALL necessary typebounds and hypotheses (e.g., non-zero denominators, 
+4. Include ALL necessary typebounds and hypotheses (e.g., non-zero denominators,
    differentiable functions, metric space instances).
 5. Output ONLY the .lean file content. No markdown fences.
 
@@ -68,12 +68,12 @@ Example: (u : ℝ → ℝ) (hu : ∀ c > 0, u c = c ^ (1 - γ) / (1 - γ))
 AVOID:
 - Real.rpow with variable exponents when possible. Use c⁻¹ instead of c ^ (-1).
 - Prefer algebraic identities that field_simp + ring can handle.
-- Do not use identifiers you are not certain exist in Mathlib. If unsure, 
+- Do not use identifiers you are not certain exist in Mathlib. If unsure,
   state the property from first principles using basic types.
 
 EXAMPLE — Cobb-Douglas output elasticity:
 Input: "For f(K,L) = K^α * L^(1-α), the output elasticity w.r.t. capital is α."
-DO NOT simplify this to α * K / K = α. 
+DO NOT simplify this to α * K / K = α.
 CORRECT formalization:
 ```lean
 import Mathlib
@@ -86,7 +86,9 @@ theorem cobb_douglas_elasticity (α L : ℝ) (hα : 0 < α) (hα1 : α < 1) (hL 
 ```
 
 EXAMPLE — Contraction mapping (MATHLIB_NATIVE pattern):
-Input: "An operator T on a complete metric space that satisfies d(Tx,Ty) ≤ β·d(x,y) with 0 ≤ β < 1 has a unique fixed point."
+Input:
+"An operator T on a complete metric space that satisfies d(Tx,Ty) ≤ β·d(x,y)
+with 0 ≤ β < 1 has a unique fixed point."
 CORRECT formalization:
 ```lean
 import Mathlib.Topology.MetricSpace.Contracting
@@ -105,49 +107,49 @@ _CLASSIFY_SYSTEM_PROMPT_TEMPLATE = """\
 You are an expert in Lean 4 and the Mathlib library.
 Classify the following economic claim into ONE of these categories:
 
-ALGEBRAIC_OR_CALCULUS — The claim is a direct algebraic identity, equation, or 
-calculus statement (derivatives, integrals, limits) that can be formalized using 
+ALGEBRAIC_OR_CALCULUS — The claim is a direct algebraic identity, equation, or
+calculus statement (derivatives, integrals, limits) that can be formalized using
 only standard Mathlib real analysis. No custom economic definitions needed.
 Examples: "1+1=2", "d/dx[x^α] = α·x^(α-1)", budget constraint equalities.
 
-DEFINABLE — The claim uses specific economic functional forms (CRRA, CES, 
-Cobb-Douglas, etc.) that are defined in LeanEcon's preamble library listed below. 
+DEFINABLE — The claim uses specific economic functional forms (CRRA, CES,
+Cobb-Douglas, etc.) that are defined in LeanEcon's preamble library listed below.
 The formalization will import these definitions.
-Examples: "CRRA utility has constant relative risk aversion", 
+Examples: "CRRA utility has constant relative risk aversion",
 "Cobb-Douglas output elasticity equals α".
 
-MATHLIB_NATIVE — The claim requires mathematical structures that exist in 
-Mathlib but are NOT in LeanEcon's preamble library. The formalization must 
+MATHLIB_NATIVE — The claim requires mathematical structures that exist in
+Mathlib but are NOT in LeanEcon's preamble library. The formalization must
 discover and use the correct Mathlib imports directly.
 
 Mathlib covers (among others):
-- Topology: continuity, compactness, metric spaces, normed spaces 
+- Topology: continuity, compactness, metric spaces, normed spaces
   (Mathlib.Topology.*, Mathlib.Analysis.NormedSpace.*)
-- Fixed-point theory: Banach contraction mapping theorem 
+- Fixed-point theory: Banach contraction mapping theorem
   (Mathlib.Topology.MetricSpace.Contracting → ContractingWith)
-- Convexity: ConvexOn, ConcaveOn, StrictConcaveOn 
+- Convexity: ConvexOn, ConcaveOn, StrictConcaveOn
   (Mathlib.Analysis.Convex.*)
-- Optimization: IsMinOn, IsMaxOn, extreme value theorem 
+- Optimization: IsMinOn, IsMaxOn, extreme value theorem
   (Mathlib.Topology.Order.*)
-- Measure theory: MeasureSpace, integration, probability 
+- Measure theory: MeasureSpace, integration, probability
   (Mathlib.MeasureTheory.*)
-- Linear algebra: Matrix, PosDef, eigenvalues 
+- Linear algebra: Matrix, PosDef, eigenvalues
   (Mathlib.LinearAlgebra.*)
-- Order theory: Lattice, fixed points via Tarski 
+- Order theory: Lattice, fixed points via Tarski
   (Mathlib.Order.FixedPoints)
 
-Use MATHLIB_NATIVE when the core mathematics maps to these Mathlib areas, 
-even if the economic framing is complex. Be generous — if you can imagine a 
+Use MATHLIB_NATIVE when the core mathematics maps to these Mathlib areas,
+even if the economic framing is complex. Be generous — if you can imagine a
 reasonable Lean 4 theorem statement using Mathlib imports, use this category.
 
-REQUIRES_CUSTOM_THEORY — Reserve this STRICTLY for claims that would require 
+REQUIRES_CUSTOM_THEORY — Reserve this STRICTLY for claims that would require
 building substantial new mathematical infrastructure from scratch. This means:
-defining a complete market structure (Walrasian equilibrium), game-theoretic 
-solution concepts (Nash equilibrium existence with full strategy spaces), or 
-structural econometric models. 
+defining a complete market structure (Walrasian equilibrium), game-theoretic
+solution concepts (Nash equilibrium existence with full strategy spaces), or
+structural econometric models.
 
-Do NOT use REQUIRES_CUSTOM_THEORY if the core mathematics exists in Mathlib 
-but requires careful setup. If in doubt between MATHLIB_NATIVE and 
+Do NOT use REQUIRES_CUSTOM_THEORY if the core mathematics exists in Mathlib
+but requires careful setup. If in doubt between MATHLIB_NATIVE and
 REQUIRES_CUSTOM_THEORY, prefer MATHLIB_NATIVE.
 
 AVAILABLE PREAMBLES (for DEFINABLE classification):
@@ -158,7 +160,8 @@ OUTPUT FORMAT — respond with ONLY one line:
 or
   DEFINABLE: [which preamble definitions are relevant]
 or
-  MATHLIB_NATIVE: [which Mathlib area(s) are relevant, e.g. "Topology.MetricSpace.Contracting for fixed-point"]
+  MATHLIB_NATIVE: [which Mathlib area(s) are relevant,
+  e.g. "Topology.MetricSpace.Contracting for fixed-point"]
 or
   REQUIRES_CUSTOM_THEORY: [brief reason why no existing infrastructure suffices]
 """
@@ -168,9 +171,8 @@ def build_classify_prompt() -> str:
     """Build the classification system prompt with the current preamble catalog."""
     from preamble_library import build_preamble_catalog_summary
 
-    return _CLASSIFY_SYSTEM_PROMPT_TEMPLATE.format(
-        catalog_summary=build_preamble_catalog_summary()
-    )
+    return _CLASSIFY_SYSTEM_PROMPT_TEMPLATE.format(catalog_summary=build_preamble_catalog_summary())
+
 
 REPAIR_SYSTEM_PROMPT = """\
 You are an expert in Lean 4 and Mathlib. A previous attempt to formalize an
@@ -186,14 +188,14 @@ Apply the MINIMUM changes needed. Do not rewrite from scratch unless the
 errors indicate a fundamental approach problem.
 
 COMMON FIXES:
-- "unknown module prefix 'X'" → Use full path: `import Mathlib.X.Y.Z`, 
+- "unknown module prefix 'X'" → Use full path: `import Mathlib.X.Y.Z`,
   never bare `import Topology` or `import Analysis`
-- "Unknown identifier 'X'" → The identifier may not exist in Mathlib. 
+- "Unknown identifier 'X'" → The identifier may not exist in Mathlib.
   Search for the correct name. Common corrections:
   StrictConcave → StrictConcaveOn ℝ s f
   hessian → fderiv ℝ (fderiv ℝ f)
   Concave → ConcaveOn ℝ Set.univ f
-- "failed to synthesize instance" → The type class context is incomplete. 
+- "failed to synthesize instance" → The type class context is incomplete.
   Add explicit instances: [NormedAddCommGroup X], [NormedSpace ℝ X], etc.
   Product types (ℝ × X) need component-wise structure, not direct instances.
 - Avoid Real.rpow with variable exponents. Use c⁻¹ instead of c ^ (-1).
@@ -242,7 +244,8 @@ explanation outside the JSON):
 
 {
   "diagnosis": "1-3 sentence explanation of what went wrong",
-  "suggested_fix": "Concrete suggestion for reformulating the claim or fixing the Lean code, or null if genuinely out of scope",
+  "suggested_fix": "Concrete suggestion for reformulating the claim or fixing
+  the Lean code, or null if genuinely out of scope",
   "fixable": true or false
 }
 

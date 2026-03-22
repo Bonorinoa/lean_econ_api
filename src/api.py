@@ -144,6 +144,7 @@ def cleanup_orphaned_agentic_temp_files() -> None:
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class ClaimRequest(BaseModel):
     """Request body for raw-claim endpoints."""
 
@@ -171,9 +172,7 @@ class VerifyRequest(BaseModel):
 
     theorem_code: str = Field(
         ...,
-        description=(
-            "Formalized Lean theorem file content that still contains `sorry`."
-        ),
+        description=("Formalized Lean theorem file content that still contains `sorry`."),
     )
     explain: bool = Field(
         default=False,
@@ -185,9 +184,7 @@ class ExplainRequest(BaseModel):
     """Request body for the explain endpoint."""
 
     original_claim: str = Field(..., description="The user's original input.")
-    theorem_code: str | None = Field(
-        default=None, description="Formalized theorem (if available)."
-    )
+    theorem_code: str | None = Field(default=None, description="Formalized theorem (if available).")
     verification_result: dict[str, Any] | None = Field(
         default=None, description="Output of verify (if available)."
     )
@@ -202,6 +199,7 @@ class ExplainRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Response models
 # ---------------------------------------------------------------------------
+
 
 class HealthResponse(BaseModel):
     """Liveness response."""
@@ -230,12 +228,10 @@ class ClassifyResponse(BaseModel):
         }
     )
 
-    cleaned_claim: str = Field(
-        description="Normalized claim text after lightweight cleaning."
-    )
-    category: Literal["RAW_LEAN", "ALGEBRAIC", "MATHLIB_NATIVE", "DEFINABLE", "REQUIRES_DEFINITIONS"] = Field(
-        description="High-level claim class used to decide whether to continue."
-    )
+    cleaned_claim: str = Field(description="Normalized claim text after lightweight cleaning.")
+    category: Literal[
+        "RAW_LEAN", "ALGEBRAIC", "MATHLIB_NATIVE", "DEFINABLE", "REQUIRES_DEFINITIONS"
+    ] = Field(description="High-level claim class used to decide whether to continue.")
     formalizable: bool = Field(
         description="Whether the current claim appears in scope for formalization."
     )
@@ -243,9 +239,7 @@ class ClassifyResponse(BaseModel):
         default=None,
         description="Reason for rejection when the claim needs missing definitions.",
     )
-    is_raw_lean: bool = Field(
-        description="Whether the input already looked like Lean code."
-    )
+    is_raw_lean: bool = Field(description="Whether the input already looked like Lean code.")
     error_code: LeanEconErrorCode = Field(
         default=LeanEconErrorCode.NONE,
         description="Machine-readable error code.",
@@ -315,9 +309,7 @@ class FormalizeResponse(BaseModel):
         description="Complete Lean theorem/file content returned by the formalizer."
     )
     attempts: int = Field(description="Number of formalization or repair attempts used.")
-    errors: list[str] = Field(
-        description="Lean errors from the last failed formalization attempt."
-    )
+    errors: list[str] = Field(description="Lean errors from the last failed formalization attempt.")
     formalization_failed: bool = Field(
         description="Whether the claim was rejected as out of scope for Mathlib."
     )
@@ -378,14 +370,10 @@ class VerifyResponse(BaseModel):
     )
 
     success: bool = Field(description="Whether Lean accepted the final proof.")
-    lean_code: str = Field(
-        description="Final Lean file content returned by the verification run."
-    )
+    lean_code: str = Field(description="Final Lean file content returned by the verification run.")
     errors: list[str] = Field(description="Lean verification errors, if any.")
     warnings: list[str] = Field(description="Lean warnings emitted during verification.")
-    proof_strategy: str = Field(
-        description="High-level proof plan reported by the proving stage."
-    )
+    proof_strategy: str = Field(description="High-level proof plan reported by the proving stage.")
     proof_tactics: str = Field(
         description="Tactic script or tactics summary produced by the prover."
     )
@@ -416,9 +404,7 @@ class VerifyResponse(BaseModel):
             "not reach a valid proof."
         )
     )
-    elapsed_seconds: float = Field(
-        description="Total wall-clock time reported by the pipeline."
-    )
+    elapsed_seconds: float = Field(description="Total wall-clock time reported by the pipeline.")
     from_cache: bool = Field(
         default=False,
         description="True if the response was served from the verified-result cache.",
@@ -473,9 +459,7 @@ class ExplainResponse(BaseModel):
     """Natural language explanation of pipeline results."""
 
     explanation: str = Field(description="Markdown-formatted explanation.")
-    generated: bool = Field(
-        description="True if LLM generated, False if fallback."
-    )
+    generated: bool = Field(description="True if LLM generated, False if fallback.")
     error_code: LeanEconErrorCode = Field(
         default=LeanEconErrorCode.NONE,
         description="Machine-readable error code.",
@@ -514,17 +498,14 @@ class MetricsResponse(BaseModel):
     avg_elapsed_seconds: float = Field(
         description="Average elapsed wall-clock time across parsed runs."
     )
-    verification_rate: float = Field(
-        description="Verified runs divided by total runs."
-    )
-    cache_hit_rate: float = Field(
-        description="Cache-hit runs divided by total runs."
-    )
+    verification_rate: float = Field(description="Verified runs divided by total runs.")
+    cache_hit_rate: float = Field(description="Cache-hit runs divided by total runs.")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _require_non_empty(value: str, field_name: str) -> str:
     """Reject blank or whitespace-only text payloads."""
@@ -600,6 +581,7 @@ def _empty_metrics() -> MetricsResponse:
 # Background task
 # ---------------------------------------------------------------------------
 
+
 def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
     """Background task that runs the full pipeline and stores the result."""
     job_store.update_status(job_id, JobStatus.RUNNING)
@@ -645,6 +627,7 @@ def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
 # Meta endpoint (unversioned)
 # ---------------------------------------------------------------------------
 
+
 @app.get(
     "/health",
     response_model=HealthResponse,
@@ -660,6 +643,7 @@ def health() -> HealthResponse:
 # ---------------------------------------------------------------------------
 # v1 endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post(
     "/classify",
@@ -706,7 +690,9 @@ def classify_endpoint(request: ClaimRequest) -> ClassifyResponse:
             formalizable=formalizable,
             reason=classification["reason"],
             is_raw_lean=False,
-            error_code=LeanEconErrorCode.CLASSIFICATION_REJECTED if is_rejected else LeanEconErrorCode.NONE,
+            error_code=LeanEconErrorCode.CLASSIFICATION_REJECTED
+            if is_rejected
+            else LeanEconErrorCode.NONE,
             definitions_needed=classification.get("definitions_needed"),
             preamble_matches=classification.get("preamble_matches", []),
             suggested_reformulation=classification.get("suggested_reformulation"),
@@ -760,9 +746,7 @@ def formalize_endpoint(request: FormalizeRequest) -> FormalizeResponse:
     responses={
         202: {"description": "Job queued successfully."},
         422: {
-            "description": (
-                "The theorem payload was blank or did not look like a Lean proof stub."
-            )
+            "description": ("The theorem payload was blank or did not look like a Lean proof stub.")
         },
     },
 )
@@ -781,9 +765,7 @@ def verify_endpoint(
         )
 
     job_id = job_store.create({"theorem_code": theorem_code, "explain": request.explain})
-    background_tasks.add_task(
-        _run_verify_job, job_id, theorem_code, request.explain
-    )
+    background_tasks.add_task(_run_verify_job, job_id, theorem_code, request.explain)
     return VerifyAcceptedResponse(job_id=job_id, status="queued")
 
 
@@ -838,6 +820,7 @@ def stream_job_events(job_id: str) -> StreamingResponse:
     }
 
     if job["status"] in (JobStatus.COMPLETED, JobStatus.FAILED):
+
         def already_done():
             event = {
                 "type": "complete",
@@ -1012,6 +995,7 @@ def clear_cache() -> dict[str, str]:
 # Legacy unversioned routes (deprecated, backward-compat)
 # ---------------------------------------------------------------------------
 
+
 @app.post("/api/classify", deprecated=True, include_in_schema=False)
 def classify_legacy(request: ClaimRequest) -> ClassifyResponse:
     return classify_endpoint(request)
@@ -1023,7 +1007,9 @@ def formalize_legacy(request: ClaimRequest) -> FormalizeResponse:
 
 
 @app.post("/api/verify", deprecated=True, include_in_schema=False, status_code=202)
-def verify_legacy(request: VerifyRequest, background_tasks: BackgroundTasks) -> VerifyAcceptedResponse:
+def verify_legacy(
+    request: VerifyRequest, background_tasks: BackgroundTasks
+) -> VerifyAcceptedResponse:
     return verify_endpoint(request, background_tasks)
 
 

@@ -25,7 +25,7 @@ available at `http://localhost:8000/health`.
 
 - Python 3.11
 - elan + Lean 4.28.0
-- `uv` for launching `lean-lsp-mcp` via `uvx`
+- the repo-owned `scripts/run_lean_lsp_mcp.sh` launcher for `lean-lsp-mcp`
 - Mathlib cache bootstrap via `lake exe cache get`
 - A prebuilt `lean_workspace/` via `lake build`
 - Python dependencies from `requirements.txt`

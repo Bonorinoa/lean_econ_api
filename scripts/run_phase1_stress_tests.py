@@ -23,13 +23,30 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_DIR))
 
-from mcp_runtime import LEAN_WORKSPACE, lean_workspace_relative_path, open_lean_mcp_session, parse_diagnostics
-from pipeline import run_pipeline
+from mcp_runtime import (  # noqa: E402
+    LEAN_WORKSPACE,
+    lean_workspace_relative_path,
+    open_lean_mcp_session,
+    parse_diagnostics,
+)
+from pipeline import run_pipeline  # noqa: E402
 
 TEST_CASES = [
-    PROJECT_ROOT / "tests" / "fixtures" / "lean_advanced" / "test_04_water_extraction_dynamics.lean",
-    PROJECT_ROOT / "tests" / "fixtures" / "lean_advanced" / "test_05_expected_utility_representation.lean",
-    PROJECT_ROOT / "tests" / "fixtures" / "lean_advanced" / "test_06_advanced_optimization.lean",
+    PROJECT_ROOT
+    / "tests"
+    / "fixtures"
+    / "lean_advanced"
+    / "test_04_water_extraction_dynamics.lean",
+    PROJECT_ROOT
+    / "tests"
+    / "fixtures"
+    / "lean_advanced"
+    / "test_05_expected_utility_representation.lean",
+    PROJECT_ROOT
+    / "tests"
+    / "fixtures"
+    / "lean_advanced"
+    / "test_06_advanced_optimization.lean",
 ]
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "phase1_stress"
 SUMMARY_PATH = PROJECT_ROOT / "outputs" / "phase1_stress_test_results.md"
@@ -68,8 +85,7 @@ def _select_cases(case_filters: list[str] | None) -> list[Path]:
     ]
     if not selected:
         raise SystemExit(
-            "No stress cases matched the provided filters: "
-            + ", ".join(sorted(requested))
+            "No stress cases matched the provided filters: " + ", ".join(sorted(requested))
         )
     return selected
 
@@ -216,58 +232,64 @@ def _render_summary(records: list[dict[str, Any]]) -> str:
         mcp_validation = validation["mcp"]
         compiler_validation = validation["compiler"]
 
-        lines.extend([
-            f"## {case_path.name}",
-            "",
-            f"- Source file: `{case_path}`",
-            f"- Raw artifact: `{record['artifact_path']}`",
-            f"- MCP validation errors: {len(mcp_validation['errors'])}",
-            f"- MCP validation warnings: {len(mcp_validation['warnings'])}",
-            f"- Lean compiler return code: {compiler_validation['returncode']}",
-            f"- Lean compiler reported `sorry`: {compiler_validation['has_sorry_warning']}",
-        ])
+        lines.extend(
+            [
+                f"## {case_path.name}",
+                "",
+                f"- Source file: `{case_path}`",
+                f"- Raw artifact: `{record['artifact_path']}`",
+                f"- MCP validation errors: {len(mcp_validation['errors'])}",
+                f"- MCP validation warnings: {len(mcp_validation['warnings'])}",
+                f"- Lean compiler return code: {compiler_validation['returncode']}",
+                f"- Lean compiler reported `sorry`: {compiler_validation['has_sorry_warning']}",
+            ]
+        )
 
         if run["error"] is not None:
-            lines.extend([
-                f"- Pipeline execution error: {run['error']}",
-                "",
-            ])
+            lines.extend(
+                [
+                    f"- Pipeline execution error: {run['error']}",
+                    "",
+                ]
+            )
             continue
 
-        lines.extend([
-            f"- Pipeline success: {result.get('success')}",
-            f"- Final phase: {result.get('phase')}",
-            f"- Partial result: {result.get('partial')}",
-            f"- Stop reason: {result.get('stop_reason')}",
-            f"- Round-trip count: {result.get('attempts_used')}",
-            f"- Tactic calls observed: {len(result.get('tactic_calls', []))}",
-            f"- Tool trace events: {len(result.get('tool_trace', []))}",
-            f"- Pipeline log entries: {len(run.get('pipeline_log', []))}",
-            f"- Final error count: {len(result.get('errors', []))}",
-            f"- Final warning count: {len(result.get('warnings', []))}",
-            f"- Pipeline elapsed seconds: {result.get('elapsed_seconds')}",
-            f"- Agent summary: {result.get('agent_summary', '')}",
-            f"- Output Lean artifact: {result.get('output_lean')}",
-            "",
-            "### MCP Diagnostics Preview",
-            "",
-            "```text",
-            _error_preview(mcp_validation["errors"] or mcp_validation["warnings"]),
-            "```",
-            "",
-            "### Final Errors Preview",
-            "",
-            "```text",
-            _error_preview(result.get("errors", [])),
-            "```",
-            "",
-            "### Final Warnings Preview",
-            "",
-            "```text",
-            _error_preview(result.get("warnings", [])),
-            "```",
-            "",
-        ])
+        lines.extend(
+            [
+                f"- Pipeline success: {result.get('success')}",
+                f"- Final phase: {result.get('phase')}",
+                f"- Partial result: {result.get('partial')}",
+                f"- Stop reason: {result.get('stop_reason')}",
+                f"- Round-trip count: {result.get('attempts_used')}",
+                f"- Tactic calls observed: {len(result.get('tactic_calls', []))}",
+                f"- Tool trace events: {len(result.get('tool_trace', []))}",
+                f"- Pipeline log entries: {len(run.get('pipeline_log', []))}",
+                f"- Final error count: {len(result.get('errors', []))}",
+                f"- Final warning count: {len(result.get('warnings', []))}",
+                f"- Pipeline elapsed seconds: {result.get('elapsed_seconds')}",
+                f"- Agent summary: {result.get('agent_summary', '')}",
+                f"- Output Lean artifact: {result.get('output_lean')}",
+                "",
+                "### MCP Diagnostics Preview",
+                "",
+                "```text",
+                _error_preview(mcp_validation["errors"] or mcp_validation["warnings"]),
+                "```",
+                "",
+                "### Final Errors Preview",
+                "",
+                "```text",
+                _error_preview(result.get("errors", [])),
+                "```",
+                "",
+                "### Final Warnings Preview",
+                "",
+                "```text",
+                _error_preview(result.get("warnings", [])),
+                "```",
+                "",
+            ]
+        )
 
     return "\n".join(lines)
 

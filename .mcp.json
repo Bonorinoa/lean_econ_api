@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "lean-lsp": {
-      "command": "uvx",
-      "args": ["lean-lsp-mcp", "--transport", "stdio"],
+      "command": "../scripts/run_lean_lsp_mcp.sh",
+      "args": ["--transport", "stdio"],
       "cwd": "lean_workspace"
     }
   }

@@ -54,6 +54,7 @@ def _sanitize_file_stem(filename: str | None, default: str) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def write_lean_file(lean_code: str, filename: str | None = None) -> Path:
     """
     Write Lean 4 source code to the legacy `LeanEcon/Proof.lean` path.
@@ -88,6 +89,7 @@ def write_verification_file(lean_code: str, filename: str | None = None) -> Path
     lean_path = LEAN_SOURCE_DIR / f"{stem}_{uuid4().hex[:12]}.lean"
     lean_path.write_text(lean_code, encoding="utf-8")
     return lean_path
+
 
 def run_direct_lean_check(lean_path: Path, timeout: int = 300) -> dict:
     """
@@ -189,7 +191,7 @@ def verify(
         result["axiom_info"] = None
         if check_axioms and result["success"]:
             try:
-                from lean_runner import verify_axioms, extract_theorem_name
+                from lean_runner import extract_theorem_name, verify_axioms
 
                 thm_name = extract_theorem_name(lean_code)
                 if thm_name:
@@ -197,7 +199,8 @@ def verify(
                     result["axiom_info"] = axiom_info
                     logger.info(
                         "Axiom check: %s — sound=%s",
-                        axiom_info["axioms"], axiom_info["sound"],
+                        axiom_info["axioms"],
+                        axiom_info["sound"],
                     )
             except Exception as exc:
                 logger.warning("Axiom check failed: %s", exc)
@@ -243,10 +246,9 @@ def _parse_diagnostics(text: str, level: str) -> list[str]:
 
         # Style B: `error: path:line:col: message`  (lake formatted output)
         elif line.startswith(f"{level}: "):
-            rest = line[len(level) + 2:]
+            rest = line[len(level) + 2 :]
             # Confirm it looks like a path diagnostic (contains .lean:N:M:)
             if re.match(r".*\.lean:\d+:\d+:", rest):
-                loc_end = rest.index(":", rest.index(".lean:") + 6)
                 # Find second colon after .lean:N:
                 m = re.match(r"(.*\.lean:\d+:\d+):(.*)", rest)
                 if m:
@@ -263,8 +265,12 @@ def _parse_diagnostics(text: str, level: str) -> list[str]:
             j = i + 1
             while j < len(lines) and j < i + 5:
                 next_line = lines[j]
-                if (next_line.startswith("  ") or next_line.startswith("| ")
-                        or next_line.startswith("^") or next_line.startswith("⊢")):
+                if (
+                    next_line.startswith("  ")
+                    or next_line.startswith("| ")
+                    or next_line.startswith("^")
+                    or next_line.startswith("⊢")
+                ):
                     context_lines.append(next_line)
                     j += 1
                 else:
@@ -324,4 +330,4 @@ def _save_to_outputs(lean_code: str, lean_path: Path, result: dict):
 
 
 if __name__ == "__main__":
-    print("Run tests via: python tests/test_verifier.py")
+    print("Run tests via: pytest tests/test_verifier.py")

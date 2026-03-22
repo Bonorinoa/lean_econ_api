@@ -49,7 +49,8 @@ to its mathematical meaning:
 - norm_num → "checked the arithmetic numerically"
 - exact h → "used the hypothesis directly"
 - linarith → "applied linear arithmetic reasoning"
-Use Lean syntax in the explanation to enhance it pedagogically for users learning lean4. Write for someone who has never seen a proof assistant.
+Use Lean syntax in the explanation to enhance it pedagogically for users
+learning lean4. Write for someone who has never seen a proof assistant.
 
 ## What this means
 (If verified:) Explain that Lean 4's type checker has verified every logical
@@ -155,7 +156,10 @@ def _axiom_section(verification_result: dict) -> str:
         names = ", ".join(axiom_info["nonstandard_axioms"])
         return f"Nonstandard axioms used: {names}"
     if axiom_info.get("sound"):
-        return "Axiom check: Only standard axioms used (propext, Classical.choice, Quot.sound). Proof is sound."
+        return (
+            "Axiom check: Only standard axioms used "
+            "(propext, Classical.choice, Quot.sound). Proof is sound."
+        )
     return ""
 
 
@@ -246,9 +250,7 @@ def _call_with_timeout(user_prompt: str) -> str:
     try:
         kind, payload = result_queue.get(timeout=EXPLAIN_TIMEOUT_SECONDS)
     except queue.Empty as exc:
-        raise TimeoutError(
-            f"Explanation request exceeded {EXPLAIN_TIMEOUT_SECONDS:.1f}s"
-        ) from exc
+        raise TimeoutError(f"Explanation request exceeded {EXPLAIN_TIMEOUT_SECONDS:.1f}s") from exc
 
     if kind == "error":
         raise payload

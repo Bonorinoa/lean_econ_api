@@ -26,7 +26,6 @@ from mcp_runtime import (
     open_mistral_run_context,
 )
 
-
 FIXTURE_PATH = LEAN_WORKSPACE / "LeanEcon" / "McpSmoke.lean"
 TARGET_FILE = lean_workspace_relative_path(FIXTURE_PATH)
 GOAL_QUERY_LINE = 4
@@ -74,9 +73,7 @@ def _find_expected_diagnostic(items: list[dict]) -> dict:
             and EXPECTED_DIAGNOSTIC_SUBSTRING in item.get("message", "")
         ):
             return item
-    raise RuntimeError(
-        "Did not find the expected MCP diagnostic shape in the fixture file"
-    )
+    raise RuntimeError("Did not find the expected MCP diagnostic shape in the fixture file")
 
 
 def _extract_goals_after(goal_result) -> list[str]:

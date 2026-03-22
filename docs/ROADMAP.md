@@ -22,7 +22,7 @@ This sprint is nearly complete. The core backend MVP is in place:
 - [x] Improved formalizer prompts (NontriviallyNormedField, inline definitions)
 - [x] Fixed diagnosis service error logging (actual errors now surfaced)
 - [x] Added 429-aware exponential backoff to Leanstral API calls
-- [x] Created 32-claim test suite across 4 tiers (data/test_claims.jsonl)
+- [x] Created 32-claim test suite across 4 tiers (`tests/fixtures/claims/test_claims.jsonl`)
 - [x] Updated test suite for simplified architecture
 
 ## Remaining before sprint close

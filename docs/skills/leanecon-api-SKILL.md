@@ -171,9 +171,8 @@ eventSource.onmessage = (event) => {
   const data = JSON.parse(event.data);
   
   if (data.type === "progress") {
-    // Typical stages: "parse", "formalize", "prover_dispatch", "agentic_init",
-    // "agentic_setup", "agentic_run", "agentic_check", "agentic_verify",
-    // "cache", "explain"
+    // Typical stages: "formalize", "agentic_init", "agentic_setup",
+    // "agentic_run", "agentic_verify", "explain"
     // data.message: human-readable progress text
     // data.status: "running" | "done" | "error"
     return;
@@ -206,19 +205,24 @@ Returns a job envelope. The final verify payload lives under `result`.
     "success": true,
     "phase": "verified",
     "lean_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by norm_num",
+    "errors": [],
+    "warnings": [],
     "proof_strategy": "Use norm_num.",
     "proof_tactics": "norm_num",
+    "theorem_statement": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by sorry",
+    "formalization_attempts": 0,
+    "formalization_failed": false,
+    "failure_reason": null,
+    "output_lean": "/app/outputs/Proof_20260322_062903.lean",
+    "proof_generated": true,
+    "elapsed_seconds": 34.95,
+    "from_cache": false,
     "partial": false,
-    "stop_reason": null,
-    "tool_trace": [],
-    "tactic_calls": [],
-    "axiom_info": {
-      "axioms": ["propext", "Classical.choice", "Quot.sound"],
-      "sound": true,
-      "has_sorry_ax": false,
-      "nonstandard_axioms": []
-    },
-    "error_code": "none"
+    "stop_reason": "proof_complete",
+    "axiom_info": null,
+    "error_code": "none",
+    "explanation": null,
+    "explanation_generated": null
   },
   "error": null
 }
@@ -276,7 +280,7 @@ POST /api/v1/formalize
 }
 ```
 
-The current preamble library has 23 entries across 8 areas: consumer,
+LeanEcon currently ships 23 preamble entries across 8 areas: consumer,
 producer, risk, dynamic, macro, optimization, welfare, and game theory. For UI
 pickers or product copy, read [`docs/PREAMBLE_CATALOG.md`](../PREAMBLE_CATALOG.md)
 instead of hardcoding module names or counts in multiple places.
@@ -334,15 +338,14 @@ The offline evaluation script runs claims from a JSONL input file through the fu
 
 ```bash
 ./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
-  --input data/uncharted_claims.jsonl \
-  --output reports/report.md \
+  tests/fixtures/claims/uncharted_claims.jsonl \
   --pass-k 5
 ```
 
 **Input format** (`uncharted_claims.jsonl`):
 ```json
-{"claim": "The Bellman operator is a contraction mapping under discounting", "tags": ["dynamic_programming", "fixed_point"]}
-{"claim": "Solow-Swan model has a unique steady state under Inada conditions", "tags": ["growth", "fixed_point"]}
+{"id": "dynamic_001", "raw_claim": "The Bellman operator is a contraction mapping under discounting", "tags": ["dynamic_programming", "fixed_point"]}
+{"id": "growth_001", "raw_claim": "Solow-Swan model has a unique steady state under Inada conditions", "tags": ["growth", "fixed_point"]}
 ```
 
 **Output metrics (per claim):**

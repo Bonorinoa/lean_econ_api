@@ -13,7 +13,11 @@ import run_uncharted_evals
 
 def test_runner_writes_report_and_results() -> None:
     claims = [
-        {"id": "dynamic_001", "raw_claim": "Bellman operator is a contraction.", "tags": ["dynamic"]},
+        {
+            "id": "dynamic_001",
+            "raw_claim": "Bellman operator is a contraction.",
+            "tags": ["dynamic"],
+        },
         {"id": "dynamic_002", "raw_claim": "Value function exists.", "tags": ["dynamic"]},
     ]
 
@@ -92,11 +96,17 @@ def test_runner_writes_report_and_results() -> None:
             "--output-dir",
             str(output_dir),
         ]
-        with patch.object(run_uncharted_evals, "formalize_claim", side_effect=fake_formalize_claim), \
-             patch.object(run_uncharted_evals, "run_pipeline", side_effect=fake_run_pipeline), \
-             patch.object(run_uncharted_evals, "grade_semantic_alignment", side_effect=fake_grade_semantic_alignment), \
-             patch.object(sys, "argv", argv), \
-             patch.dict("os.environ", {"MISTRAL_API_KEY": "test-key"}, clear=False):
+        with (
+            patch.object(run_uncharted_evals, "formalize_claim", side_effect=fake_formalize_claim),
+            patch.object(run_uncharted_evals, "run_pipeline", side_effect=fake_run_pipeline),
+            patch.object(
+                run_uncharted_evals,
+                "grade_semantic_alignment",
+                side_effect=fake_grade_semantic_alignment,
+            ),
+            patch.object(sys, "argv", argv),
+            patch.dict("os.environ", {"MISTRAL_API_KEY": "test-key"}, clear=False),
+        ):
             exit_code = run_uncharted_evals.main()
 
         assert exit_code == 0
@@ -114,44 +124,3 @@ def test_runner_writes_report_and_results() -> None:
         assert "Uncharted Evaluation Report" in report_text
         assert "dynamic_001" in report_text
         assert "Formalization Robustness" in report_text
-
-
-# ---------------------------------------------------------------------------
-# Standalone runner (fallback)
-# ---------------------------------------------------------------------------
-
-def _run_case(name: str, fn) -> bool:
-    try:
-        fn()
-    except Exception as exc:
-        print(f"{name}: FAIL ({exc})")
-        return False
-    print(f"{name}: PASS")
-    return True
-
-
-def main() -> int:
-    print("=" * 60)
-    print("LeanEcon Uncharted Runner Tests")
-    print("=" * 60)
-
-    results = {
-        "runner_writes_report_and_results": _run_case(
-            "runner_writes_report_and_results",
-            test_runner_writes_report_and_results,
-        ),
-    }
-
-    print("\n" + "=" * 60)
-    print("Results:")
-    for name, passed in results.items():
-        print(f"  {name}: {'PASS' if passed else 'FAIL'}")
-
-    all_passed = all(results.values())
-    print(f"\nOverall: {'ALL PASSED' if all_passed else 'SOME FAILED'}")
-    print("=" * 60)
-    return 0 if all_passed else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

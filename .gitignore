@@ -15,4 +15,6 @@ lean_workspace/LeanEcon/AgenticProof.lean
 *.egg-info/
 .mypy_cache/
 .pytest_cache/
+.coverage
+.tmp/
 lean_workspace/LeanEcon/test_*.lean

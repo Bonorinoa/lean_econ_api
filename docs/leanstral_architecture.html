@@ -718,7 +718,7 @@ src/
 
 <div class="callout insight">
   <div class="callout-label">Implementation Path</div>
-  lean-lsp-mcp is a Python package (<code>uvx lean-lsp-mcp</code>) that runs as an MCP server. Leanstral already supports MCP via function calling in the Mistral API. The integration requires: (1) running lean-lsp-mcp pointed at our lean_workspace, (2) registering the MCP tools in our Leanstral API calls, (3) replacing the one-shot prove→verify loop with an agentic loop that calls tools between tactic steps. This is a substantial architectural change — estimated at 2–3 build sessions — but the components exist and are documented.
+  lean-lsp-mcp is a Python package invoked in this repo through <code>scripts/run_lean_lsp_mcp.sh</code>, which wraps <code>uvx lean-lsp-mcp</code> with repo-local writable cache paths. Leanstral already supports MCP via function calling in the Mistral API. The integration requires: (1) running lean-lsp-mcp pointed at our lean_workspace, (2) registering the MCP tools in our Leanstral API calls, (3) replacing the one-shot prove→verify loop with an agentic loop that calls tools between tactic steps. This is a substantial architectural change — estimated at 2–3 build sessions — but the components exist and are documented.
 </div>
 
 <div class="divider"></div>
