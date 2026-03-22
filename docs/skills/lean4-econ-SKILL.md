@@ -203,12 +203,19 @@ variable {α : Type*} [TopologicalSpace α] [CompactSpace α]
 
 ### Classifier considerations
 
-The current three-tier classifier (`ALGEBRAIC`, `DEFINABLE`, `REQUIRES_DEFINITIONS`) may overconstrain what the system attempts. The eval showed that claims about contraction mappings and fixed-point theorems *could* potentially be formalized using Mathlib's `ContractingWith` infrastructure, but the classifier routes them to `REQUIRES_DEFINITIONS` because they don't match preamble keywords.
+The classifier now has a Mathlib-aware path:
+
+- `ALGEBRAIC` for direct algebraic or calculus claims
+- `DEFINABLE` for claims covered by LeanEcon preamble modules
+- `MATHLIB_NATIVE` for claims that are outside the preamble library but likely formalizable with direct Mathlib imports
+- `REQUIRES_DEFINITIONS` for claims that still need custom theory
+
+This means fixed-point, topology, convexity, and related claims may be routed to `MATHLIB_NATIVE` instead of being rejected immediately. The classifier also includes rescue logic: if `MATHLIB_NATIVE` or `REQUIRES_DEFINITIONS` is predicted but preamble keyword matching finds bundled coverage, the claim is upgraded to `DEFINABLE`.
 
 **Options for expanding scope:**
 1. **Add new preamble entries** for fixed-point theory, optimization, and dynamic programming — this is the cleanest path since it stays within the existing architecture.
-2. **Add a `MATHLIB_SEARCHABLE` category** for claims where no preamble exists but Mathlib has the relevant infrastructure. The formalizer would use lean-lsp-mcp search tools to discover the right imports.
-3. **Soften the classifier** by having it check Mathlib coverage (via search tools) before rejecting claims.
+2. **Strengthen the `MATHLIB_NATIVE` path** by using lean-lsp-mcp or curated import templates to discover the right Mathlib imports more reliably.
+3. **Soften the reject boundary further** by checking Mathlib coverage (via search tools) before returning `REQUIRES_DEFINITIONS`.
 
 ### Formalizer prompt improvements
 

@@ -15,6 +15,16 @@ This sprint is nearly complete. The core backend MVP is in place:
 - [x] Deep-trace observability in `runs.jsonl`
 - [x] Offline evaluation harness for trace analysis, semantic grading, and uncharted pass@k runs
 
+## Simplification sprint (March 21, 2026)
+
+- [x] Removed classifier as internal formalization gate (classify is now advisory only)
+- [x] Cleaned preamble: removed 6 tautological/Mathlib-duplicating files, 22 tautological theorems
+- [x] Improved formalizer prompts (NontriviallyNormedField, inline definitions)
+- [x] Fixed diagnosis service error logging (actual errors now surfaced)
+- [x] Added 429-aware exponential backoff to Leanstral API calls
+- [x] Created 32-claim test suite across 4 tiers (data/test_claims.jsonl)
+- [x] Updated test suite for simplified architecture
+
 ## Remaining before sprint close
 
 - [ ] Advisor demo package and walkthrough

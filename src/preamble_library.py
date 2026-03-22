@@ -40,7 +40,7 @@ def _register(entry: PreambleEntry) -> None:
 _register(PreambleEntry(
     name="cobb_douglas_2factor",
     lean_module="LeanEcon.Preamble.Producer.CobbDouglas2Factor",
-    description="Two-factor Cobb-Douglas production function with MPK, MPL, and elasticity lemmas",
+    description="Two-factor Cobb-Douglas production function with elasticity proof",
     keywords=(
         "cobb-douglas", "cobb douglas", "cd production", "output elasticity",
         "marginal product", "returns to scale", "production function",
@@ -137,33 +137,6 @@ _register(PreambleEntry(
     parameters=("a", "r", "n"),
 ))
 _register(PreambleEntry(
-    name="contraction_mapping",
-    lean_module="LeanEcon.Preamble.Optimization.ContractionMapping",
-    description="Contraction mapping predicate (sup-norm based) for Banach fixed point",
-    keywords=(
-        "contraction mapping",
-        "contraction",
-        "banach fixed point",
-        "fixed point",
-        "bellman operator",
-        "contraction operator",
-    ),
-    parameters=("T", "β"),
-))
-_register(PreambleEntry(
-    name="blackwell_sufficient",
-    lean_module="LeanEcon.Preamble.Optimization.BlackwellSufficient",
-    description="Blackwell's sufficient conditions (monotonicity + discounting) predicates",
-    keywords=(
-        "blackwell",
-        "blackwell sufficient",
-        "blackwell conditions",
-        "monotonicity and discounting",
-        "sufficient conditions contraction",
-    ),
-    parameters=("T", "β"),
-))
-_register(PreambleEntry(
     name="extreme_value_theorem",
     lean_module="LeanEcon.Preamble.Optimization.ExtremeValueTheorem",
     description="Extreme value theorem (Weierstrass) via Mathlib IsCompact.exists_isMaxOn",
@@ -219,51 +192,6 @@ _register(PreambleEntry(
     parameters=("n", "w", "u"),
 ))
 _register(PreambleEntry(
-    name="implicit_function_condition",
-    lean_module="LeanEcon.Preamble.Optimization.ImplicitFunctionCondition",
-    description="Implicit function theorem for comparative statics (dx/dθ identity)",
-    keywords=(
-        "implicit function",
-        "comparative statics",
-        "comparative static",
-        "dx/dtheta",
-        "implicit differentiation",
-    ),
-    parameters=("F", "x", "θ"),
-))
-_register(PreambleEntry(
-    name="envelope_theorem",
-    lean_module="LeanEcon.Preamble.Optimization.EnvelopeTheorem",
-    description="Envelope theorem as hypothesis-based algebraic identity",
-    keywords=(
-        "envelope theorem",
-        "envelope",
-        "dv/dtheta",
-        "indirect utility derivative",
-        "roy's identity",
-        "shephard's lemma",
-        "hotelling's lemma",
-    ),
-    parameters=("V", "θ", "λ"),
-))
-_register(PreambleEntry(
-    name="slutsky_equation",
-    lean_module="LeanEcon.Preamble.Consumer.SlutskyEquation",
-    description="Slutsky equation as algebraic decomposition identity",
-    keywords=(
-        "slutsky",
-        "slutsky equation",
-        "substitution effect",
-        "income effect",
-        "hicksian demand",
-        "compensated demand",
-        "giffen good",
-        "normal good",
-        "inferior good",
-    ),
-    parameters=("xᵢ", "pⱼ", "hᵢ", "m"),
-))
-_register(PreambleEntry(
     name="marshallian_demand",
     lean_module="LeanEcon.Preamble.Consumer.MarshallianDemand",
     description="Marshallian demand functions for two-good Cobb-Douglas preferences",
@@ -288,7 +216,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="profit_function",
     lean_module="LeanEcon.Preamble.Producer.ProfitFunction",
-    description="Profit function for a single-input firm with FOC lemma",
+    description="Profit function for a single-input firm",
     keywords=(
         "profit function", "profit maximization", "firm profit", "producer surplus",
         "marginal cost", "marginal revenue", "supply function",
@@ -299,7 +227,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="cost_function",
     lean_module="LeanEcon.Preamble.Producer.CostFunction",
-    description="Cost function for Cobb-Douglas technology with Shephard's lemma",
+    description="Cost function for Cobb-Douglas technology",
     keywords=(
         "cost function", "cost minimization", "conditional factor demand", "total cost",
         "marginal cost", "average cost", "isoquant",
@@ -310,7 +238,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="bellman_equation",
     lean_module="LeanEcon.Preamble.Dynamic.BellmanEquation",
-    description="Bellman equation for deterministic DP with bellman_rhs and optimality theorem",
+    description="Bellman equation RHS for deterministic dynamic programming",
     keywords=(
         "bellman",
         "bellman equation",
@@ -325,22 +253,6 @@ _register(PreambleEntry(
         "optimal control",
     ),
     parameters=("V", "u", "f", "β"),
-))
-_register(PreambleEntry(
-    name="euler_equation",
-    lean_module="LeanEcon.Preamble.Dynamic.EulerEquation",
-    description="Euler equation for intertemporal consumption as algebraic identity",
-    keywords=(
-        "euler equation",
-        "consumption euler",
-        "euler equation consumption",
-        "intertemporal",
-        "consumption growth",
-        "savings decision",
-        "marginal rate of substitution",
-        "intertemporal substitution",
-    ),
-    parameters=("β", "r", "γ", "c"),
 ))
 _register(PreambleEntry(
     name="discount_factor",
@@ -359,7 +271,7 @@ _register(PreambleEntry(
 _register(PreambleEntry(
     name="solow_steady_state",
     lean_module="LeanEcon.Preamble.Macro.SolowSteadyState",
-    description="Solow model with investment, depreciation, and steady-state condition",
+    description="Solow model investment and depreciation definitions",
     keywords=(
         "solow",
         "solow model",

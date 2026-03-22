@@ -15,8 +15,8 @@ Base docs:
 
 ## Recommended v1 workflow
 
-1. `POST /api/v1/classify`
-2. `POST /api/v1/formalize`
+1. `POST /api/v1/classify` *(optional — advisory only, not required before formalize)*
+2. `POST /api/v1/formalize` *(with optional `preamble_names`)*
 3. Optionally edit the returned `theorem_code`
 4. `POST /api/v1/verify`
 5. Track the job with either:
@@ -24,10 +24,15 @@ Base docs:
    - `GET /api/v1/jobs/{job_id}/stream`
 6. Optionally call `POST /api/v1/explain`
 
-## 1. Classify
+> **Note:** Classification is no longer a required gate before formalization.
+> The formalizer attempts all claims directly. Use `/classify` for frontend UX
+> (showing scope hints, suggesting preamble modules) but not as a prerequisite.
 
-Use `POST /api/v1/classify` to decide whether the claim looks formalizable
-before spending proving effort.
+## 1. Classify (optional)
+
+Use `POST /api/v1/classify` to get advisory information about a claim's scope
+and relevant preamble modules. This is useful for frontend UX but is **not**
+required before calling `/formalize`.
 
 Request:
 
@@ -40,18 +45,25 @@ Request:
 Important response fields:
 
 - `cleaned_claim`: normalized claim text after lightweight cleaning
-- `category`: `RAW_LEAN`, `ALGEBRAIC`, `DEFINABLE`, or `REQUIRES_DEFINITIONS`
+- `category`: `RAW_LEAN`, `ALGEBRAIC`, `MATHLIB_NATIVE`, `DEFINABLE`, or `REQUIRES_DEFINITIONS`
 - `formalizable`: quick yes/no signal for whether to continue
 - `reason`: rejection explanation for out-of-scope claims
-- `definitions_needed`: missing concept description for `DEFINABLE` claims
+- `definitions_needed`: supporting detail for `DEFINABLE` claims
 - `preamble_matches`: reusable LeanEcon modules that may help formalization
 - `suggested_reformulation`: optional reformulation hint
 - `error_code`: machine-readable classifier outcome
+
+Classifier note:
+
+- the LLM-facing prompt still uses `ALGEBRAIC_OR_CALCULUS` and `REQUIRES_CUSTOM_THEORY`
+- `classify_claim()` maps those to the API-facing categories `ALGEBRAIC` and `REQUIRES_DEFINITIONS`
+- `MATHLIB_NATIVE` is an API-facing formalizable category for claims that likely need direct Mathlib imports rather than LeanEcon preamble modules
 
 Interpretation:
 
 - `RAW_LEAN`: skip directly to `POST /api/v1/verify`
 - `ALGEBRAIC`: continue to `POST /api/v1/formalize`
+- `MATHLIB_NATIVE`: continue to `POST /api/v1/formalize`; the formalizer will use an internal Mathlib navigation hint from classification
 - `DEFINABLE`: continue to `POST /api/v1/formalize`, optionally using `preamble_matches`
 - `REQUIRES_DEFINITIONS`: stop or ask for a reformulation
 

@@ -1,0 +1,32 @@
+{"raw_claim": "1 + 1 = 2", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "For all real c > 0 and γ > 0 with γ ≠ 1, -c * (-γ * c⁻¹) = γ", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "For a consumer with income m and prices p₁, p₂ spending all income: p₁ * x₁ + p₂ * x₂ = m", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "For all real x > 0: x * x⁻¹ = 1", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "For all real α with 0 < α < 1 and K > 0: α * K * K⁻¹ = α", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "For all real a b with b ≠ 0: a / b * b = a", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "For all real α > 0 and e > 0: -(-α * e) / e = α", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "For all real x > 0 and y > 0: x * y > 0", "tags": ["tier1", "algebraic"], "expect": "verify"}
+{"raw_claim": "The derivative of x^α with respect to x is α * x^(α-1) for x > 0", "tags": ["tier2", "calculus"], "expect": "formalize"}
+{"raw_claim": "A continuous function on [a,b] attains its maximum", "tags": ["tier2", "topology"], "expect": "formalize"}
+{"raw_claim": "If f is differentiable and f'(x₀) = 0 and f''(x₀) < 0, then x₀ is a local maximum", "tags": ["tier2", "optimization"], "expect": "formalize"}
+{"raw_claim": "For a Cobb-Douglas production function f(K,L) = A·K^α·L^(1-α), the output elasticity w.r.t. capital is α", "tags": ["tier2", "production"], "expect": "formalize"}
+{"raw_claim": "The marginal rate of substitution equals the price ratio at an interior optimum", "tags": ["tier2", "consumer"], "expect": "formalize"}
+{"raw_claim": "Under CRRA utility u(c) = c^(1-γ)/(1-γ), the relative risk aversion equals γ", "tags": ["tier2", "risk"], "expect": "formalize"}
+{"raw_claim": "CARA utility u(c) = -exp(-αc)/α has constant absolute risk aversion equal to α", "tags": ["tier2", "risk"], "expect": "formalize"}
+{"raw_claim": "A monotone sequence bounded above converges", "tags": ["tier2", "analysis"], "expect": "formalize"}
+{"raw_claim": "A contraction mapping on a nonempty complete metric space has a unique fixed point", "tags": ["tier3", "topology"], "expect": "formalize"}
+{"raw_claim": "A strictly concave function on a compact convex set attains a unique maximum", "tags": ["tier3", "optimization"], "expect": "formalize"}
+{"raw_claim": "If f is twice continuously differentiable and the Hessian is negative definite at x, then f is strictly concave near x", "tags": ["tier3", "optimization"], "expect": "formalize"}
+{"raw_claim": "A continuous function on a nonempty compact set attains its minimum", "tags": ["tier3", "topology"], "expect": "formalize"}
+{"raw_claim": "Under Inada conditions, the Solow model has a unique positive steady state", "tags": ["tier3", "macro"], "expect": "formalize"}
+{"raw_claim": "A concave function on a convex set is continuous on the interior", "tags": ["tier3", "convexity"], "expect": "formalize"}
+{"raw_claim": "The composition of two continuous functions is continuous", "tags": ["tier3", "topology"], "expect": "formalize"}
+{"raw_claim": "A closed subset of a compact space is compact", "tags": ["tier3", "topology"], "expect": "formalize"}
+{"raw_claim": "If f is convex and differentiable, then f(y) ≥ f(x) + f'(x)(y-x) for all x,y", "tags": ["tier3", "convexity"], "expect": "formalize"}
+{"raw_claim": "A monotone operator on a complete lattice has a least fixed point", "tags": ["tier3", "order"], "expect": "formalize"}
+{"raw_claim": "Nash equilibrium exists in all finite games", "tags": ["tier4", "game_theory"], "expect": "fail_gracefully"}
+{"raw_claim": "A competitive Walrasian equilibrium exists under standard assumptions", "tags": ["tier4", "general_equilibrium"], "expect": "fail_gracefully"}
+{"raw_claim": "The second welfare theorem holds with convex preferences", "tags": ["tier4", "welfare"], "expect": "fail_gracefully"}
+{"raw_claim": "Arrow's impossibility theorem: no social welfare function satisfies all four axioms", "tags": ["tier4", "social_choice"], "expect": "fail_gracefully"}
+{"raw_claim": "The VCG mechanism is strategyproof", "tags": ["tier4", "mechanism_design"], "expect": "fail_gracefully"}
+{"raw_claim": "Every sub-game perfect equilibrium is a Nash equilibrium", "tags": ["tier4", "game_theory"], "expect": "fail_gracefully"}

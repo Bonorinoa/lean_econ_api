@@ -22,7 +22,17 @@ MODEL = "labs-leanstral-2603"
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_TOKENS = 32000
 MAX_RETRIES = 2
+MAX_RETRIES_RATE_LIMIT = 4
 RETRY_DELAY_SECONDS = 5
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Check if an exception indicates a 429 or 503 (rate limit / overloaded)."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status in (429, 503):
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "rate limit" in msg or "too many requests" in msg
 
 
 def get_client() -> Mistral:
@@ -66,9 +76,10 @@ def call_leanstral(
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> str:
-    """Send messages to Leanstral with lightweight retry logic."""
+    """Send messages to Leanstral with retry logic (exponential backoff on 429/503)."""
     last_error = None
-    for attempt in range(1, MAX_RETRIES + 1):
+    max_attempts = MAX_RETRIES
+    for attempt in range(1, MAX_RETRIES_RATE_LIMIT + 1):
         try:
             response = client.chat.complete(
                 model=model,
@@ -79,10 +90,18 @@ def call_leanstral(
             return response.choices[0].message.content
         except Exception as exc:
             last_error = exc
-            print(f"  [leanstral] {stage} attempt {attempt}/{MAX_RETRIES} failed: {exc}")
-            if attempt < MAX_RETRIES:
+            is_rate_limit = _is_rate_limit_error(exc)
+            max_attempts = MAX_RETRIES_RATE_LIMIT if is_rate_limit else MAX_RETRIES
+            print(f"  [leanstral] {stage} attempt {attempt}/{max_attempts} failed: {exc}")
+            if attempt >= max_attempts:
+                break
+            if is_rate_limit:
+                delay = 2 ** attempt  # 2, 4, 8, 16s
+                print(f"  [leanstral] Rate limited — backing off {delay}s")
+                time.sleep(delay)
+            else:
                 time.sleep(RETRY_DELAY_SECONDS)
 
     raise RuntimeError(
-        f"Leanstral API failed after {MAX_RETRIES} attempts ({stage}): {last_error}"
+        f"Leanstral API failed after {max_attempts} attempts ({stage}): {last_error}"
     )

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,12 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional cap on the number of claims to process.",
+    )
+    parser.add_argument(
+        "--attempt-delay",
+        type=int,
+        default=5,
+        help="Seconds to wait between pass@k proving attempts (default: 5).",
     )
     return parser.parse_args()
 
@@ -237,6 +244,8 @@ def main() -> int:
         attempts: list[dict[str, Any]] = []
         if formalization["success"]:
             for _attempt in range(1, args.pass_k + 1):
+                if _attempt > 1 and args.attempt_delay > 0:
+                    time.sleep(args.attempt_delay)
                 result = run_pipeline(
                     raw_input=raw_claim,
                     preformalized_theorem=formalization["theorem_code"],

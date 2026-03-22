@@ -134,9 +134,10 @@ def _diagnose_formalization_failure(
             "suggested_fix": result.get("suggested_fix"),
             "fixable": bool(result.get("fixable", False)),
         }
-    except Exception:
+    except Exception as exc:
+        print(f"[formalizer] Diagnosis failed: {exc}")
         return {
-            "diagnosis": "Formalization failed and the diagnostic service is unavailable.",
+            "diagnosis": f"Formalization failed. Diagnosis error: {exc}",
             "suggested_fix": None,
             "fixable": False,
         }
@@ -148,18 +149,22 @@ def _diagnose_formalization_failure(
 
 def classify_claim(claim_text: str) -> dict:
     """
-    Three-tier classification: ALGEBRAIC, DEFINABLE, or REQUIRES_DEFINITIONS.
+    Classify a claim into stable API-facing categories.
 
-    For DEFINABLE claims, also checks the preamble library for matching
-    definitions and includes them in the response.
+    The classifier prompt uses LLM-facing labels such as
+    ALGEBRAIC_OR_CALCULUS and REQUIRES_CUSTOM_THEORY. This function maps those
+    onto LeanEcon's API-facing categories and enriches them with preamble
+    matching data.
 
     Returns:
         dict with keys:
-          - category (str): "ALGEBRAIC", "DEFINABLE", or "REQUIRES_DEFINITIONS"
-          - reason (str | None): Explanation for DEFINABLE or REQUIRES_DEFINITIONS
+          - category (str): "ALGEBRAIC", "DEFINABLE", "MATHLIB_NATIVE",
+            or "REQUIRES_DEFINITIONS"
+          - reason (str | None): Supporting detail from classifier output
           - definitions_needed (str | None): Detail from DEFINABLE classification
           - preamble_matches (list[str]): Names of matching preamble entries
           - suggested_reformulation (str | None): Guidance for the user
+          - mathlib_hint (str | None): Mathlib navigation hint for MATHLIB_NATIVE
     """
     client = _get_client()
     messages = [
@@ -173,34 +178,47 @@ def classify_claim(claim_text: str) -> dict:
     )
     line = raw.strip().splitlines()[0].strip()
 
-    if line.startswith("REQUIRES_DEFINITIONS"):
-        reason = line.removeprefix("REQUIRES_DEFINITIONS").lstrip(":").strip() or None
+    def _result(
+        *,
+        category: str,
+        reason: str | None = None,
+        definitions_needed: str | None = None,
+        preamble_matches: list[str] | None = None,
+        suggested_reformulation: str | None = None,
+        mathlib_hint: str | None = None,
+    ) -> dict:
+        return {
+            "category": category,
+            "reason": reason,
+            "definitions_needed": definitions_needed,
+            "preamble_matches": preamble_matches or [],
+            "suggested_reformulation": suggested_reformulation,
+            "mathlib_hint": mathlib_hint,
+        }
+
+    if line.startswith("REQUIRES_DEFINITIONS") or line.startswith("REQUIRES_CUSTOM_THEORY"):
+        prefix = "REQUIRES_DEFINITIONS" if line.startswith("REQUIRES_DEFINITIONS") else "REQUIRES_CUSTOM_THEORY"
+        reason = line.removeprefix(prefix).lstrip(":").strip() or None
 
         # Preamble rescue: check if we actually have definitions for this claim
         rescue_matches = find_matching_preambles(claim_text)
         if rescue_matches:
             match_names = [m.name for m in rescue_matches]
             match_descriptions = [m.description for m in rescue_matches]
-            return {
-                "category": "DEFINABLE",
-                "reason": reason,
-                "definitions_needed": reason,
-                "preamble_matches": match_names,
-                "suggested_reformulation": (
+            return _result(
+                category="DEFINABLE",
+                reason=reason,
+                definitions_needed=reason,
+                preamble_matches=match_names,
+                suggested_reformulation=(
                     f"Initially classified as requiring unavailable definitions, "
                     f"but LeanEcon has built-in modules for: "
                     f"{', '.join(match_descriptions)}. "
                     f"Proceed to formalization."
                 ),
-            }
+            )
 
-        return {
-            "category": "REQUIRES_DEFINITIONS",
-            "reason": reason,
-            "definitions_needed": None,
-            "preamble_matches": [],
-            "suggested_reformulation": None,
-        }
+        return _result(category="REQUIRES_DEFINITIONS", reason=reason)
 
     if line.startswith("DEFINABLE"):
         detail = line.removeprefix("DEFINABLE").lstrip(":").strip() or None
@@ -222,22 +240,45 @@ def classify_claim(claim_text: str) -> dict:
                 f"after substituting the functional forms."
             )
 
-        return {
-            "category": "DEFINABLE",
-            "reason": detail,
-            "definitions_needed": detail,
-            "preamble_matches": match_names,
-            "suggested_reformulation": suggested,
-        }
+        return _result(
+            category="DEFINABLE",
+            reason=detail,
+            definitions_needed=detail,
+            preamble_matches=match_names,
+            suggested_reformulation=suggested,
+        )
+
+    if line.startswith("MATHLIB_NATIVE"):
+        detail = line.removeprefix("MATHLIB_NATIVE").lstrip(":").strip() or None
+        rescue_matches = find_matching_preambles(claim_text)
+        if rescue_matches:
+            match_names = [m.name for m in rescue_matches]
+            match_descriptions = [m.description for m in rescue_matches]
+            return _result(
+                category="DEFINABLE",
+                reason=detail,
+                definitions_needed=detail,
+                preamble_matches=match_names,
+                suggested_reformulation=(
+                    f"The classifier pointed to Mathlib-native material ({detail}), "
+                    f"but LeanEcon already has built-in modules for: "
+                    f"{', '.join(match_descriptions)}. "
+                    f"Proceed to formalization with the matching preamble entries."
+                ),
+            )
+        return _result(
+            category="MATHLIB_NATIVE",
+            reason=detail,
+            preamble_matches=[],
+            suggested_reformulation=None,
+            mathlib_hint=detail,
+        )
 
     alg_matches = find_matching_preambles(claim_text)
-    return {
-        "category": "ALGEBRAIC",
-        "reason": None,
-        "definitions_needed": None,
-        "preamble_matches": [m.name for m in alg_matches],
-        "suggested_reformulation": None,
-    }
+    return _result(
+        category="ALGEBRAIC",
+        preamble_matches=[m.name for m in alg_matches],
+    )
 
 
 def sorry_validate(lean_code: str) -> dict:
@@ -327,22 +368,9 @@ def formalize(
         "fixable": None,
     }
 
-    # Step 0: Pre-classify — avoid wasting formalization attempts on unformalizable claims
-    _log("Pre-classifying claim...", status="running")
-    classification = classify_claim(claim_text)
-    if classification["category"] == "REQUIRES_DEFINITIONS":
-        _log(f"Claim requires definitions not in Mathlib: {classification['reason']}", status="error")
-        return {
-            "success": False,
-            "theorem_code": "",
-            "attempts": 0,
-            "errors": [],
-            "formalization_failed": True,
-            "failure_reason": classification["reason"],
-            **_defaults,
-        }
+    _log("Starting formalization...", status="running")
 
-    # Resolve preamble modules
+    # Resolve preamble modules (opt-in only via explicit preamble_names)
     preamble_block = None
     preamble_imports: list[str] = []
     preamble_used: list[str] = []
@@ -354,21 +382,14 @@ def formalize(
             preamble_imports = build_preamble_imports(entries)
             preamble_used = [e.name for e in entries]
             _log(f"Using explicit preamble: {', '.join(preamble_used)}", status="running")
-    elif classification["category"] == "DEFINABLE" and classification.get("preamble_matches"):
-        entries = get_preamble_entries(classification["preamble_matches"])
-        if entries:
-            preamble_block = build_preamble_block(entries)
-            preamble_imports = build_preamble_imports(entries)
-            preamble_used = [e.name for e in entries]
-            _log(f"Auto-attaching preamble for DEFINABLE claim: {', '.join(preamble_used)}", status="running")
 
-    _log(f"Claim classified as {classification['category']} — proceeding", status="done")
-
-    # Step 1+: Formalize → sorry-validate → repair loop
+    # Formalize → sorry-validate → repair loop
     client = _get_client()
     lean_code = ""
     last_errors: list[str] = []
-    system_prompt = build_formalize_prompt(preamble_block)
+    system_prompt = build_formalize_prompt(
+        preamble_block=preamble_block,
+    )
 
     for attempt in range(1, MAX_FORMALIZATION_ATTEMPTS + 1):
         if attempt == 1:

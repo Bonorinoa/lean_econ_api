@@ -25,8 +25,8 @@ LeanEcon has a three-layer trust model that frontends should communicate to user
 Every frontend should implement this sequence:
 
 ```
-1. POST /api/v1/classify    → Is this claim in scope? What preamble modules match?
-2. POST /api/v1/formalize   → Get a Lean theorem stub (with sorry)
+1. POST /api/v1/classify    → (OPTIONAL) Advisory scope check + preamble suggestions
+2. POST /api/v1/formalize   → Get a Lean theorem stub (with sorry). Pass preamble_names if needed.
 3. [User reviews/edits]     → Frontend presents theorem for review
 4. POST /api/v1/verify      → Returns 202 + job_id (async)
 5. GET /api/v1/jobs/{id}/stream  → SSE progress events
@@ -34,16 +34,21 @@ Every frontend should implement this sequence:
 6. POST /api/v1/explain     → Natural language explanation (optional)
 ```
 
+> **Important:** Classification is no longer an internal gate for formalization.
+> The formalizer attempts all claims directly. Use `/classify` for frontend UX
+> (scope hints, preamble suggestions) but you can skip it and go straight to
+> `/formalize`. Preamble injection is opt-in via explicit `preamble_names`.
+
 ## Endpoint reference
 
 ### POST /api/v1/classify
 
-Determines whether a claim is in scope and which preamble modules match.
+Determines whether a claim is in scope, whether it looks Mathlib-native, and which preamble modules match.
 
 **Request:**
 ```json
 {
-  "claim": "Under CRRA utility, relative risk aversion equals gamma"
+  "raw_claim": "Under CRRA utility, relative risk aversion equals gamma"
 }
 ```
 
@@ -66,10 +71,11 @@ Determines whether a claim is in scope and which preamble modules match.
 |---|---|---|
 | `RAW_LEAN` | `true` | Skip formalize, go straight to verify |
 | `ALGEBRAIC` | `true` | Proceed to formalize normally |
+| `MATHLIB_NATIVE` | `true` | Proceed to formalize normally; expect direct Mathlib imports rather than preamble matches |
 | `DEFINABLE` | `true` | Show `preamble_matches`, proceed to formalize with those preamble names |
 | `REQUIRES_DEFINITIONS` | `false` | Show rejection reason, suggest reformulation |
 
-Note: The classifier includes rescue logic — if the LLM says `REQUIRES_DEFINITIONS` but keyword matching finds preamble entries, it gets rescued to `DEFINABLE`. This is important for understanding test behavior.
+Note: The classifier includes rescue logic. If the LLM says `REQUIRES_DEFINITIONS` but keyword matching finds preamble entries, it gets rescued to `DEFINABLE`. Likewise, if the LLM says `MATHLIB_NATIVE` but a bundled preamble match exists, it is upgraded to `DEFINABLE`.
 
 ### POST /api/v1/formalize
 
@@ -343,6 +349,7 @@ Claims that require deeper Mathlib engagement but are within formalization scope
 - Derivative-based claims using preamble lemmas
 - CES production properties
 - Envelope theorem applications
+- Many claims that classify as `MATHLIB_NATIVE`
 
 **Tier 3 — Uncharted territory (capability probes):**
 Claims that test the system's limits. Expect formalization failures here — the diagnostic data is the value.

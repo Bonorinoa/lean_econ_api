@@ -233,7 +233,7 @@ class ClassifyResponse(BaseModel):
     cleaned_claim: str = Field(
         description="Normalized claim text after lightweight cleaning."
     )
-    category: Literal["RAW_LEAN", "ALGEBRAIC", "DEFINABLE", "REQUIRES_DEFINITIONS"] = Field(
+    category: Literal["RAW_LEAN", "ALGEBRAIC", "MATHLIB_NATIVE", "DEFINABLE", "REQUIRES_DEFINITIONS"] = Field(
         description="High-level claim class used to decide whether to continue."
     )
     formalizable: bool = Field(
@@ -699,7 +699,7 @@ def classify_endpoint(request: ClaimRequest) -> ClassifyResponse:
 
         classification = classify_claim(cleaned_claim)
         is_rejected = classification["category"] == "REQUIRES_DEFINITIONS"
-        formalizable = not is_rejected  # ALGEBRAIC and DEFINABLE are both formalizable
+        formalizable = not is_rejected  # ALGEBRAIC, DEFINABLE, and MATHLIB_NATIVE are formalizable
         return ClassifyResponse(
             cleaned_claim=cleaned_claim,
             category=classification["category"],

@@ -136,11 +136,7 @@ def _test_preamble_keyword_coverage() -> None:
     """Verify keyword matching for all major textbook concepts."""
     test_cases = [
         ("Cobb-Douglas output elasticity", "cobb_douglas_2factor"),
-        ("contraction mapping theorem", "contraction_mapping"),
-        ("Blackwell sufficient conditions", "blackwell_sufficient"),
-        ("Slutsky equation decomposition", "slutsky_equation"),
         ("Solow model steady state", "solow_steady_state"),
-        ("Euler equation for consumption", "euler_equation"),
         ("Pareto efficient allocation", "pareto_efficiency"),
         ("present value of cash flows", "discount_factor"),
         ("extreme value theorem", "extreme_value_theorem"),
@@ -156,7 +152,7 @@ def _test_preamble_keyword_coverage() -> None:
 
 def _test_preamble_library_expanded() -> None:
     """Verify the library has the expected number of entries after expansion."""
-    assert len(PREAMBLE_LIBRARY) >= 25, f"Expected >=25 entries, got {len(PREAMBLE_LIBRARY)}"
+    assert len(PREAMBLE_LIBRARY) >= 20, f"Expected >=20 entries, got {len(PREAMBLE_LIBRARY)}"
 
 
 def _test_read_preamble_source_strips_import_header() -> None:
@@ -264,6 +260,59 @@ def _test_classify_requires_definitions_rescued() -> None:
     assert "extreme_value_theorem" in result["preamble_matches"]
 
 
+def _test_classify_mathlib_native() -> None:
+    import formalizer
+    with patch.object(
+        formalizer,
+        "call_leanstral",
+        return_value="MATHLIB_NATIVE: LinearAlgebra.Matrix.PosDef",
+    ):
+        result = formalizer.classify_claim(
+            "A positive definite matrix is invertible."
+        )
+    assert result["category"] == "MATHLIB_NATIVE"
+    assert result["mathlib_hint"] == "LinearAlgebra.Matrix.PosDef"
+    assert result["definitions_needed"] is None
+    assert result["preamble_matches"] == []
+
+
+def _test_classify_mathlib_native_rescued() -> None:
+    """When LLM says MATHLIB_NATIVE but preamble matches exist, rescue to DEFINABLE."""
+    import formalizer
+    with patch.object(
+        formalizer,
+        "call_leanstral",
+        return_value="MATHLIB_NATIVE: Analysis.Convex for extreme value",
+    ):
+        result = formalizer.classify_claim(
+            "A continuous function on a compact set attains its maximum (extreme value theorem)."
+        )
+    assert result["category"] == "DEFINABLE"
+    assert "extreme_value_theorem" in result["preamble_matches"]
+    assert result["mathlib_hint"] is None
+
+
+def _test_classify_mathlib_native_formalizable() -> None:
+    import api
+    from error_codes import LeanEconErrorCode
+
+    classification = {
+        "category": "MATHLIB_NATIVE",
+        "reason": "Topology.MetricSpace.Contracting",
+        "definitions_needed": None,
+        "preamble_matches": [],
+        "suggested_reformulation": None,
+        "mathlib_hint": "Topology.MetricSpace.Contracting",
+    }
+    with patch.object(api, "classify_claim", return_value=classification):
+        response = api.classify_endpoint(
+            api.ClaimRequest(raw_claim="A metric contraction has a fixed point.")
+        )
+    assert response.category == "MATHLIB_NATIVE"
+    assert response.formalizable is True
+    assert response.error_code == LeanEconErrorCode.NONE
+
+
 # ---------------------------------------------------------------------------
 # Unit tests: diagnostics
 # ---------------------------------------------------------------------------
@@ -327,6 +376,54 @@ def _test_sorry_validate_fallback_on_error() -> None:
     assert result["errors"] == []
 
 
+def _test_formalize_no_classify_call() -> None:
+    """formalize() must NOT call classify_claim() internally."""
+    import formalizer
+    lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
+    with patch.object(formalizer, "call_leanstral", return_value=lean_code):
+        with patch.object(
+            formalizer, "sorry_validate",
+            return_value={"valid": True, "errors": [], "warnings": ["sorry"], "method": "lean_run_code"},
+        ):
+            with patch.object(formalizer, "classify_claim", side_effect=AssertionError("classify_claim should not be called")) as mock_classify:
+                result = formalizer.formalize("1 + 1 = 2")
+    assert result["success"] is True
+    mock_classify.assert_not_called()
+
+
+def _test_formalize_with_explicit_preamble() -> None:
+    """formalize() with explicit preamble_names should inject preamble imports."""
+    import formalizer
+    lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
+    with patch.object(formalizer, "call_leanstral", return_value=lean_code):
+        with patch.object(
+            formalizer, "sorry_validate",
+            return_value={"valid": True, "errors": [], "warnings": ["sorry"], "method": "lean_run_code"},
+        ):
+            result = formalizer.formalize(
+                "Cobb-Douglas elasticity",
+                preamble_names=["cobb_douglas_2factor"],
+            )
+    assert result["success"] is True
+    assert "cobb_douglas_2factor" in result["preamble_used"]
+    assert "LeanEcon.Preamble.Producer.CobbDouglas2Factor" in result["theorem_code"]
+
+
+def _test_formalize_without_preamble_names() -> None:
+    """formalize() without preamble_names should NOT inject any preamble."""
+    import formalizer
+    lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
+    with patch.object(formalizer, "call_leanstral", return_value=lean_code):
+        with patch.object(
+            formalizer, "sorry_validate",
+            return_value={"valid": True, "errors": [], "warnings": ["sorry"], "method": "lean_run_code"},
+        ):
+            result = formalizer.formalize("Some economic claim")
+    assert result["success"] is True
+    assert result["preamble_used"] == []
+    assert "LeanEcon.Preamble" not in result["theorem_code"]
+
+
 def _test_expanded_keyword_strictly_concave() -> None:
     matches = find_matching_preambles("A strictly concave function attains a maximum on a compact set.")
     names = [m.name for m in matches]
@@ -367,7 +464,7 @@ def _test_build_preamble_catalog_summary() -> None:
 
 def _test_build_classify_prompt_includes_catalog() -> None:
     prompt = build_classify_prompt()
-    assert "AVAILABLE DEFINITIONS" in prompt
+    assert "AVAILABLE PREAMBLES" in prompt
     assert "cobb_douglas_2factor" in prompt
     assert "crra_utility" in prompt
 
@@ -441,6 +538,17 @@ def main() -> int:
             "classify_requires_definitions_rescued",
             _test_classify_requires_definitions_rescued,
         ),
+        "classify_mathlib_native": _run_case(
+            "classify_mathlib_native", _test_classify_mathlib_native
+        ),
+        "classify_mathlib_native_rescued": _run_case(
+            "classify_mathlib_native_rescued",
+            _test_classify_mathlib_native_rescued,
+        ),
+        "classify_mathlib_native_formalizable": _run_case(
+            "classify_mathlib_native_formalizable",
+            _test_classify_mathlib_native_formalizable,
+        ),
         # diagnostics
         "diagnose_valid_json": _run_case(
             "diagnose_valid_json", _test_diagnose_valid_json
@@ -454,6 +562,16 @@ def main() -> int:
         ),
         "extract_theorem_name": _run_case(
             "extract_theorem_name", _test_extract_theorem_name
+        ),
+        # formalize without classify gate
+        "formalize_no_classify_call": _run_case(
+            "formalize_no_classify_call", _test_formalize_no_classify_call
+        ),
+        "formalize_with_explicit_preamble": _run_case(
+            "formalize_with_explicit_preamble", _test_formalize_with_explicit_preamble
+        ),
+        "formalize_without_preamble_names": _run_case(
+            "formalize_without_preamble_names", _test_formalize_without_preamble_names
         ),
         # expanded keyword coverage
         "expanded_keyword_strictly_concave": _run_case(
@@ -501,11 +619,11 @@ def main() -> int:
                 expect_success=True,
                 expect_failed=False,
             )
-            results["requires_definitions"] = _run_live_case(
-                "Nash equilibrium existence",
+            results["out_of_scope_graceful"] = _run_live_case(
+                "Nash equilibrium existence (out of scope)",
                 "Every finite normal-form game has a Nash equilibrium.",
                 expect_success=False,
-                expect_failed=True,
+                expect_failed=False,  # no longer pre-rejected; attempts all 3 cycles
             )
         except Exception as exc:
             print(f"\n--- Skipping live smoke tests (Leanstral unavailable: {exc}) ---")

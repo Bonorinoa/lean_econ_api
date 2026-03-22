@@ -1,5 +1,1 @@
-import LeanEcon.Preamble.Optimization.BlackwellSufficient
-import LeanEcon.Preamble.Optimization.ContractionMapping
-import LeanEcon.Preamble.Optimization.EnvelopeTheorem
 import LeanEcon.Preamble.Optimization.ExtremeValueTheorem
-import LeanEcon.Preamble.Optimization.ImplicitFunctionCondition

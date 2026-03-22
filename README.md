@@ -16,8 +16,9 @@ interface:
 
 ## What it does
 
-1. **Classify + formalize**: Leanstral turns the claim into a Lean theorem with
+1. **Formalize**: Leanstral turns the claim into a Lean theorem with
    `:= by sorry`, then Lean checks that the statement itself compiles.
+   Optionally pass `preamble_names` to inject bundled economic definitions.
 2. **Review**: an API client can inspect or edit the theorem before proving.
 3. **Prove**: the agentic prover lets Leanstral call Lean MCP tools and iteratively edit a working proof file.
 4. **Verify**: LeanEcon writes an isolated per-run Lean file and checks it with
@@ -41,9 +42,15 @@ artifacts are intentionally conservative: the saved Cobb-Douglas example still
 documents the earlier limitation, even though the new agentic path now
 succeeds on some runs.
 
-The classifier can also reject claims that require missing economic
-definitions. Earlier runs, for example, correctly rejected welfare-theorem
-style claims as `REQUIRES_DEFINITIONS`.
+The optional `/classify` endpoint categorizes claims into four paths for
+frontend UX (but is **not** required before formalization):
+
+- `ALGEBRAIC`: direct algebraic or calculus claims
+- `DEFINABLE`: claims that match bundled LeanEcon preamble definitions
+- `MATHLIB_NATIVE`: claims formalizable using direct Mathlib infrastructure
+- `REQUIRES_DEFINITIONS`: claims that need custom theory beyond current coverage
+
+Classification is advisory only — the formalizer attempts all claims directly.
 
 ## Quick start
 
@@ -88,8 +95,8 @@ For a workflow-oriented reference aimed at frontend agents, see
 The first API cut is intentionally multi-step so frontend clients can preserve
 the review/edit step:
 
-1. `POST /api/v1/classify`
-2. `POST /api/v1/formalize`
+1. `POST /api/v1/classify` *(optional — for frontend UX only)*
+2. `POST /api/v1/formalize` *(with optional `preamble_names`)*
 3. Optional client-side theorem review/edit
 4. `POST /api/v1/verify`
 5. `GET /api/v1/jobs/{job_id}` or `GET /api/v1/jobs/{job_id}/stream`
@@ -197,7 +204,7 @@ A Dockerfile is provided at the project root. See
 ```text
 User Input (LaTeX / text / raw Lean)
     -> [FastAPI] classify / formalize / verify endpoints
-    -> [formalizer.py] classify + formalize + sorry-validate
+    -> [formalizer.py] formalize + sorry-validate (classify is optional)
     -> [API client] optional theorem review/edit
     -> [pipeline.py] agentic proof orchestration
         -> [prover_backend.py] swappable prover dispatch
@@ -213,7 +220,7 @@ src/
 ├── api.py                   FastAPI service entry point
 ├── pipeline.py              Shared orchestration and agentic prover dispatch
 ├── prover_backend.py        Prover protocol and registry
-├── formalizer.py            Leanstral classification + formalization
+├── formalizer.py            Leanstral formalization (classify is separate/optional)
 ├── leanstral_utils.py       Shared Leanstral API helpers
 ├── agentic_prover.py        Leanstral Conversations API + MCP loop
 ├── mcp_runtime.py           Lean MCP session helpers and query utilities
