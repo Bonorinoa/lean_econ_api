@@ -10,7 +10,7 @@ LeanEcon is a headless formal verification microservice that takes mathematical 
 **Base URL:** `https://leaneconapi-production.up.railway.app`
 **Interactive docs:** `{BASE_URL}/docs` (Swagger UI)
 **OpenAPI schema:** `{BASE_URL}/openapi.json`
-**Source of truth:** The GitHub repository. When in doubt, fetch `/openapi.json` or `/docs`.
+**Source of truth:** [`src/api.py`](../../src/api.py), [`docs/API.md`](../API.md), and the live `/openapi.json`.
 
 ## Architecture overview
 
@@ -38,6 +38,10 @@ Every frontend should implement this sequence:
 > The formalizer attempts all claims directly. Use `/classify` for frontend UX
 > (scope hints, preamble suggestions) but you can skip it and go straight to
 > `/formalize`. Preamble injection is opt-in via explicit `preamble_names`.
+>
+> **Also important:** `/verify` is queue-based and concurrency-safe. LeanEcon no
+> longer routes verification through a shared `LeanEcon/Proof.lean`; proving and
+> final verification use isolated per-run temp files.
 
 ## Endpoint reference
 
@@ -93,11 +97,12 @@ Generates a Lean 4 theorem stub with `sorry` placeholder.
 ```json
 {
   "success": true,
-  "theorem_code": "import Mathlib\nimport LeanEcon.CobbDouglas2Factor\n\ntheorem cobb_douglas_elasticity ...\n  := by sorry",
+  "theorem_code": "import Mathlib\nimport LeanEcon.Preamble.Producer.CobbDouglas2Factor\n\ntheorem cobb_douglas_elasticity ...\n  := by sorry",
   "attempts": 1,
   "errors": [],
   "formalization_failed": false,
   "failure_reason": null,
+  "error_code": "none",
   "preamble_used": ["cobb_douglas_2factor"],
   "diagnosis": null,
   "suggested_fix": null,
@@ -111,9 +116,10 @@ Generates a Lean 4 theorem stub with `sorry` placeholder.
   "success": false,
   "theorem_code": "...",
   "attempts": 3,
-  "errors": ["LeanEcon/Proof.lean:8:22: Unknown identifier `StrictConcave`"],
-  "formalization_failed": true,
-  "failure_reason": "Could not produce valid Lean 4 formalization",
+  "errors": ["unknown identifier `StrictConcave`"],
+  "formalization_failed": false,
+  "failure_reason": null,
+  "error_code": "formalization_failed",
   "preamble_used": [],
   "diagnosis": "The formalizer attempted to use StrictConcave which is not directly available",
   "suggested_fix": "Use ConcaveOn from Mathlib.Analysis.Convex.Basic instead",
@@ -121,7 +127,10 @@ Generates a Lean 4 theorem stub with `sorry` placeholder.
 }
 ```
 
-The formalizer retries up to 3 times with diagnostic feedback between attempts. The `diagnosis`, `suggested_fix`, and `fixable` fields appear only after exhausting all attempts.
+The formalizer retries up to 3 times with diagnostic feedback between attempts.
+`formalization_failed=true` is reserved for explicit out-of-scope rejections; a
+compile failure after retries can still return `formalization_failed=false`
+alongside `diagnosis`, `suggested_fix`, and `fixable`.
 
 ### POST /api/v1/verify
 
@@ -131,9 +140,15 @@ Submits a theorem for agentic proving. **This is async — returns immediately w
 ```json
 {
   "theorem_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by sorry",
-  "pass_k": 5
+  "explain": false
 }
 ```
+
+`/api/v1/verify` currently accepts only:
+- `theorem_code`
+- `explain`
+
+`pass_k` is part of the offline eval harness, not the public verify endpoint.
 
 **Response (HTTP 202):**
 ```json
@@ -156,7 +171,9 @@ eventSource.onmessage = (event) => {
   const data = JSON.parse(event.data);
   
   if (data.type === "progress") {
-    // data.stage: "formalize" | "agentic_init" | "agentic_setup" | "agentic_run" | "agentic_verify"
+    // Typical stages: "parse", "formalize", "prover_dispatch", "agentic_init",
+    // "agentic_setup", "agentic_run", "agentic_check", "agentic_verify",
+    // "cache", "explain"
     // data.message: human-readable progress text
     // data.status: "running" | "done" | "error"
     return;
@@ -178,27 +195,32 @@ SSE events do NOT include the final verification payload. After `type: "complete
 
 ### GET /api/v1/jobs/{job_id}
 
-Returns the full verification result once the job completes.
+Returns a job envelope. The final verify payload lives under `result`.
 
 **Response:**
 ```json
 {
   "job_id": "abc123-def456",
   "status": "completed",
-  "phase": "verified",
-  "proof_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by norm_num",
-  "axiom_info": {
-    "axioms": ["propext", "Classical.choice", "Quot.sound"],
-    "sound": true,
-    "has_sorry_ax": false,
-    "nonstandard_axioms": []
+  "result": {
+    "success": true,
+    "phase": "verified",
+    "lean_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by norm_num",
+    "proof_strategy": "Use norm_num.",
+    "proof_tactics": "norm_num",
+    "partial": false,
+    "stop_reason": null,
+    "tool_trace": [],
+    "tactic_calls": [],
+    "axiom_info": {
+      "axioms": ["propext", "Classical.choice", "Quot.sound"],
+      "sound": true,
+      "has_sorry_ax": false,
+      "nonstandard_axioms": []
+    },
+    "error_code": "none"
   },
-  "error_code": "none",
-  "partial": false,
-  "stop_reason": null,
-  "attempts": 1,
-  "tool_calls": 12,
-  "successful_tool_calls": 8
+  "error": null
 }
 ```
 
@@ -219,7 +241,7 @@ Generates natural language explanation of any pipeline result. Can accept verifi
 {
   "original_claim": "CRRA utility has constant relative risk aversion",
   "theorem_code": "theorem crra_rra ...",
-  "verification_result": { "success": true, "proof_code": "..." }
+  "verification_result": { "success": true, "lean_code": "..." }
 }
 ```
 
@@ -254,7 +276,10 @@ POST /api/v1/formalize
 }
 ```
 
-The 29 available preamble entries span 8 economic domains: utility theory (CRRA, CARA, log, CES, quasi-linear, Stone-Geary), production theory (Cobb-Douglas, CES, Leontief), consumer theory (budget constraint, Marshallian/Hicksian demand, Slutsky), welfare (social welfare functions), finance (CAPM, Black-Scholes), growth (Solow-Swan), and mathematical tools (extreme value theorem, envelope theorem).
+The current preamble library has 23 entries across 8 areas: consumer,
+producer, risk, dynamic, macro, optimization, welfare, and game theory. For UI
+pickers or product copy, read [`docs/PREAMBLE_CATALOG.md`](../PREAMBLE_CATALOG.md)
+instead of hardcoding module names or counts in multiple places.
 
 ### Axiom soundness
 
@@ -269,13 +294,17 @@ When verification succeeds, check `axiom_info`:
 Every response includes `error_code` for programmatic error handling:
 
 - `none` — Success
+- `invalid_input` — Request payload was blank or malformed
 - `classification_rejected` — Claim needs definitions not in scope
+- `classification_failed` — Classifier crashed unexpectedly
 - `formalization_failed` — Could not produce valid Lean
+- `formalization_timeout` — Formalization timed out
 - `formalization_unformalizable` — Claim is out of Mathlib scope
 - `proof_not_found` — Valid theorem, no proof found
 - `proof_timeout` — Prover timed out (check `partial` field)
 - `verification_rejected` — Lean rejected the proof
 - `verification_sorry` — Proof contains sorry
+- `internal_error` — Unexpected server-side failure
 
 ## Observability and data flywheel
 
@@ -304,7 +333,7 @@ For dashboards: fetch `/api/v1/metrics` for aggregate stats, parse `runs.jsonl` 
 The offline evaluation script runs claims from a JSONL input file through the full pipeline with `pass@k` verification:
 
 ```bash
-python run_uncharted_evals.py \
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
   --input data/uncharted_claims.jsonl \
   --output reports/report.md \
   --pass-k 5
@@ -317,7 +346,7 @@ python run_uncharted_evals.py \
 ```
 
 **Output metrics (per claim):**
-- `formalization_success` — did the formalizer produce sorry-free Lean?
+- `formalization_success` — did the formalizer produce Lean that compiles with `sorry`?
 - `formalization_attempts` — how many retries (max 3)
 - `pass_k_success` — did at least one of k proving attempts verify?
 - `semantic_score` — LLM-graded fidelity of formalization to original claim (1-5)
@@ -372,7 +401,7 @@ Based on the uncharted eval (March 2026), the formalization layer is the primary
 
 2. **Type class synthesis failures.** Claims about normed spaces or metric spaces fail with `failed to synthesize instance`. The formalizer doesn't set up the right type class context. Example: `NontriviallyNormedField (ℝ × X)` is wrong — the product needs component-wise structure.
 
-3. **LSP thrashing under agentic load.** When the prover does reach the agentic loop, it can make 200+ tool calls with <10% success rate. The LSP worker eventually crashes with `code: -32801`. Mitigation: respect LSP rate limits, implement exponential backoff, consider reducing `pass_k` for heavy claims.
+3. **Agentic prover instability on hard claims.** Some long-running claims still generate large `tool_trace` / `tactic_calls` histories before timing out or exhausting retries. Product surfaces should show partial traces gracefully and avoid assuming every failure is user error.
 
 4. **Solow-Swan as the bright spot.** The one claim that formalized (Solow-Swan steady state) achieved a semantic score of 4/5 — the formalization captured Inada conditions, concavity, and the steady-state equation. The improved formalizer prompt is working for claims it can handle.
 
@@ -384,11 +413,15 @@ Map SSE `stage` values to user-friendly labels:
 
 | `stage` | User-facing label |
 |---|---|
+| `parse` | "Cleaning and parsing the claim..." |
 | `formalize` | "Translating to formal mathematics..." |
+| `prover_dispatch` | "Queueing the proving run..." |
 | `agentic_init` | "Setting up the proof environment..." |
 | `agentic_setup` | "Connecting to Lean 4..." |
 | `agentic_run` | "Searching for a proof..." |
+| `agentic_check` | "Checking proof progress..." |
 | `agentic_verify` | "Verifying with Lean 4 kernel..." |
+| `cache` | "Checking cached results..." |
 | `explain` | "Generating explanation..." |
 
 ### Claim input UX
@@ -450,8 +483,9 @@ For test suites, support batch submission:
 - **Formalization is the bottleneck.** ~80% of advanced claims fail at formalization, not proving. The formalizer doesn't know all Mathlib paths for topology, measure theory, or advanced analysis.
 - **Verification is stochastic.** The same claim may pass on one run and fail on the next. Offer retry buttons.
 - **Currently strongest on algebraic identities** (field arithmetic, ring algebra) and preamble-backed claims. Claims involving `Real.rpow` with variable exponents are brittle.
-- **Fixed-point, equilibrium, and measure-theoretic claims** cannot be verified yet — the formalization layer lacks the Mathlib navigation for these domains.
-- **LSP instability under heavy load.** The Lean Language Server can crash when the agentic prover makes too many rapid tool calls. Claims that reach the prover may exhaust their attempts without a valid proof.
+- **Fixed-point and measure-theoretic claims** are stretch goals, not impossible in principle. Expect many of them to land in `MATHLIB_NATIVE` or fail during formalization.
+- **General-equilibrium and richer game-theory claims** still tend to need definitions beyond the current preamble library.
+- **Axiom info is best-effort.** Product UIs should treat missing `axiom_info` as "not available" rather than as a proof failure.
 - **The Leanstral model is a labs endpoint** — not a permanent production API. Plan for prover backend swaps.
 - **Each verification run takes 30-120 seconds.** Plan UX accordingly.
 - **Railway Hobby plan.** Resource limits untested under concurrent load. Lean + Mathlib is memory-intensive.

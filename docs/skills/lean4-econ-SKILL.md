@@ -237,10 +237,20 @@ For claims in uncharted territory, the formalizer should follow this workflow:
    - lean_leansearch("natural language description")
 3. If all components have Mathlib counterparts, construct the formalization using the found identifiers
 4. If any component is missing, report which specific concepts lack Mathlib coverage
-5. Validate the formalization with lean_run_code before returning
+5. Validate the formalization with `lean_run_code` before returning
+6. If `lean_run_code` is unavailable, fall back to a direct `lake env lean` file check rather than relying on a project-wide `lake build`
 ```
 
 This search-first approach would have caught the `StrictConcave`, `hessian`, and `Topology` errors before they became formalization failures.
+
+### Current LeanEcon verification paths
+
+Keep these repo-specific details straight when debugging formalization vs build issues:
+
+- Final verify jobs compile isolated `AgenticProof_*.lean` files with `lake env lean`.
+- The default `LeanEcon` library target no longer imports `LeanEcon.Proof`.
+- `LeanEcon/Proof.lean` still exists only as a fixed fallback write target for sorry-validation when MCP-backed `lean_run_code` is unavailable.
+- A failing `lake build` now usually points to the checked-in library graph or preamble modules, not to one user's in-flight verification file.
 
 ## Preamble library expansion priorities
 
