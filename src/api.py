@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import sys
 from pathlib import Path
 from typing import Any, Literal
 
+from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -34,13 +36,16 @@ from pydantic import BaseModel, ConfigDict, Field
 # Allow sibling imports such as `from pipeline import ...` to resolve when the
 # app is launched via `uvicorn src.api:app`.
 sys.path.insert(0, str(Path(__file__).parent))
+load_dotenv(Path(__file__).parent.parent / ".env")
 
+from assumption_detector import detect_assumptions
 from error_codes import LeanEconErrorCode
 from eval_logger import LOG_FILE
 from explainer import explain_result
 from formalizer import classify_claim
 from job_store import JobStatus, job_store
 from lean_verifier import LEAN_SOURCE_DIR, VERIFICATION_FILE_PREFIX
+from llm_client import get_llm_model, get_llm_provider
 from pipeline import formalize_claim, parse_claim, run_pipeline
 from result_cache import result_cache
 

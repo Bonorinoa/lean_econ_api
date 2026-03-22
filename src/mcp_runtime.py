@@ -122,7 +122,14 @@ async def open_mistral_run_context(
     A fresh MCP client is registered on every entry. Reusing a closed
     MCPClientSTDIO across sequential RunContexts currently fails with
     ClosedResourceError in the Mistral SDK.
+
+    When ``model`` is ``None``, the value of the ``LLM_MODEL`` environment
+    variable is used (defaulting to labs-leanstral-2603).
     """
+    if model is None:
+        from llm_client import get_llm_model
+        model = get_llm_model()
+
     try:
         from mistralai.extra.run.context import RunContext
     except ModuleNotFoundError as exc:

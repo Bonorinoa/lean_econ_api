@@ -4,6 +4,10 @@ Shared Leanstral API helpers.
 This module contains the generic retrying chat wrapper and output cleanup logic
 used by LeanEcon components that call Leanstral outside the agentic proving
 loop.
+
+The active model is controlled by the LLM_MODEL environment variable
+(defaults to "labs-leanstral-2603").  See llm_client.py for multi-provider
+support.
 """
 
 from __future__ import annotations
@@ -16,9 +20,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 
+from llm_client import call_llm, create_chat_client, get_llm_model
+
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-MODEL = "labs-leanstral-2603"
+# Default model — override at runtime via LLM_MODEL env var.
+MODEL = get_llm_model()
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_TOKENS = 32000
 MAX_RETRIES = 2
@@ -36,7 +43,7 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 
 def get_client() -> Mistral:
-    """Create a fresh authenticated Mistral client."""
+    """Create a fresh authenticated Mistral client (for backward compatibility)."""
     return Mistral(api_key=os.environ["MISTRAL_API_KEY"])
 
 
@@ -68,40 +75,60 @@ def strip_fences(text: str) -> str:
 
 
 def call_leanstral(
-    client: Mistral,
+    client,
     messages: list[dict],
     stage: str,
     *,
-    model: str = MODEL,
+    model: str | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> str:
-    """Send messages to Leanstral with retry logic (exponential backoff on 429/503)."""
-    last_error = None
-    max_attempts = MAX_RETRIES
-    for attempt in range(1, MAX_RETRIES_RATE_LIMIT + 1):
-        try:
-            response = client.chat.complete(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            return response.choices[0].message.content
-        except Exception as exc:
-            last_error = exc
-            is_rate_limit = _is_rate_limit_error(exc)
-            max_attempts = MAX_RETRIES_RATE_LIMIT if is_rate_limit else MAX_RETRIES
-            print(f"  [leanstral] {stage} attempt {attempt}/{max_attempts} failed: {exc}")
-            if attempt >= max_attempts:
-                break
-            if is_rate_limit:
-                delay = 2 ** attempt  # 2, 4, 8, 16s
-                print(f"  [leanstral] Rate limited — backing off {delay}s")
-                time.sleep(delay)
-            else:
-                time.sleep(RETRY_DELAY_SECONDS)
+    """
+    Send messages to the active LLM with retry logic (exponential backoff on 429/503).
 
-    raise RuntimeError(
-        f"Leanstral API failed after {max_attempts} attempts ({stage}): {last_error}"
+    The ``client`` parameter may be a legacy Mistral SDK client (backward
+    compatible) or any wrapper returned by ``llm_client.create_chat_client()``.
+    When ``model`` is omitted the active ``LLM_MODEL`` env var is used.
+    """
+    # Legacy Mistral SDK path: keep existing behaviour unchanged.
+    if hasattr(client, "chat") and hasattr(client.chat, "complete"):
+        if model is None:
+            model = get_llm_model()
+        last_error = None
+        max_attempts = MAX_RETRIES
+        for attempt in range(1, MAX_RETRIES_RATE_LIMIT + 1):
+            try:
+                response = client.chat.complete(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return response.choices[0].message.content
+            except Exception as exc:
+                last_error = exc
+                is_rate_limit = _is_rate_limit_error(exc)
+                max_attempts = MAX_RETRIES_RATE_LIMIT if is_rate_limit else MAX_RETRIES
+                print(f"  [leanstral] {stage} attempt {attempt}/{max_attempts} failed: {exc}")
+                if attempt >= max_attempts:
+                    break
+                if is_rate_limit:
+                    delay = 2**attempt  # 2, 4, 8, 16s
+                    print(f"  [leanstral] Rate limited — backing off {delay}s")
+                    time.sleep(delay)
+                else:
+                    time.sleep(RETRY_DELAY_SECONDS)
+        raise RuntimeError(
+            f"Leanstral API failed after {max_attempts} attempts ({stage}): {last_error}"
+        )
+
+    # Generic provider path: delegate to llm_client.call_llm.
+    return call_llm(
+        client,
+        messages,
+        stage,
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        retry_delay_seconds=float(RETRY_DELAY_SECONDS),
     )

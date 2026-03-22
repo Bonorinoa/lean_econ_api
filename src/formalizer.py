@@ -2,11 +2,12 @@
 formalizer.py
 
 Translate natural language / LaTeX economics claims into valid Lean 4 theorem
-statements using Leanstral. Validates each statement compiles with sorry before
-sending it to the proving stage.
+statements using the configured LLM. Validates each statement compiles with
+sorry before sending it to the proving stage.
 
-Uses the same Leanstral model (labs-leanstral-2603) as the proving stage, but
-at lower temperature (0.3) for more conservative/deterministic output.
+The active LLM provider and model are configured via the LLM_PROVIDER and
+LLM_MODEL environment variables (defaults to Mistral labs-leanstral-2603).
+Temperature is set low (0.3) for more conservative/deterministic output.
 
 Public API:
   formalize(claim_text, on_log=None) -> dict   # main entry point
@@ -22,6 +23,7 @@ from dotenv import load_dotenv
 from mistralai.client import Mistral
 
 from lean_verifier import run_direct_lean_check, write_lean_file
+from llm_client import create_chat_client, get_llm_model
 from leanstral_utils import call_leanstral, strip_fences
 from preamble_library import (
     build_preamble_block,
@@ -43,18 +45,18 @@ FORMALIZE_TEMPERATURE = 0.3   # lower than proving (1.0) — we want conservativ
 FORMALIZE_MAX_TOKENS = 4096   # theorem statements are short
 MAX_FORMALIZATION_ATTEMPTS = 3
 SORRY_VALIDATION_TIMEOUT = 120  # seconds for direct Lean fallback with sorry
-_client: Mistral | None = None
+_client = None
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
 
-def _get_client() -> Mistral:
-    """Create the shared Mistral client lazily."""
+def _get_client():
+    """Create the shared LLM client lazily (provider-agnostic)."""
     global _client
     if _client is None:
-        _client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+        _client = create_chat_client()
     return _client
 
 

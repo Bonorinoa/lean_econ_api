@@ -41,7 +41,17 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL = "labs-leanstral-2603"
+# Model name is read from LLM_MODEL env var at import time so it can be
+# overridden without code changes. Defaults to labs-leanstral-2603.
+# NOTE: The agentic proving loop uses Mistral's Conversations API (run_async),
+# which requires a Mistral provider. Alternative providers can be used by
+# registering a custom prover backend via prover_backend.register_prover().
+def _get_agentic_model() -> str:
+    from llm_client import get_llm_model
+    return get_llm_model()
+
+
+MODEL = _get_agentic_model()
 TIMEOUT_MS = 120_000  # 2 minutes for the full run_async conversation
 DEFAULT_MAX_STEPS = 12  # not enforced directly — run_async manages its own loop
 

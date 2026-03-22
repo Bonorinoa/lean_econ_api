@@ -9,14 +9,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from dotenv import load_dotenv
-from mistralai.client import Mistral
 
+from llm_client import create_chat_client, get_llm_model
 from leanstral_utils import call_leanstral
 
 # Load .env from the project root (one level up from src/)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-MODEL = "labs-leanstral-2603"
+MODEL = get_llm_model()
 EXPLAIN_TEMPERATURE = 0.3
 EXPLAIN_MAX_TOKENS = 1024
 EXPLAIN_TIMEOUT_SECONDS = 7
@@ -215,8 +215,8 @@ Warnings:
 
 
 def _call_explainer_model(user_prompt: str) -> str:
-    """Run the explanation request against Leanstral."""
-    client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+    """Run the explanation request against the configured LLM."""
+    client = create_chat_client()
     messages = [
         {"role": "system", "content": EXPLAIN_SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
@@ -288,7 +288,7 @@ def explain_result(
 
         _log(
             on_log,
-            f"Calling {MODEL} to generate explanation...",
+            f"Calling {get_llm_model()} to generate explanation...",
             status="running",
         )
         explanation = _call_with_timeout(user_prompt)
