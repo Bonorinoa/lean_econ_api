@@ -24,6 +24,7 @@ from agentic_prover import (
     ToolBudgetExceededError,
     TraceRecorder,
     _install_guarded_execute_function_calls,
+    _is_cancel_scope_error,
     _is_code_3001_error,
     _is_retryable_run_error,
     _local_fast_path_tactics,
@@ -54,6 +55,27 @@ def test_code_3001_detection() -> None:
         'tool_confirmations must be provided.","code":3001}]}'
     )
     assert _is_code_3001_error(err)
+
+
+def test_cancel_scope_error_detection() -> None:
+    """_is_cancel_scope_error detects the anyio Python 3.12+ task-mismatch error."""
+    # Direct exception containing the cancel-scope message
+    direct = RuntimeError(
+        "Attempted to exit cancel scope in a different task than it was entered in"
+    )
+    assert _is_cancel_scope_error(direct)
+
+    # Wrapped in an ExceptionGroup (as anyio task groups raise)
+    wrapped = ExceptionGroup("unhandled errors in a TaskGroup", [direct])
+    assert _is_cancel_scope_error(wrapped)
+
+    # Unrelated exception should not match
+    unrelated = RuntimeError("Something completely different")
+    assert not _is_cancel_scope_error(unrelated)
+
+    # Nested ExceptionGroup should also be detected
+    nested = ExceptionGroup("outer", [ExceptionGroup("inner", [direct])])
+    assert _is_cancel_scope_error(nested)
 
 
 @pytest.mark.live
@@ -131,6 +153,7 @@ theorem trivial_truth : True := by
     controller = ProofFileController(working_file=tmp_path / "LocalFastPath.lean")
     controller.initialize(theorem)
     check_axioms_calls: list[bool] = []
+    log_entries: list[dict[str, object]] = []
 
     def fake_verify(lean_code: str, filename=None, check_axioms: bool = True) -> dict:
         del filename
@@ -156,7 +179,7 @@ theorem trivial_truth : True := by
     result = _try_local_tactic_fast_path(
         theorem,
         controller,
-        on_log=None,
+        on_log=log_entries.append,
         start_time=time.time(),
     )
 
@@ -167,6 +190,13 @@ theorem trivial_truth : True := by
     assert result["proof_tactics"] == "aesop"
     assert result["tactic_calls"][0]["successful"] is True
     assert check_axioms_calls == [False]
+    done_entry = next(
+        entry
+        for entry in log_entries
+        if entry["stage"] == "agentic_fast_path" and entry["status"] == "done"
+    )
+    assert isinstance(done_entry["elapsed_ms"], float)
+    assert done_entry["elapsed_ms"] >= 0.0
 
 
 def test_local_fast_path_prioritizes_norm_num_for_numeric_arithmetic() -> None:

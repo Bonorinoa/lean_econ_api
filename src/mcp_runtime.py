@@ -41,6 +41,7 @@ LEAN_LSP_MCP_ARGS = ["--transport", "stdio"]
 LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
 DEFAULT_MCP_RUNTIME_ROOT = str(PROJECT_ROOT / ".tmp" / "lean-lsp-mcp")
 MCP_STARTUP_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_STARTUP_TIMEOUT_SECONDS", "30"))
+MCP_TOOL_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_TOOL_TIMEOUT_SECONDS", "60"))
 
 # NOTE (2026-03-21): we intentionally create a fresh MCPClientSTDIO for each
 # RunContext. Local probing showed that re-registering the same client instance
@@ -230,20 +231,32 @@ async def query_lean_state(file_path: str, goal_line: int) -> dict[str, Any]:
           - raw_diagnostics (dict): Raw structured diagnostics payload
           - raw_goal (dict): Raw structured goal payload
     """
-    async with open_lean_mcp_session() as session:
-        diagnostics = await session.call_tool(
-            "lean_diagnostic_messages",
-            {"file_path": file_path},
-        )
-        if getattr(diagnostics, "isError", False):
-            raise RuntimeError("lean_diagnostic_messages returned an MCP error")
+    try:
+        async with open_lean_mcp_session() as session:
+            diagnostics = await asyncio.wait_for(
+                session.call_tool(
+                    "lean_diagnostic_messages",
+                    {"file_path": file_path},
+                ),
+                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+            )
+            if getattr(diagnostics, "isError", False):
+                raise RuntimeError("lean_diagnostic_messages returned an MCP error")
 
-        goal = await session.call_tool(
-            "lean_goal",
-            {"file_path": file_path, "line": goal_line},
-        )
-        if getattr(goal, "isError", False):
-            raise RuntimeError("lean_goal returned an MCP error")
+            goal = await asyncio.wait_for(
+                session.call_tool(
+                    "lean_goal",
+                    {"file_path": file_path, "line": goal_line},
+                ),
+                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+            )
+            if getattr(goal, "isError", False):
+                raise RuntimeError("lean_goal returned an MCP error")
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(
+            f"MCP tool call timed out after {MCP_TOOL_TIMEOUT_SECONDS:.0f}s. "
+            "Increase LEANECON_MCP_TOOL_TIMEOUT_SECONDS if Lean type-checking is slow."
+        ) from exc
 
     diag_structured = getattr(diagnostics, "structuredContent", None) or {}
     goal_structured = getattr(goal, "structuredContent", None) or {}

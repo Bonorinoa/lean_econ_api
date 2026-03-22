@@ -60,6 +60,7 @@ def test_create_sets_queue_metadata() -> None:
     assert job["finished_at"] is None
     assert job["last_progress_at"] is None
     assert job["current_stage"] is None
+    assert job["stage_timings"] == {}
 
 
 def test_record_progress_updates_stage_and_timestamp() -> None:
@@ -71,6 +72,61 @@ def test_record_progress_updates_stage_and_timestamp() -> None:
     assert job is not None
     assert job["current_stage"] == "agentic_run"
     assert job["last_progress_at"] is not None
+
+
+def test_record_progress_stores_elapsed_ms() -> None:
+    store = JobStore()
+    job_id = store.create()
+    store.record_progress(job_id, "agentic_run", elapsed_ms=123.4)
+    job = store.get(job_id)
+    assert job is not None
+    assert job["stage_timings"]["agentic_run"] == 123.4
+
+
+def test_record_progress_without_elapsed_ms_leaves_timings_empty() -> None:
+    store = JobStore()
+    job_id = store.create()
+    store.record_progress(job_id, "agentic_run")
+    job = store.get(job_id)
+    assert job is not None
+    assert job["stage_timings"] == {}
+
+
+def test_stage_timings_accumulate_multiple_stages() -> None:
+    store = JobStore()
+    job_id = store.create()
+    store.record_progress(job_id, "parse", elapsed_ms=5.0)
+    store.record_progress(job_id, "formalize", elapsed_ms=800.0)
+    store.record_progress(job_id, "agentic_run", elapsed_ms=45000.0)
+    job = store.get(job_id)
+    assert job is not None
+    assert job["stage_timings"]["parse"] == 5.0
+    assert job["stage_timings"]["formalize"] == 800.0
+    assert job["stage_timings"]["agentic_run"] == 45000.0
+
+
+def test_done_wrapper_stage_does_not_clobber_more_specific_current_stage() -> None:
+    store = JobStore()
+    job_id = store.create()
+    store.record_progress(job_id, "prover_dispatch", status="running")
+    store.record_progress(job_id, "agentic_fast_path", status="running")
+    store.record_progress(job_id, "agentic_fast_path", status="done", elapsed_ms=8.0)
+    store.record_progress(job_id, "prover_dispatch", status="done", elapsed_ms=10.0)
+    job = store.get(job_id)
+    assert job is not None
+    assert job["current_stage"] == "agentic_fast_path"
+    assert job["stage_timings"]["agentic_fast_path"] == 8.0
+    assert job["stage_timings"]["prover_dispatch"] == 10.0
+
+
+def test_done_only_stage_sets_current_stage_when_none_exists() -> None:
+    store = JobStore()
+    job_id = store.create()
+    store.record_progress(job_id, "cache", status="done", elapsed_ms=0.0)
+    job = store.get(job_id)
+    assert job is not None
+    assert job["current_stage"] == "cache"
+    assert job["stage_timings"]["cache"] == 0.0
 
 
 def test_get_returns_none_for_missing() -> None:

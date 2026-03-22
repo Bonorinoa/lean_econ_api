@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 
 from mcp_runtime import (
     LEAN_WORKSPACE,
+    MCP_TOOL_TIMEOUT_SECONDS,
     PROJECT_ROOT,
     lean_workspace_relative_path,
     open_lean_mcp_session,
@@ -94,22 +95,34 @@ async def _verify_run_context_tools() -> list[str]:
 
 
 async def _run_raw_queries() -> tuple[object, object]:
-    async with open_lean_mcp_session() as session:
-        diagnostics = await session.call_tool(
-            "lean_diagnostic_messages",
-            {"file_path": TARGET_FILE},
-        )
-        if getattr(diagnostics, "isError", False):
-            raise RuntimeError("lean_diagnostic_messages returned an MCP error")
+    try:
+        async with open_lean_mcp_session() as session:
+            diagnostics = await asyncio.wait_for(
+                session.call_tool(
+                    "lean_diagnostic_messages",
+                    {"file_path": TARGET_FILE},
+                ),
+                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+            )
+            if getattr(diagnostics, "isError", False):
+                raise RuntimeError("lean_diagnostic_messages returned an MCP error")
 
-        goal = await session.call_tool(
-            "lean_goal",
-            {"file_path": TARGET_FILE, "line": GOAL_QUERY_LINE},
-        )
-        if getattr(goal, "isError", False):
-            raise RuntimeError("lean_goal returned an MCP error")
+            goal = await asyncio.wait_for(
+                session.call_tool(
+                    "lean_goal",
+                    {"file_path": TARGET_FILE, "line": GOAL_QUERY_LINE},
+                ),
+                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+            )
+            if getattr(goal, "isError", False):
+                raise RuntimeError("lean_goal returned an MCP error")
 
-        return diagnostics, goal
+            return diagnostics, goal
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(
+            f"MCP tool call timed out after {MCP_TOOL_TIMEOUT_SECONDS:.0f}s. "
+            "Increase LEANECON_MCP_TOOL_TIMEOUT_SECONDS if Lean type-checking is slow."
+        ) from exc
 
 
 async def _main() -> int:

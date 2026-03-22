@@ -64,6 +64,7 @@ def test_aggregate_trace_metrics() -> None:
     ]
     metrics = aggregate_trace_metrics(records)
     assert metrics["runs_considered"] == 2
+    assert metrics["cache_replays_skipped"] == 0
     assert metrics["total_tool_calls"] == 4
     assert metrics["successful_tactic_applications"] == 1
     assert metrics["tool_call_efficiency"] == 0.25
@@ -74,3 +75,35 @@ def test_aggregate_trace_metrics() -> None:
     assert metrics["blocked_tool_calls"] == 1
     assert metrics["tactic_depth_average"] == 3.0
     assert metrics["error_frequency"]["line 7: unknown identifier x"] == 1
+
+
+def test_aggregate_trace_metrics_skips_cache_replays() -> None:
+    records = [
+        {
+            "success": True,
+            "proof_tactics": "norm_num",
+            "tool_trace": [
+                {"type": "tool_call", "tool_name": "apply_tactic"},
+            ],
+            "tactic_calls": [
+                {"tactic": "norm_num", "successful": True},
+            ],
+            "from_cache": False,
+        },
+        {
+            "success": True,
+            "proof_tactics": "norm_num",
+            "tool_trace": [],
+            "tactic_calls": [],
+            "from_cache": True,
+        },
+    ]
+
+    metrics = aggregate_trace_metrics(records)
+
+    assert metrics["runs_considered"] == 2
+    assert metrics["cache_replays_skipped"] == 1
+    assert metrics["total_tool_calls"] == 1
+    assert metrics["successful_tactic_applications"] == 1
+    assert metrics["successful_proofs_considered"] == 1
+    assert metrics["tactic_depth_average"] == 1.0

@@ -134,10 +134,18 @@ class ToolBudgetExceededError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _log(on_log, stage: str, message: str, data: str | None = None, status: str = "done"):
+def _log(
+    on_log,
+    stage: str,
+    message: str,
+    data: str | None = None,
+    status: str = "done",
+    elapsed_ms: float | None = None,
+):
     """Emit a pipeline log entry."""
     if on_log:
-        on_log({"stage": stage, "message": message, "data": data, "status": status})
+        on_log({"stage": stage, "message": message, "data": data,
+                "status": status, "elapsed_ms": elapsed_ms})
     else:
         print(f"[agentic] {stage}: {message}")
 
@@ -538,6 +546,7 @@ def _try_local_tactic_fast_path(
                 "agentic_fast_path",
                 f"Local fast path solved the theorem with `{_preview_tactic(tactic)}`",
                 status="done",
+                elapsed_ms=elapsed * 1000,
             )
             return {
                 "success": True,
@@ -563,11 +572,13 @@ def _try_local_tactic_fast_path(
             }
 
     controller.restore_last_good_checkpoint()
+    fast_path_elapsed_ms = (time.time() - start_time) * 1000
     _log(
         on_log,
         "agentic_fast_path",
         "Local fast path exhausted its tactic shortlist; escalating to Leanstral.",
         status="done",
+        elapsed_ms=fast_path_elapsed_ms,
     )
     return None
 
@@ -658,6 +669,22 @@ def _is_code_3001_error(exc: Exception) -> bool:
     """Detect the malformed empty-input/tool-confirmation Conversations error."""
     text = str(exc)
     return 'code":3001' in text or "Either inputs or tool_confirmations must be provided." in text
+
+
+def _is_cancel_scope_error(exc: BaseException) -> bool:
+    """Return True if the exception is an anyio cancel-scope task-mismatch error.
+
+    This fires when asyncio's task cancellation propagates into anyio's cancel scopes
+    (Python 3.12+), typically because the Mistral SDK's timeout_ms fires while the
+    Lean LSP is still processing a long-running request (e.g. preamble compilation).
+    The exception may be wrapped in an ExceptionGroup by anyio's task group.
+    """
+    if "cancel scope" in str(exc).lower() and "different task" in str(exc).lower():
+        return True
+    # Unwrap anyio/Python 3.11+ ExceptionGroup sub-exceptions
+    if hasattr(exc, "exceptions"):
+        return any(_is_cancel_scope_error(e) for e in exc.exceptions)
+    return False
 
 
 async def _run_conversation_with_backoff(
@@ -1223,6 +1250,7 @@ async def _prove_theorem_agentic_async(
     try:
         # --- Step 1: Initialize working file ---
         _log(on_log, "agentic_init", "Initializing working proof file...", status="running")
+        t_agentic_init = time.time()
         controller.initialize(theorem_with_sorry)
         _log(
             on_log,
@@ -1230,6 +1258,7 @@ async def _prove_theorem_agentic_async(
             f"Working file: {controller.mcp_file_path}",
             data=controller.current_lean_code,
             status="done",
+            elapsed_ms=(time.time() - t_agentic_init) * 1000,
         )
 
         fast_path_result = _try_local_tactic_fast_path(
@@ -1243,6 +1272,7 @@ async def _prove_theorem_agentic_async(
 
         # --- Step 2: Set up Mistral RunContext with tools ---
         _log(on_log, "agentic_setup", "Setting up Leanstral + MCP tools...", status="running")
+        t_agentic_setup = time.time()
 
         trace_recorder = TraceRecorder()
         apply_tactic_fn, tactic_call_log = _make_apply_tactic(controller, trace_recorder)
@@ -1277,6 +1307,7 @@ async def _prove_theorem_agentic_async(
 
         # --- Step 3: Run the agentic loop ---
         _log(on_log, "agentic_run", "Leanstral proving loop started...", status="running")
+        t_agentic_run = time.time()
         stop_reason = STOP_PROOF_INCOMPLETE
         model_text = ""
         tool_trace_entries: list[dict[str, Any]] = trace_recorder.entries
@@ -1305,6 +1336,7 @@ async def _prove_theorem_agentic_async(
                     ),
                     data=", ".join(removed_tools[:12]) if removed_tools else None,
                     status="done",
+                    elapsed_ms=(time.time() - t_agentic_setup) * 1000,
                 )
 
                 result = await _run_conversation_with_backoff(
@@ -1423,6 +1455,34 @@ async def _prove_theorem_agentic_async(
                     partial=True,
                 )
 
+            if _is_cancel_scope_error(exc):
+                # anyio raises this when asyncio's task cancellation propagates into
+                # its cancel scopes during SDK timeout teardown (Python 3.12+). This
+                # is semantically a timeout, not a hard failure — route to the graceful
+                # partial-result path so any completed tactics are preserved.
+                interruption_message = (
+                    "Agentic run interrupted by an anyio cancel-scope task mismatch. "
+                    "This typically occurs when the Lean LSP times out during "
+                    "preamble compilation. Returning the latest proof state."
+                )
+                trace_recorder.finalize_pending_attempt(tactic_call_log)
+                return _build_interrupted_run_result(
+                    controller=controller,
+                    model_text=model_text,
+                    tool_trace_entries=tool_trace_entries,
+                    tactic_call_log=tactic_call_log,
+                    steps_used=steps_used,
+                    start_time=start_time,
+                    interruption_message=interruption_message,
+                    stop_reason=STOP_TIMEOUT,
+                    agent_summary=(
+                        "Leanstral agentic prover was interrupted by an anyio "
+                        "cancel-scope error (likely Lean preamble compilation timeout). "
+                        "Returning the latest proof state."
+                    ),
+                    partial=True,
+                )
+
             stop_reason = STOP_RUN_ERROR
             elapsed = time.time() - start_time
             trace_recorder.finalize_pending_attempt(tactic_call_log)
@@ -1451,6 +1511,7 @@ async def _prove_theorem_agentic_async(
             "Leanstral loop completed "
             f"({steps_used} API round-trips, {len(tactic_call_log)} tactic calls)",
             status="done",
+            elapsed_ms=(time.time() - t_agentic_run) * 1000,
         )
         trace_recorder.finalize_pending_attempt(tactic_call_log)
 
@@ -1465,11 +1526,14 @@ async def _prove_theorem_agentic_async(
 
         # --- Step 5: Final verification via the local Lean compiler ---
         _log(on_log, "agentic_verify", "Running final Lean verification...", status="running")
+        t_agentic_verify = time.time()
         verification = verify(controller.current_lean_code)
+        verify_elapsed_ms = (time.time() - t_agentic_verify) * 1000
 
         if verification["success"]:
             stop_reason = STOP_PROOF_COMPLETE
-            _log(on_log, "agentic_verify", "Verified — Lean check passed", status="done")
+            _log(on_log, "agentic_verify", "Verified — Lean check passed", status="done",
+                 elapsed_ms=verify_elapsed_ms)
         else:
             if stop_reason == STOP_PROOF_COMPLETE:
                 stop_reason = (
@@ -1482,6 +1546,7 @@ async def _prove_theorem_agentic_async(
                 f"Verification failed: {error_preview}",
                 data=str(verification["errors"]),
                 status="error",
+                elapsed_ms=verify_elapsed_ms,
             )
 
         elapsed = time.time() - start_time

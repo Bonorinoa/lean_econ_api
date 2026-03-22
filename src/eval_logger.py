@@ -45,7 +45,7 @@ def log_run(run_data: dict) -> None:
                   timestamp and unique run_id.
     """
     try:
-        LOGS_DIR.mkdir(exist_ok=True)
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "run_id": str(uuid.uuid4()),

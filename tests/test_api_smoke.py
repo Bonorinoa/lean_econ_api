@@ -17,6 +17,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import api
+import eval_logger
+import pipeline as _pipeline_mod
+from result_cache import ResultCache
 
 RAW_LEAN_THEOREM = """\
 import Mathlib
@@ -478,6 +481,59 @@ def test_metrics_aggregates_runs() -> None:
         "verification_rate": 0.333,
         "cache_hit_rate": 0.333,
     }
+
+
+def test_metrics_include_cache_hit_logged_by_pipeline() -> None:
+    client = TestClient(api.app)
+    claim = "Consumers maximize utility subject to a budget constraint."
+    theorem_statement = """\
+theorem utility_budget_feasible : True := by
+  trivial
+"""
+    cached_result = {
+        "success": True,
+        "lean_code": theorem_statement.strip(),
+        "errors": [],
+        "warnings": [],
+        "phase": "verified",
+        "proof_strategy": "Local deterministic tactic fast path",
+        "proof_tactics": "trivial",
+        "theorem_statement": theorem_statement.strip(),
+        "formalization_attempts": 2,
+        "tool_trace": [],
+        "tactic_calls": [],
+        "trace_schema_version": 1,
+        "agent_summary": "",
+        "agent_elapsed_seconds": 0.0,
+        "axiom_info": None,
+        "partial": False,
+        "stop_reason": None,
+        "from_cache": False,
+        "elapsed_seconds": 1.0,
+        "attempts_used": 0,
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        log_dir = tmp_path / "state" / "logs"
+        log_path = log_dir / "runs.jsonl"
+        cache = ResultCache(cache_file=tmp_path / "cache.json")
+        cache.put(claim, cached_result)
+
+        with (
+            patch.object(eval_logger, "LOGS_DIR", log_dir),
+            patch.object(eval_logger, "LOG_FILE", log_path),
+            patch.object(api, "LOG_FILE", log_path),
+            patch.object(_pipeline_mod, "result_cache", cache),
+        ):
+            result = _pipeline_mod.run_pipeline(claim, use_cache=True)
+            response = client.get("/api/v1/metrics")
+
+    assert result["from_cache"] is True
+    assert response.status_code == 200
+    assert response.json()["total_runs"] == 1
+    assert response.json()["verified"] == 1
+    assert response.json()["cache_hits"] == 1
 
 
 def test_cache_clear_endpoint() -> None:

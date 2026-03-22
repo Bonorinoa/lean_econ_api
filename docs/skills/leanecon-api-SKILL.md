@@ -334,6 +334,11 @@ verification result, tool call counts, timing, errors, and axiom info.
 
 The `/api/v1/metrics` endpoint aggregates this log into summary statistics. For deeper analysis, process `runs.jsonl` directly.
 
+Cache hits are intentionally logged too so `/api/v1/metrics` reflects real
+operational traffic. When you analyze proof quality or tool efficiency, exclude
+`from_cache` entries so cache replays do not dilute tactic-depth or tool-waste
+metrics.
+
 ### Building feedback loops
 
 The data flywheel works like this:
@@ -346,7 +351,9 @@ The data flywheel works like this:
 
 For dashboards: fetch `/api/v1/metrics` for aggregate stats, parse the
 configured JSONL run log for per-claim drill-down, and use the additive job
-metadata from `GET /api/v1/jobs/{job_id}` to show queue time and current stage.
+metadata from `GET /api/v1/jobs/{job_id}` to show queue time, current stage,
+and `stage_timings`. `current_stage` now prefers the most specific active stage
+instead of being overwritten by a later wrapper-stage completion event.
 
 ## Evaluation harness
 

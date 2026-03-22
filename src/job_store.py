@@ -45,6 +45,7 @@ class JobStore:
                 "finished_at": None,
                 "last_progress_at": None,
                 "current_stage": None,
+                "stage_timings": {},
                 "request": request_data,
             }
         return job_id
@@ -56,13 +57,22 @@ class JobStore:
                 if status == JobStatus.RUNNING and self._jobs[job_id]["started_at"] is None:
                     self._jobs[job_id]["started_at"] = _utc_now()
 
-    def record_progress(self, job_id: str, stage: str | None) -> None:
+    def record_progress(
+        self,
+        job_id: str,
+        stage: str | None,
+        *,
+        status: str | None = None,
+        elapsed_ms: float | None = None,
+    ) -> None:
         with self._lock:
             if job_id not in self._jobs:
                 return
             self._jobs[job_id]["last_progress_at"] = _utc_now()
-            if stage:
+            if stage and (status != "done" or self._jobs[job_id]["current_stage"] in (None, stage)):
                 self._jobs[job_id]["current_stage"] = stage
+            if stage and elapsed_ms is not None:
+                self._jobs[job_id]["stage_timings"][stage] = elapsed_ms
 
     def subscribe(self, job_id: str) -> queue.Queue[dict[str, Any]]:
         """Create a bounded subscriber queue for a job's SSE events."""

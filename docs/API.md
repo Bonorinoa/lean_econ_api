@@ -156,7 +156,8 @@ Response fields:
 - `started_at`: UTC timestamp when the background worker started it
 - `finished_at`: UTC timestamp when the job completed or failed
 - `last_progress_at`: UTC timestamp of the latest progress event observed
-- `current_stage`: most recent pipeline stage reported for the job
+- `current_stage`: the most specific stage the job most recently entered
+- `stage_timings`: per-stage elapsed milliseconds recorded when a stage finishes
 
 Important fields inside `result`:
 
@@ -208,6 +209,9 @@ Observability notes:
 - the job envelope now includes additive timestamps plus `current_stage`, which
   makes a long-lived `running` job debuggable without changing the existing
   verify payload shape
+- wrapper stages such as `prover_dispatch` may still appear in
+  `stage_timings`, but `current_stage` prefers the most specific active stage
+  instead of being overwritten by a later wrapper-stage `done` event
 - the JSONL run log lives at `logs/runs.jsonl` by default, or at
   `${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR` is set
 
@@ -325,6 +329,12 @@ Example response:
 
 This endpoint is meant for lightweight development-time visibility, not a full
 metrics stack.
+
+Cache hits are logged into the same append-only run log so `/api/v1/metrics`
+can count them. Offline proof-quality analysis should still treat those cache
+replays separately; the trace-analysis helpers skip `from_cache` entries so
+repeated cached successes do not distort tactic-depth or tool-efficiency
+metrics.
 
 For release gating, prefer local lint, non-live pytest, Lean/MCP smoke checks,
 and local Docker validation before trusting any Railway response.

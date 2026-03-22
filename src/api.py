@@ -476,6 +476,10 @@ class JobStatusResponse(BaseModel):
         default=None,
         description="Most recent pipeline stage reported for the job.",
     )
+    stage_timings: dict[str, float] = Field(
+        default_factory=dict,
+        description="Per-stage elapsed time in milliseconds, keyed by stage name.",
+    )
 
 
 class ExplainResponse(BaseModel):
@@ -612,14 +616,16 @@ def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
     def on_log(entry: dict[str, Any]) -> None:
         """Forward pipeline log entries to SSE subscribers."""
         stage = str(entry.get("stage", ""))
-        job_store.record_progress(job_id, stage)
+        status = str(entry.get("status", "done"))
+        elapsed_ms = entry.get("elapsed_ms")
+        job_store.record_progress(job_id, stage, status=status, elapsed_ms=elapsed_ms)
         job_store.publish(
             job_id,
             {
                 "type": "progress",
                 "stage": stage,
                 "message": str(entry.get("message", "")),
-                "status": str(entry.get("status", "done")),
+                "status": status,
             },
         )
 
@@ -821,6 +827,7 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         finished_at=job.get("finished_at"),
         last_progress_at=job.get("last_progress_at"),
         current_stage=job.get("current_stage"),
+        stage_timings=job.get("stage_timings", {}),
     )
 
 

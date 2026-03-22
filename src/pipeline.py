@@ -43,10 +43,50 @@ class ProveResult(TypedDict):
     axiom_info: dict[str, Any] | None
 
 
-def _log(on_log, stage: str, message: str, data: str | None = None, status: str = "done"):
+def _build_run_log_entry(
+    *,
+    raw_input: str,
+    input_text: str,
+    input_mode: str,
+    formalization: dict[str, Any],
+    proving: dict[str, Any],
+    verification: dict[str, Any],
+    elapsed_seconds: float,
+    from_cache: bool,
+    partial: bool,
+    stop_reason: str | None,
+    cache_replay: bool = False,
+) -> dict[str, Any]:
+    """Build the append-only eval-log payload for both fresh runs and cache replays."""
+    entry = {
+        "original_raw_claim": raw_input,
+        "input_text": input_text,
+        "input_mode": input_mode,
+        "formalization": formalization,
+        "proving": proving,
+        "verification": verification,
+        "elapsed_seconds": elapsed_seconds,
+        "from_cache": from_cache,
+        "partial": partial,
+        "stop_reason": stop_reason,
+    }
+    if cache_replay:
+        entry["cache_replay"] = True
+    return entry
+
+
+def _log(
+    on_log,
+    stage: str,
+    message: str,
+    data: str | None = None,
+    status: str = "done",
+    elapsed_ms: float | None = None,
+):
     """Emit a pipeline log entry."""
     if on_log:
-        on_log({"stage": stage, "message": message, "data": data, "status": status})
+        on_log({"stage": stage, "message": message, "data": data,
+                "status": status, "elapsed_ms": elapsed_ms})
     else:
         print(f"[pipeline] {stage}: {message}")
 
@@ -87,15 +127,19 @@ def formalize_claim(
         }
 
     _log(on_log, "parse", "Cleaning input...", status="running")
+    t_parse = time.time()
     parsed = parse_claim(raw_input)
-    _log(on_log, "parse", "Input cleaned", status="done")
+    _log(on_log, "parse", "Input cleaned", status="done", elapsed_ms=(time.time() - t_parse) * 1000)
 
     _log(on_log, "formalize", "Calling Leanstral to formalize claim...", status="running")
+    t_formalize = time.time()
     result = formalize(parsed["text"], on_log=on_log, preamble_names=preamble_names)
+    formalize_elapsed_ms = (time.time() - t_formalize) * 1000
 
     if result["formalization_failed"]:
         _log(
-            on_log, "formalize", f"Formalization failed: {result['failure_reason']}", status="error"
+            on_log, "formalize", f"Formalization failed: {result['failure_reason']}",
+            status="error", elapsed_ms=formalize_elapsed_ms,
         )
     elif result["success"]:
         _log(
@@ -104,6 +148,7 @@ def formalize_claim(
             f"Formalized in {result['attempts']} attempt(s)",
             data=result["theorem_code"],
             status="done",
+            elapsed_ms=formalize_elapsed_ms,
         )
     else:
         _log(
@@ -112,6 +157,7 @@ def formalize_claim(
             f"Sorry-validation failed after {result['attempts']} attempt(s)",
             data="\n".join(result["errors"][:2]),
             status="error",
+            elapsed_ms=formalize_elapsed_ms,
         )
 
     return result
@@ -126,6 +172,7 @@ def prove_and_verify(
     prover = get_prover(prover_name)
     success = False
     _log(on_log, "prover_dispatch", f"Using prover: {prover.name}", status="running")
+    t_prover = time.time()
     result = prover.prove(theorem_with_sorry, on_log=on_log)
     success = result.get("success", False)
     _log(
@@ -133,6 +180,7 @@ def prove_and_verify(
         "prover_dispatch",
         f"Prover finished: {'PASS' if success else 'FAIL'}",
         status="done" if success else "error",
+        elapsed_ms=(time.time() - t_prover) * 1000,
     )
 
     return {
@@ -174,7 +222,8 @@ def run_pipeline(
     if use_cache:
         cached = result_cache.get(cache_key_input)
         if cached is not None:
-            _log(on_log, "cache", "Cache hit — returning verified result", status="done")
+            _log(on_log, "cache", "Cache hit — returning verified result",
+                 status="done", elapsed_ms=0.0)
             cached["elapsed_seconds"] = 0.0
             cached["from_cache"] = True
             cached.setdefault("partial", False)
@@ -184,6 +233,47 @@ def run_pipeline(
             cached.setdefault("trace_schema_version", 1)
             cached.setdefault("agent_summary", "")
             cached.setdefault("agent_elapsed_seconds", 0.0)
+            cached_theorem = (
+                cached.get("theorem_statement")
+                or cached.get("lean_code")
+                or cache_key_input
+            )
+            log_run(
+                _build_run_log_entry(
+                    raw_input=raw_input,
+                    input_text="",
+                    input_mode="cache",
+                    formalization={
+                        "success": True,
+                        "attempts": cached.get("formalization_attempts", 0),
+                        "theorem_code": str(cached_theorem),
+                        "errors": [],
+                        "model": "cache_replay",
+                        "formalization_failed": False,
+                        "failure_reason": None,
+                    },
+                    proving={
+                        "success": cached.get("success", True),
+                        "attempts_used": cached.get("attempts_used", 0),
+                        "proof_strategy": cached.get("proof_strategy", ""),
+                        "proof_tactics": cached.get("proof_tactics", ""),
+                        "tool_trace": cached.get("tool_trace", []),
+                        "tactic_calls": cached.get("tactic_calls", []),
+                        "trace_schema_version": cached.get("trace_schema_version", 1),
+                        "agent_summary": cached.get("agent_summary", ""),
+                    },
+                    verification={
+                        "success": cached.get("success", True),
+                        "errors": cached.get("errors", []),
+                        "warnings": cached.get("warnings", []),
+                    },
+                    elapsed_seconds=0.0,
+                    from_cache=True,
+                    partial=cached.get("partial", False),
+                    stop_reason="cache_hit",
+                    cache_replay=True,
+                )
+            )
             return cached
 
     if preformalized_theorem is not None:
@@ -229,11 +319,11 @@ def run_pipeline(
             "axiom_info": None,
         }
         log_run(
-            {
-                "original_raw_claim": raw_input,
-                "input_text": raw_input[:500] if preformalized_theorem is None else "",
-                "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
-                "formalization": {
+            _build_run_log_entry(
+                raw_input=raw_input,
+                input_text=raw_input[:500] if preformalized_theorem is None else "",
+                input_mode="raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
+                formalization={
                     "success": f_result["success"],
                     "attempts": f_result["attempts"],
                     "theorem_code": f_result.get("theorem_code", ""),
@@ -242,7 +332,7 @@ def run_pipeline(
                     "formalization_failed": f_result.get("formalization_failed", False),
                     "failure_reason": f_result.get("failure_reason"),
                 },
-                "proving": {
+                proving={
                     "success": False,
                     "attempts_used": 0,
                     "proof_strategy": "",
@@ -252,16 +342,16 @@ def run_pipeline(
                     "trace_schema_version": 1,
                     "agent_summary": "",
                 },
-                "verification": {
+                verification={
                     "success": False,
                     "errors": f_result.get("errors", []),
                     "warnings": [],
                 },
-                "elapsed_seconds": result["elapsed_seconds"],
-                "from_cache": result["from_cache"],
-                "partial": result["partial"],
-                "stop_reason": result["stop_reason"],
-            }
+                elapsed_seconds=result["elapsed_seconds"],
+                from_cache=result["from_cache"],
+                partial=result["partial"],
+                stop_reason=result["stop_reason"],
+            )
         )
         return result
 
@@ -306,11 +396,11 @@ def run_pipeline(
         result_cache.put(cache_key_input, result)
 
     log_run(
-        {
-            "original_raw_claim": raw_input,
-            "input_text": raw_input[:500] if preformalized_theorem is None else "",
-            "input_mode": "raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
-            "formalization": {
+        _build_run_log_entry(
+            raw_input=raw_input,
+            input_text=raw_input[:500] if preformalized_theorem is None else "",
+            input_mode="raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
+            formalization={
                 "success": f_result["success"],
                 "attempts": f_result["attempts"],
                 "theorem_code": f_result["theorem_code"],
@@ -319,7 +409,7 @@ def run_pipeline(
                 "formalization_failed": f_result["formalization_failed"],
                 "failure_reason": f_result["failure_reason"],
             },
-            "proving": {
+            proving={
                 "success": pv_result["success"],
                 "attempts_used": pv_result["attempts_used"],
                 "proof_strategy": pv_result["proof_strategy"],
@@ -329,16 +419,16 @@ def run_pipeline(
                 "trace_schema_version": pv_result["trace_schema_version"],
                 "agent_summary": pv_result["agent_summary"],
             },
-            "verification": {
+            verification={
                 "success": pv_result["success"],
                 "errors": pv_result["errors"],
                 "warnings": pv_result["warnings"],
             },
-            "elapsed_seconds": result["elapsed_seconds"],
-            "from_cache": result["from_cache"],
-            "partial": result["partial"],
-            "stop_reason": result["stop_reason"],
-        }
+            elapsed_seconds=result["elapsed_seconds"],
+            from_cache=result["from_cache"],
+            partial=result["partial"],
+            stop_reason=result["stop_reason"],
+        )
     )
 
     return result

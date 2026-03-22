@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -62,3 +65,20 @@ def test_mcp_startup_failure_message_mentions_local_binary_and_uvx_fallback() ->
     assert "lean-lsp-mcp" in message
     assert "uvx" in message
     assert "dns failure" in message
+
+
+def test_query_lean_state_raises_runtime_error_on_tool_call_timeout(monkeypatch) -> None:
+    """A slow tool call must raise RuntimeError with an actionable message, not hang."""
+    monkeypatch.setattr(mcp_runtime, "MCP_TOOL_TIMEOUT_SECONDS", 0.01)
+
+    class _SlowSession:
+        async def call_tool(self, *_args, **_kwargs):
+            await asyncio.sleep(5)
+
+    @asynccontextmanager
+    async def _fake_mcp_session():
+        yield _SlowSession()
+
+    with patch.object(mcp_runtime, "open_lean_mcp_session", _fake_mcp_session):
+        with pytest.raises(RuntimeError, match="timed out"):
+            asyncio.run(mcp_runtime.query_lean_state("LeanEcon/Fake.lean", 1))

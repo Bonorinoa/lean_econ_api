@@ -152,23 +152,37 @@ def failed_kernel_errors(record: dict[str, Any]) -> list[str]:
     return _verification_errors(record)
 
 
+def _is_cache_replay(record: dict[str, Any]) -> bool:
+    """Cached replays count for ops metrics, but not for proof-quality trace analysis."""
+    return bool(record.get("from_cache"))
+
+
 def aggregate_trace_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate the deep-trace metrics requested by the evaluation harness."""
-    total_tool_call_count = sum(total_tool_calls(record) for record in records)
-    successful_tactic_count = sum(successful_tactic_applications(record) for record in records)
-    blocked_tool_call_count = sum(blocked_tool_calls(record) for record in records)
-    write_tool_call_count = sum(tool_calls_by_name(record, WRITE_TOOL_NAMES) for record in records)
+    analysis_records = [record for record in records if not _is_cache_replay(record)]
+    cache_replays_skipped = len(records) - len(analysis_records)
+
+    total_tool_call_count = sum(total_tool_calls(record) for record in analysis_records)
+    successful_tactic_count = sum(
+        successful_tactic_applications(record) for record in analysis_records
+    )
+    blocked_tool_call_count = sum(blocked_tool_calls(record) for record in analysis_records)
+    write_tool_call_count = sum(
+        tool_calls_by_name(record, WRITE_TOOL_NAMES) for record in analysis_records
+    )
     diagnostic_tool_call_count = sum(
-        tool_calls_by_name(record, DIAGNOSTIC_TOOL_NAMES) for record in records
+        tool_calls_by_name(record, DIAGNOSTIC_TOOL_NAMES) for record in analysis_records
     )
     search_tool_call_count = sum(
-        tool_calls_by_name(record, SEARCH_TOOL_NAMES) for record in records
+        tool_calls_by_name(record, SEARCH_TOOL_NAMES) for record in analysis_records
     )
 
-    tactic_depths = [depth for record in records if (depth := tactic_depth(record)) is not None]
+    tactic_depths = [
+        depth for record in analysis_records if (depth := tactic_depth(record)) is not None
+    ]
 
     error_counter: Counter[str] = Counter()
-    for record in records:
+    for record in analysis_records:
         error_counter.update(failed_kernel_errors(record))
 
     tool_call_efficiency = 0.0
@@ -182,6 +196,7 @@ def aggregate_trace_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "runs_considered": len(records),
+        "cache_replays_skipped": cache_replays_skipped,
         "total_tool_calls": total_tool_call_count,
         "successful_tactic_applications": successful_tactic_count,
         "tool_call_efficiency": round(tool_call_efficiency, 3),
@@ -200,6 +215,7 @@ def render_trace_metrics(metrics: dict[str, Any]) -> str:
     """Render a compact human-readable summary of aggregate trace metrics."""
     lines = [
         f"Runs parsed: {metrics.get('runs_considered', 0)}",
+        f"Cache Replays Skipped: {metrics.get('cache_replays_skipped', 0)}",
         (
             "Tool Call Efficiency: "
             f"{metrics.get('tool_call_efficiency', 0.0):.3f} "
