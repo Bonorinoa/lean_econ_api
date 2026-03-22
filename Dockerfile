@@ -3,7 +3,8 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PATH="/root/.elan/bin:${PATH}"
+ENV LEANECON_STATE_DIR=/app/state
+ENV PATH="/root/.local/bin:/root/.elan/bin:${PATH}"
 
 WORKDIR /app
 
@@ -23,6 +24,7 @@ RUN elan default leanprover/lean4:v4.28.0
 COPY requirements.txt ./
 RUN python -m pip install --no-cache-dir -r requirements.txt
 RUN python -m pip install --no-cache-dir uv
+RUN uv tool install lean-lsp-mcp
 
 COPY lean_workspace ./lean_workspace
 RUN cd lean_workspace && lake exe cache get && lake build
@@ -32,7 +34,7 @@ COPY src ./src
 COPY docs ./docs
 COPY README.md ./README.md
 RUN chmod +x /app/scripts/run_lean_lsp_mcp.sh
-RUN mkdir -p outputs logs
+RUN mkdir -p outputs logs /app/state
 
 EXPOSE 8000
 

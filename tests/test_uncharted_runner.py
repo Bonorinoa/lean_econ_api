@@ -116,11 +116,107 @@ def test_runner_writes_report_and_results() -> None:
         assert len(report_files) == 1
 
         payload = json.loads(result_files[0].read_text(encoding="utf-8"))
+        assert payload["config"]["profile"] == "ci"
         assert payload["summary"]["formalization_successes"] == 1
         assert payload["summary"]["verified_cases"] == 1
         assert payload["aggregate_trace_metrics"]["tool_call_efficiency"] == 0.333
 
         report_text = report_files[0].read_text(encoding="utf-8")
-        assert "Uncharted Evaluation Report" in report_text
+        assert "Claim Evaluation Report" in report_text
         assert "dynamic_001" in report_text
         assert "Formalization Robustness" in report_text
+
+
+def test_runner_uses_dataset_staging_for_labeled_claims() -> None:
+    claims = [
+        {
+            "id": "verify_001",
+            "raw_claim": "1 + 1 = 2",
+            "expect": "verify",
+        },
+        {
+            "id": "formalize_001",
+            "raw_claim": "A contraction mapping has a unique fixed point.",
+            "expect": "formalize",
+        },
+        {
+            "id": "graceful_001",
+            "raw_claim": "Walrasian equilibrium exists.",
+            "expect": "fail_gracefully",
+        },
+    ]
+
+    formalization_results = {
+        "1 + 1 = 2": {
+            "success": True,
+            "theorem_code": "theorem one_plus_one : 1 + 1 = 2 := by sorry",
+            "attempts": 1,
+            "errors": [],
+            "formalization_failed": False,
+            "failure_reason": None,
+        },
+        "A contraction mapping has a unique fixed point.": {
+            "success": True,
+            "theorem_code": "theorem fixed_point : True := by sorry",
+            "attempts": 2,
+            "errors": [],
+            "formalization_failed": False,
+            "failure_reason": None,
+        },
+        "Walrasian equilibrium exists.": {
+            "success": False,
+            "theorem_code": "",
+            "attempts": 1,
+            "errors": ["needs custom theory"],
+            "formalization_failed": True,
+            "failure_reason": "Out of scope.",
+        },
+    }
+
+    pipeline_calls: list[str] = []
+
+    def fake_formalize_claim(raw_input: str, on_log=None, preamble_names=None):
+        return formalization_results[raw_input]
+
+    def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str, use_cache: bool):
+        pipeline_calls.append(raw_input)
+        return {
+            "success": True,
+            "proof_tactics": "norm_num",
+            "tool_trace": [{"type": "tool_call", "tool_name": "apply_tactic"}],
+            "tactic_calls": [{"tactic": "norm_num", "successful": True}],
+        }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        claims_path = Path(tmpdir) / "claims.jsonl"
+        output_dir = Path(tmpdir) / "outputs"
+        claims_path.write_text(
+            "\n".join(json.dumps(item) for item in claims) + "\n",
+            encoding="utf-8",
+        )
+
+        argv = [
+            "run_uncharted_evals.py",
+            str(claims_path),
+            "--output-dir",
+            str(output_dir),
+        ]
+        with (
+            patch.object(run_uncharted_evals, "formalize_claim", side_effect=fake_formalize_claim),
+            patch.object(run_uncharted_evals, "run_pipeline", side_effect=fake_run_pipeline),
+            patch.object(sys, "argv", argv),
+            patch.dict("os.environ", {"MISTRAL_API_KEY": "test-key"}, clear=False),
+        ):
+            exit_code = run_uncharted_evals.main()
+
+        assert exit_code == 0
+        assert pipeline_calls == ["1 + 1 = 2"]
+
+        result_file = next(output_dir.glob("*/results.json"))
+        payload = json.loads(result_file.read_text(encoding="utf-8"))
+        expectation_summary = payload["summary"]["expectation_summary"]
+        assert expectation_summary["verify"]["rate"] == 1.0
+        assert expectation_summary["formalize"]["rate"] == 1.0
+        assert expectation_summary["fail_gracefully"]["rate"] == 1.0
+        assert payload["summary"]["proof_stage_cases"] == 1
+        assert payload["summary"]["formalization_cases"] == 3

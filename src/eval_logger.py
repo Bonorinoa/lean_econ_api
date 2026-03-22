@@ -2,7 +2,8 @@
 eval_logger.py
 
 Append-only structured logging for every pipeline run.
-Writes one JSON object per line to logs/runs.jsonl.
+Writes one JSON object per line to `logs/runs.jsonl` by default, or to
+`${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR` is set.
 
 This is your evaluation dataset — never raises, never breaks the pipeline.
 
@@ -12,19 +13,29 @@ Usage:
 """
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
-LOGS_DIR = PROJECT_ROOT / "logs"
-LOG_FILE = LOGS_DIR / "runs.jsonl"
 LOG_SCHEMA_VERSION = 2
+
+
+def _state_dir() -> Path:
+    configured = os.environ.get("LEANECON_STATE_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return PROJECT_ROOT
+
+
+LOGS_DIR = _state_dir() / "logs"
+LOG_FILE = LOGS_DIR / "runs.jsonl"
 
 
 def log_run(run_data: dict) -> None:
     """
-    Append a run record to logs/runs.jsonl.
+    Append a run record to the configured JSONL run log.
 
     Never raises — all errors are silently swallowed so logging never
     interrupts the pipeline.

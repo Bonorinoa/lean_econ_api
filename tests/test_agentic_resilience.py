@@ -17,6 +17,7 @@ import agentic_prover
 from agentic_prover import (
     CIRCUIT_BREAKER_WARNING,
     DUPLICATE_READ_ONLY_WARNING,
+    LOCAL_FAST_PATH_MAX_ATTEMPTS,
     SEARCH_BUDGET_WARNING,
     SEARCH_PRECONDITION_WARNING,
     AgenticToolTracker,
@@ -25,6 +26,7 @@ from agentic_prover import (
     _install_guarded_execute_function_calls,
     _is_code_3001_error,
     _is_retryable_run_error,
+    _local_fast_path_tactics,
     _make_apply_tactic,
     _parse_diagnostic_payload,
     _prune_agentic_tools,
@@ -128,9 +130,11 @@ theorem trivial_truth : True := by
 """
     controller = ProofFileController(working_file=tmp_path / "LocalFastPath.lean")
     controller.initialize(theorem)
+    check_axioms_calls: list[bool] = []
 
     def fake_verify(lean_code: str, filename=None, check_axioms: bool = True) -> dict:
         del filename
+        check_axioms_calls.append(check_axioms)
         if "aesop" in lean_code:
             return {
                 "success": True,
@@ -162,6 +166,69 @@ theorem trivial_truth : True := by
     assert result["mcp_enabled"] is False
     assert result["proof_tactics"] == "aesop"
     assert result["tactic_calls"][0]["successful"] is True
+    assert check_axioms_calls == [False]
+
+
+def test_local_fast_path_prioritizes_norm_num_for_numeric_arithmetic() -> None:
+    theorem = """\
+import Mathlib
+
+theorem one_plus_one : 1 + 1 = 2 := by
+  sorry
+"""
+
+    tactics = _local_fast_path_tactics(theorem)
+
+    assert tactics[0] == "norm_num"
+    assert "omega" in tactics
+    assert tactics.index("norm_num") < tactics.index("aesop")
+
+
+def test_local_fast_path_respects_compile_budget(monkeypatch, tmp_path) -> None:
+    theorem = """\
+import Mathlib
+
+theorem one_plus_one : 1 + 1 = 2 := by
+  sorry
+"""
+    controller = ProofFileController(working_file=tmp_path / "LocalFastPathBudget.lean")
+    controller.initialize(theorem)
+
+    attempted_tactics: list[str] = []
+
+    def fake_verify(lean_code: str, filename=None, check_axioms: bool = True) -> dict:
+        del filename, check_axioms
+        if "norm_num" in lean_code:
+            attempted_tactics.append("norm_num")
+        elif "omega" in lean_code:
+            attempted_tactics.append("omega")
+        elif "ring_nf" in lean_code:
+            attempted_tactics.append("ring_nf")
+        elif "ring" in lean_code:
+            attempted_tactics.append("ring")
+        else:
+            attempted_tactics.append("other")
+        return {
+            "success": False,
+            "errors": ["no tactic worked"],
+            "warnings": [],
+            "output_lean": None,
+            "axiom_info": None,
+        }
+
+    monkeypatch.setattr(agentic_prover, "verify", fake_verify)
+
+    result = _try_local_tactic_fast_path(
+        theorem,
+        controller,
+        on_log=None,
+        start_time=time.time(),
+    )
+
+    assert result is None
+    assert len(attempted_tactics) == LOCAL_FAST_PATH_MAX_ATTEMPTS
+    assert attempted_tactics == ["norm_num", "omega", "ring_nf", "ring"]
+    assert controller.current_tactic_block == "sorry"
 
 
 def test_local_fast_path_restores_initial_state_on_failure(monkeypatch, tmp_path) -> None:

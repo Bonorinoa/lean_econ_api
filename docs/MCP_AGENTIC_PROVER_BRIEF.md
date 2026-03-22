@@ -12,6 +12,8 @@ authority.
 ### What is complete
 
 - `lean-lsp-mcp` launches successfully from `lean_workspace/`
+- the MCP launcher now prefers a locally installed `lean-lsp-mcp` binary and
+  falls back to `uvx lean-lsp-mcp` only for development environments
 - raw MCP diagnostics and goal queries succeed through `src/mcp_smoke_test.py`
 - `src/agentic_prover.py` runs Leanstral through Mistral's `run_async`
 - `src/pipeline.py` is agentic-only and returns normalized prover trace data
@@ -54,6 +56,7 @@ All passing cases above were verified by the Lean compiler on isolated files via
 - Leanstral drives the proving loop through `run_async`; Python does not micromanage tactic selection.
 - `apply_tactic` is intentionally lightweight and only edits the working file.
 - MCP tools are used for in-loop diagnostics and goal inspection.
+- the deterministic fast path no longer performs a second axiom-info pass before returning success, and MCP helper calls now time out instead of hanging indefinitely
 - The prover now persists ordered deep traces with parsed diagnostic payloads so retries can be analyzed offline.
 - `lake env lean` on isolated files is the final source of truth for proof
   acceptance.
@@ -67,6 +70,13 @@ All passing cases above were verified by the Lean compiler on isolated files via
 - Mathlib version: 4.28.0
 - MCP launcher: `./scripts/run_lean_lsp_mcp.sh --transport stdio`
 - MCP smoke test: `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`
+
+## Validation Workflow
+
+- Use lint, non-live pytest, Lean/MCP smoke checks, and local Docker builds as
+  the release gate.
+- Treat Railway checks as post-deploy confirmation only; the live instance may
+  still be serving an older image while a rebuild is in flight.
 
 ## Known Limitations
 
@@ -96,8 +106,11 @@ All passing cases above were verified by the Lean compiler on isolated files via
 # Semantic alignment grading
 ./leanEconAPI_venv/bin/python scripts/semantic_grader.py --claim "1 + 1 = 2" --theorem-file docs/legacy_examples/even_form_pass.lean
 
-# Advanced pass@k evaluation harness
-./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py <claims.jsonl> --pass-k 5
+# Staged benchmark harness (cheap default)
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py tests/fixtures/claims/test_claims.jsonl --profile ci
+
+# Frontier probe (expensive, explicit)
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py tests/fixtures/claims/uncharted_claims.jsonl --profile frontier --pass-k 1 --limit 2
 
 # FastAPI app
 uvicorn src.api:app --host 0.0.0.0 --port 8000

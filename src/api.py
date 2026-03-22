@@ -23,6 +23,7 @@ import json
 import logging
 import queue
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -71,7 +72,9 @@ Recommended client workflow:
 3. Optionally let a user or agent edit the theorem text.
 4. `POST /api/v1/verify` with the formalized theorem — returns HTTP 202 and a
    `job_id`. Poll `GET /api/v1/jobs/{job_id}` or stream
-   `GET /api/v1/jobs/{job_id}/stream` until the job finishes.
+   `GET /api/v1/jobs/{job_id}/stream` until the job finishes. Polling also
+   returns additive observability metadata such as queue/start/finish timestamps
+   and the latest reported pipeline stage.
 5. Use `POST /api/v1/explain` for natural-language summaries of outcomes.
 6. Use `GET /api/v1/metrics` and `GET /api/v1/cache/stats` for operational insight.
 
@@ -99,12 +102,26 @@ OPENAPI_TAGS = [
     },
 ]
 
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    """Remove orphaned agentic temp files before the API starts serving jobs."""
+    cleaned = _cleanup_orphaned_agentic_temp_files()
+    logger.info(
+        "Startup cleanup removed %s orphaned agentic temp file(s) from %s",
+        cleaned,
+        LEAN_SOURCE_DIR,
+    )
+    yield
+
+
 app = FastAPI(
     title="LeanEcon API",
     version="1.0.0",
     summary="Lean-backed theorem verification API",
     description=API_DESCRIPTION,
     openapi_tags=OPENAPI_TAGS,
+    lifespan=app_lifespan,
 )
 
 app.add_middleware(
@@ -127,18 +144,6 @@ def _cleanup_orphaned_agentic_temp_files() -> int:
         except FileNotFoundError:
             continue
     return cleaned
-
-
-@app.on_event("startup")
-def cleanup_orphaned_agentic_temp_files() -> None:
-    """Remove orphaned agentic temp files before the API starts serving jobs."""
-    cleaned = _cleanup_orphaned_agentic_temp_files()
-    logger.info(
-        "Startup cleanup removed %s orphaned agentic temp file(s) from %s",
-        cleaned,
-        LEAN_SOURCE_DIR,
-    )
-
 
 # ---------------------------------------------------------------------------
 # Request models
@@ -453,6 +458,24 @@ class JobStatusResponse(BaseModel):
     status: str = Field(description="queued | running | completed | failed")
     result: VerifyResponse | None = None
     error: str | None = None
+    queued_at: str | None = Field(
+        default=None,
+        description="UTC timestamp when the job was queued.",
+    )
+    started_at: str | None = Field(
+        default=None, description="UTC timestamp when the job entered running state."
+    )
+    finished_at: str | None = Field(
+        default=None, description="UTC timestamp when the job completed or failed."
+    )
+    last_progress_at: str | None = Field(
+        default=None,
+        description="UTC timestamp of the latest progress event observed for the job.",
+    )
+    current_stage: str | None = Field(
+        default=None,
+        description="Most recent pipeline stage reported for the job.",
+    )
 
 
 class ExplainResponse(BaseModel):
@@ -588,11 +611,13 @@ def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
 
     def on_log(entry: dict[str, Any]) -> None:
         """Forward pipeline log entries to SSE subscribers."""
+        stage = str(entry.get("stage", ""))
+        job_store.record_progress(job_id, stage)
         job_store.publish(
             job_id,
             {
                 "type": "progress",
-                "stage": str(entry.get("stage", "")),
+                "stage": stage,
                 "message": str(entry.get("message", "")),
                 "status": str(entry.get("status", "done")),
             },
@@ -791,6 +816,11 @@ def get_job_status(job_id: str) -> JobStatusResponse:
         status=job["status"],
         result=result,
         error=job.get("error"),
+        queued_at=job.get("queued_at"),
+        started_at=job.get("started_at"),
+        finished_at=job.get("finished_at"),
+        last_progress_at=job.get("last_progress_at"),
+        current_stage=job.get("current_stage"),
     )
 
 
@@ -929,7 +959,8 @@ def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
     summary="Pipeline run metrics",
     description=(
         "Aggregate verification metrics from the append-only JSONL evaluation "
-        "log at `logs/runs.jsonl`."
+        "log pointed to by `LEANECON_STATE_DIR/logs/runs.jsonl` when configured, "
+        "or `logs/runs.jsonl` by default."
     ),
 )
 def metrics() -> MetricsResponse:

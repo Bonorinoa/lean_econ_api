@@ -41,7 +41,9 @@ Every frontend should implement this sequence:
 >
 > **Also important:** `/verify` is queue-based and concurrency-safe. LeanEcon no
 > longer routes verification through a shared `LeanEcon/Proof.lean`; proving and
-> final verification use isolated per-run temp files.
+> final verification use isolated per-run temp files. The job-status response
+> now also includes additive observability metadata such as queue/start/finish
+> timestamps and the latest reported pipeline stage.
 
 ## Endpoint reference
 
@@ -201,6 +203,11 @@ Returns a job envelope. The final verify payload lives under `result`.
 {
   "job_id": "abc123-def456",
   "status": "completed",
+  "queued_at": "2026-03-22T19:00:00+00:00",
+  "started_at": "2026-03-22T19:00:01+00:00",
+  "finished_at": "2026-03-22T19:00:35+00:00",
+  "last_progress_at": "2026-03-22T19:00:32+00:00",
+  "current_stage": "agentic_verify",
   "result": {
     "success": true,
     "phase": "verified",
@@ -256,6 +263,10 @@ Generates natural language explanation of any pipeline result. Can accept verifi
 - `GET /api/v1/cache/stats` → `{"size": N}`
 - `DELETE /api/v1/cache` → Clear verified result cache
 
+Runtime state lives in repo-local paths by default. When `LEANECON_STATE_DIR`
+is set, the JSONL run log moves to `${LEANECON_STATE_DIR}/logs/runs.jsonl` and
+the verified-result cache moves to `${LEANECON_STATE_DIR}/data/verified_cache.json`.
+
 ## Critical integration patterns
 
 ### The async verify pattern
@@ -292,6 +303,7 @@ When verification succeeds, check `axiom_info`:
 - `sound: true` + `has_sorry_ax: false` = fully verified from axioms
 - `has_sorry_ax: true` = proof is NOT sound despite compilation (show warning)
 - `nonstandard_axioms` lists anything beyond the standard three (`propext`, `Classical.choice`, `Quot.sound`)
+- `axiom_info: null` means axiom metadata was unavailable or intentionally skipped; treat it as "not available," not as verification failure
 
 ### Error codes
 
@@ -314,7 +326,11 @@ Every response includes `error_code` for programmatic error handling:
 
 ### runs.jsonl — the evaluation log
 
-Every verification run appends a structured JSON line to `logs/runs.jsonl`. This is the source of truth for all metrics and evaluation. Each entry includes: claim text, classification result, formalization result, verification result, tool call counts, timing, errors, and axiom info.
+Every verification run appends a structured JSON line to `logs/runs.jsonl` by
+default, or to `${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR`
+is set. This is the source of truth for metrics and offline evaluation. Each
+entry includes: claim text, classification result, formalization result,
+verification result, tool call counts, timing, errors, and axiom info.
 
 The `/api/v1/metrics` endpoint aggregates this log into summary statistics. For deeper analysis, process `runs.jsonl` directly.
 
@@ -328,56 +344,85 @@ The data flywheel works like this:
 4. **Improve prompts** — the classifier and formalizer system prompts in `formalizer.py`
 5. **Re-run and compare** — track metrics across iterations
 
-For dashboards: fetch `/api/v1/metrics` for aggregate stats, parse `runs.jsonl` for per-claim drill-down.
+For dashboards: fetch `/api/v1/metrics` for aggregate stats, parse the
+configured JSONL run log for per-claim drill-down, and use the additive job
+metadata from `GET /api/v1/jobs/{job_id}` to show queue time and current stage.
 
 ## Evaluation harness
 
 ### run_uncharted_evals.py
 
-The offline evaluation script runs claims from a JSONL input file through the full pipeline with `pass@k` verification:
+The offline evaluation script is now stage-aware. It can mix:
+
+- formalization-only cases
+- prover-only cases from `theorem_code` / `preformalized_theorem`
+- full end-to-end cases
+
+Cheap day-to-day benchmark:
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
+  tests/fixtures/claims/test_claims.jsonl \
+  --profile ci
+```
+
+Explicit frontier probe:
 
 ```bash
 ./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
   tests/fixtures/claims/uncharted_claims.jsonl \
+  --profile frontier \
   --pass-k 1 \
   --limit 2
 ```
 
-Treat this as a frontier-diagnostics harness, not the default CI benchmark. A
-partial rerun on March 22, 2026 across 7 frontier attempts on 2 hard claims
-produced a `0.978` tool-call waste ratio, repeated Lean LSP startup timeouts,
-and one Mistral `3051` input-too-large failure. For everyday iteration:
+Treat `uncharted_claims.jsonl` as a frontier-diagnostics harness, not the
+default CI benchmark. A partial rerun on March 22, 2026 across 7 frontier
+attempts on 2 hard claims produced a `0.978` tool-call waste ratio, repeated
+Lean LSP startup timeouts, and one Mistral `3051` input-too-large failure.
 
-1. Use `--pass-k 1` unless you are explicitly studying stochastic retry behavior.
-2. Use `--limit 1` or `--limit 2` while tuning prompts or prover settings.
-3. Run `scripts/analyze_traces.py` immediately afterward to inspect waste ratio,
-   blocked calls, and dominant failure modes.
-4. Do not treat a single long `uncharted` run as the sole health signal for the API.
+**Profiles:**
+- `ci` — cheap default; `pass@1`, no semantic grading, dataset-driven staging
+- `core` — same staged flow, but adds semantic grading
+- `frontier` — restores high-cost end-to-end probing with retry-friendly defaults
 
-**Input format** (`uncharted_claims.jsonl`):
+**Dataset behavior in `dataset` stage mode:**
+- `expect: verify` runs formalization plus proving
+- `expect: formalize` stops after formalization
+- `expect: fail_gracefully` also stops after formalization and checks harness stability
+- `theorem_code` / `preformalized_theorem` triggers prover-only evaluation
+- unlabeled raw-claim rows still default to full end-to-end evaluation
+
+**Input format**:
 ```json
-{"id": "dynamic_001", "raw_claim": "The Bellman operator is a contraction mapping under discounting", "tags": ["dynamic_programming", "fixed_point"]}
-{"id": "growth_001", "raw_claim": "Solow-Swan model has a unique steady state under Inada conditions", "tags": ["growth", "fixed_point"]}
+{"id": "arith_001", "raw_claim": "1 + 1 = 2", "expect": "verify", "tags": ["tier1"]}
+{"id": "calc_001", "raw_claim": "A continuous function on [a,b] attains its maximum", "expect": "formalize", "tags": ["tier2"]}
+{"id": "proof_001", "raw_claim": "1 + 1 = 2", "theorem_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry", "eval_stage": "prove"}
 ```
 
+**Output artifacts:**
+- `case_records.jsonl` — one record per completed benchmark case
+- `results.json` — full run summary plus embedded case records
+- `report.md` — readable markdown report
+
 **Output metrics (per claim):**
+- `evaluation_stage` — `formalization`, `prove`, or `e2e`
+- `expected_outcome` / `expectation_met` — benchmark-target labeling for honest staged scoring
 - `formalization_success` — did the formalizer produce Lean that compiles with `sorry`?
-- `formalization_attempts` — how many retries (max 3)
-- `pass_k_success` — did at least one of k proving attempts verify?
-- `semantic_score` — LLM-graded fidelity of formalization to original claim (1-5)
-- `semantic_verdict` — qualitative assessment
-- `tool_call_efficiency` — successful tool calls / total tool calls
+- `pass_k_success` — did at least one proving attempt verify?
+- `semantic_score` — LLM-graded fidelity of formalization to original claim (1-5) when enabled
+- `tool_call_efficiency` — successful tactic applications / total tool calls
 - `tool_call_waste_ratio` — complement of efficiency, useful for spotting expensive loops
 - `blocked_tool_calls` — calls cut off by search budgets, duplicate-read checks, or loop guards
 - `tactic_depth` — proof complexity measure
-- `trivialization_flags` — detected semantic simplifications
 
 **Aggregate metrics:**
-- `Formalization Robustness` — fraction of claims that formalize successfully
-- `Agentic Proving Power` — fraction verified at pass@k
+- `Formalization Robustness` — fraction of cases that ran formalization and succeeded
+- `Agentic Proving Power` — fraction of proof-stage cases verified at pass@k
+- `Expectation Benchmark Score` — fraction of labeled benchmark targets met
 - `Semantic Alignment` — average semantic score across graded claims
-- `Tool Call Efficiency` — global ratio
-- `Global Error Frequency` — most common Lean errors across all runs
+- `Tool Call Efficiency` / `Tool Call Waste Ratio` — global proof-stage efficiency measures
+- `Global Error Frequency` — most common Lean errors across proof attempts
 
 ### Designing test claims
 
@@ -518,6 +563,8 @@ For test suites, support batch submission:
 - **The Leanstral model is a labs endpoint** — not a permanent production API. Plan for prover backend swaps.
 - **Each verification run takes 30-120 seconds.** Plan UX accordingly.
 - **Railway Hobby plan.** Resource limits untested under concurrent load. Lean + Mathlib is memory-intensive.
+- **Deploy latency.** Railway rebuilds can take 10+ minutes, so validate with
+  local CI and Docker first, then treat Railway smoke checks as confirmation.
 
 ## CORS
 

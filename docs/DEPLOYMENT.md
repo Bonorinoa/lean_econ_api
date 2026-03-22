@@ -6,6 +6,10 @@ jobs use isolated per-run temp files compiled with `lake env lean`.
 
 ## Docker
 
+Treat Docker as the primary pre-deploy validation target. Railway rebuilds take
+long enough that they should be used for confirmation after local validation,
+not as the inner-loop test environment.
+
 Build the image from the project root:
 
 ```bash
@@ -15,7 +19,10 @@ docker build -t leanecon .
 Run the app with your Mistral API key:
 
 ```bash
-docker run -p 8000:8000 -e MISTRAL_API_KEY=your_key_here leanecon
+docker run -p 8000:8000 \
+  -e MISTRAL_API_KEY=your_key_here \
+  -v "$(pwd)/.state:/app/state" \
+  leanecon
 ```
 
 Then open `http://localhost:8000/docs`. A lightweight health endpoint is
@@ -26,6 +33,8 @@ available at `http://localhost:8000/health`.
 - Python 3.11
 - elan + Lean 4.28.0
 - the repo-owned `scripts/run_lean_lsp_mcp.sh` launcher for `lean-lsp-mcp`
+- a Docker-installed `lean-lsp-mcp` binary, so runtime startup does not depend
+  on fetching the tool from PyPI
 - Mathlib cache bootstrap via `lake exe cache get`
 - A prebuilt `lean_workspace/` via `lake build`
 - Python dependencies from `requirements.txt`
@@ -34,9 +43,12 @@ available at `http://localhost:8000/health`.
 ## Runtime notes
 
 - `MISTRAL_API_KEY` must be provided at runtime.
+- `LEANECON_STATE_DIR` defaults to `/app/state` inside the image.
 - The image does not bake a real `.env` file into the container.
 - The image exposes port `8000` and starts `uvicorn src.api:app`.
 - Verification still happens locally inside the container with the Lean toolchain.
+- Mount `/app/state` if you want the verified-result cache and JSONL run log to
+  persist across container restarts.
 - The image build still runs `lake build` to warm the workspace and precompile
   the default `LeanEcon` library target.
 - The first image build can take a while because Lean and Mathlib artifacts must

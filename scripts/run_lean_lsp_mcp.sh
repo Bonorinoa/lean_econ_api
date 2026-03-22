@@ -18,4 +18,9 @@ export XDG_DATA_HOME="${RUNTIME_ROOT}/data"
 export XDG_STATE_HOME="${RUNTIME_ROOT}/state"
 export UV_CACHE_DIR="${RUNTIME_ROOT}/cache/uv"
 
+if command -v lean-lsp-mcp >/dev/null 2>&1; then
+  exec lean-lsp-mcp "$@"
+fi
+
+echo "lean-lsp-mcp binary not found on PATH; falling back to uvx lean-lsp-mcp" >&2
 exec uvx lean-lsp-mcp "$@"

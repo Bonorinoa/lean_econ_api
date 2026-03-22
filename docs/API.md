@@ -152,6 +152,11 @@ Response fields:
 - `status`: `queued`, `running`, `completed`, or `failed`
 - `result`: final verify payload when completed
 - `error`: exception text when failed
+- `queued_at`: UTC timestamp when the job was accepted
+- `started_at`: UTC timestamp when the background worker started it
+- `finished_at`: UTC timestamp when the job completed or failed
+- `last_progress_at`: UTC timestamp of the latest progress event observed
+- `current_stage`: most recent pipeline stage reported for the job
 
 Important fields inside `result`:
 
@@ -173,8 +178,9 @@ Important fields inside `result`:
 - `explanation_generated`: whether the explanation was model-generated
 - `error_code`: machine-readable verification outcome
 
-`axiom_info` is only present when the final verification succeeded and axiom
-checking was available. Its shape is:
+`axiom_info` is best-effort. Cache hits, local fast-path successes, or timed-out
+MCP axiom checks may leave it as `null` even when verification succeeds. When
+present, its shape is:
 
 ```json
 {
@@ -199,8 +205,11 @@ Observability notes:
   `lean_diagnostic_messages`
 - `tactic_calls` now record retry-triggering Lean kernel errors and whether the
   following diagnostic check succeeded
-- `logs/runs.jsonl` also persists `original_raw_claim` so offline evaluation can
-  score semantic alignment without needing a separate artifact store
+- the job envelope now includes additive timestamps plus `current_stage`, which
+  makes a long-lived `running` job debuggable without changing the existing
+  verify payload shape
+- the JSONL run log lives at `logs/runs.jsonl` by default, or at
+  `${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR` is set
 
 ## SSE job streaming
 
@@ -295,7 +304,8 @@ Response:
 ## Metrics
 
 `GET /api/v1/metrics` aggregates metrics from the append-only evaluation log at
-`logs/runs.jsonl`.
+`logs/runs.jsonl` by default, or `${LEANECON_STATE_DIR}/logs/runs.jsonl` when
+`LEANECON_STATE_DIR` is configured.
 
 Example response:
 
@@ -315,6 +325,9 @@ Example response:
 
 This endpoint is meant for lightweight development-time visibility, not a full
 metrics stack.
+
+For release gating, prefer local lint, non-live pytest, Lean/MCP smoke checks,
+and local Docker validation before trusting any Railway response.
 
 ## Offline evaluation scripts
 
@@ -347,30 +360,44 @@ JSON with `score`, `verdict`, `rationale`, and `trivialization_flags`.
 ### Uncharted evaluations
 
 ```bash
-./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py <claims.jsonl> --pass-k 1 --limit 2
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
+  tests/fixtures/claims/test_claims.jsonl \
+  --profile ci
 ```
 
 Input JSONL records should include:
 
 - `id`: stable case identifier
-- `raw_claim`: advanced natural-language claim
+- `raw_claim`: natural-language claim
+- optional `expect`: `verify`, `formalize`, or `fail_gracefully`
+- optional `eval_stage`: `formalization`, `prove`, or `e2e`
+- optional `theorem_code` / `preformalized_theorem` for prover-only cases
 - optional `preamble_names`, `tags`, and `notes`
 
-The runner bypasses `/api/v1/classify`, calls `formalize_claim(...)` directly,
-then retries `run_pipeline(...)` up to `pass@k` with `use_cache=False`. It
-writes both `results.json` and `report.md` under `outputs/uncharted_evals/`.
+The runner is stage-aware:
+
+- `expect: verify` runs formalization plus proving
+- `expect: formalize` and `expect: fail_gracefully` stop after formalization
+- `theorem_code` / `preformalized_theorem` runs prover-only evaluation
+- unlabeled raw-claim cases still default to full end-to-end evaluation
+
+It writes `case_records.jsonl`, `results.json`, and `report.md` under
+`outputs/uncharted_evals/`.
 
 This harness is currently a frontier-diagnostics tool, not the main release or
 CI benchmark. A partial rerun on March 22, 2026 across 7 frontier attempts on 2
 hard claims produced a `0.978` tool-call waste ratio, repeated Lean LSP startup
-timeouts, and one Mistral `3051` input-too-large failure. Use it to study
-failure modes on difficult claims, but prefer smaller staged evals for routine
-health checks:
+timeouts, and one Mistral `3051` input-too-large failure. Use explicit profiles:
 
-- formalization-only checks for `formalize_claim(...)`
-- prover-only checks on preformalized theorem stubs
-- MCP infrastructure smoke tests
-- small end-to-end regression sets with `pass@1`
+- `--profile ci` for cheap day-to-day regression tracking
+- `--profile core` when you also want semantic grading
+- `--profile frontier` for expensive research probes on hard claims
+
+The summary metrics are now stage-aware too:
+
+- `Formalization Robustness` only counts cases that actually ran formalization
+- `Agentic Proving Power` only counts proof-stage cases
+- `Expectation Benchmark Score` reports how often labeled benchmark targets were met
 
 ## Cache endpoints
 
@@ -391,6 +418,23 @@ Use these operational endpoints to inspect or clear the verified-result cache:
   "status": "cleared"
 }
 ```
+
+The verified-result cache lives at `data/verified_cache.json` by default, or at
+`${LEANECON_STATE_DIR}/data/verified_cache.json` when `LEANECON_STATE_DIR` is
+set.
+
+## Validation Workflow
+
+Use local checks as the release gate before considering a Railway rebuild:
+
+- `ruff check src/ tests/ scripts/`
+- `pytest -m "not live and not slow"`
+- local Lean/MCP smoke checks such as `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`
+- `docker build .`
+- local container `curl` checks against `/health`, `/api/v1/metrics`, and `/api/v1/cache/stats`
+
+Railway `curl` checks are useful only after a deliberate deploy, because the
+currently deployed instance may still be serving an older build.
 
 ## Health
 

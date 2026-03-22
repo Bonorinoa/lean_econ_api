@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import production_smoke
@@ -92,6 +93,33 @@ def test_request_error_is_recorded(monkeypatch) -> None:
     assert result["formalize"]["ok"] is False
     assert result["formalize"]["error_type"] == "ReadTimeout"
     assert result["verify"]["status_code"] == 202
+
+
+def test_request_falls_back_to_curl(monkeypatch) -> None:
+    class _ConnectErrorClient(_FakeClient):
+        def request(self, method: str, url: str, json: dict | None = None):
+            raise production_smoke.httpx.ConnectError("dns failure")
+
+    def fake_run(command, capture_output, text, check):
+        assert command[:6] == ["curl", "-L", "--max-time", "30", "-sS", "-X"]
+        assert command[6] == "GET"
+        assert command[7] == "https://example.test/health"
+        return CompletedProcess(command, 0, stdout='{"status":"ok"}\nHTTP_STATUS:200', stderr="")
+
+    monkeypatch.setattr(production_smoke.httpx, "Client", _ConnectErrorClient)
+    monkeypatch.setattr(production_smoke.subprocess, "run", fake_run)
+
+    with _ConnectErrorClient() as client:
+        result = production_smoke._request(
+            client,
+            "GET",
+            "https://example.test/health",
+            timeout=30.0,
+        )
+
+    assert result["status_code"] == 200
+    assert result["response_body"] == {"status": "ok"}
+    assert result["transport"] == "curl_fallback"
 
 
 def test_main_writes_json_output(tmp_path, monkeypatch, capsys) -> None:

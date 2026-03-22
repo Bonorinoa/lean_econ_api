@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import tempfile
 import threading
 from pathlib import Path
@@ -122,3 +123,14 @@ def test_corrupted_cache_file() -> None:
         cache_file.write_text("not valid json", encoding="utf-8")
         cache = ResultCache(cache_file=cache_file)
         assert cache.size == 0  # Gracefully recovers
+
+
+def test_default_cache_path_respects_state_dir(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LEANECON_STATE_DIR", str(tmp_path))
+
+    import result_cache as result_cache_module
+
+    importlib.reload(result_cache_module)
+
+    cache = result_cache_module.ResultCache()
+    assert cache._cache_file == tmp_path / "data" / "verified_cache.json"

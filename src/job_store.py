@@ -6,8 +6,13 @@ import queue
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class JobStatus(str, Enum):
@@ -28,12 +33,18 @@ class JobStore:
 
     def create(self, request_data: dict | None = None) -> str:
         job_id = str(uuid.uuid4())
+        queued_at = _utc_now()
         with self._lock:
             self._jobs[job_id] = {
                 "status": JobStatus.QUEUED,
                 "result": None,
                 "error": None,
                 "created_at": time.time(),
+                "queued_at": queued_at,
+                "started_at": None,
+                "finished_at": None,
+                "last_progress_at": None,
+                "current_stage": None,
                 "request": request_data,
             }
         return job_id
@@ -42,6 +53,16 @@ class JobStore:
         with self._lock:
             if job_id in self._jobs:
                 self._jobs[job_id]["status"] = status
+                if status == JobStatus.RUNNING and self._jobs[job_id]["started_at"] is None:
+                    self._jobs[job_id]["started_at"] = _utc_now()
+
+    def record_progress(self, job_id: str, stage: str | None) -> None:
+        with self._lock:
+            if job_id not in self._jobs:
+                return
+            self._jobs[job_id]["last_progress_at"] = _utc_now()
+            if stage:
+                self._jobs[job_id]["current_stage"] = stage
 
     def subscribe(self, job_id: str) -> queue.Queue[dict[str, Any]]:
         """Create a bounded subscriber queue for a job's SSE events."""
@@ -78,6 +99,9 @@ class JobStore:
             if job_id in self._jobs:
                 self._jobs[job_id]["status"] = JobStatus.COMPLETED
                 self._jobs[job_id]["result"] = result
+                if self._jobs[job_id]["started_at"] is None:
+                    self._jobs[job_id]["started_at"] = _utc_now()
+                self._jobs[job_id]["finished_at"] = _utc_now()
         self.publish(
             job_id,
             {
@@ -91,6 +115,9 @@ class JobStore:
             if job_id in self._jobs:
                 self._jobs[job_id]["status"] = JobStatus.FAILED
                 self._jobs[job_id]["error"] = error
+                if self._jobs[job_id]["started_at"] is None:
+                    self._jobs[job_id]["started_at"] = _utc_now()
+                self._jobs[job_id]["finished_at"] = _utc_now()
         self.publish(
             job_id,
             {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,28 +47,21 @@ def _request(
     url: str,
     *,
     json_body: dict[str, Any] | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     started_at = _utc_now()
     start = time.perf_counter()
     try:
         response = client.request(method, url, json=json_body)
     except httpx.HTTPError as exc:
-        latency_ms = round((time.perf_counter() - start) * 1000, 1)
-        ended_at = _utc_now()
-        return {
-            "method": method,
-            "url": url,
-            "started_at_utc": started_at,
-            "ended_at_utc": ended_at,
-            "latency_ms": latency_ms,
-            "status_code": None,
-            "ok": False,
-            "request_json": json_body,
-            "response_body": None,
-            "response_preview": None,
-            "error_type": type(exc).__name__,
-            "error_message": str(exc),
-        }
+        return _request_via_curl(
+            method=method,
+            url=url,
+            json_body=json_body,
+            timeout=timeout,
+            started_at=started_at,
+            original_error=exc,
+        )
 
     latency_ms = round((time.perf_counter() - start) * 1000, 1)
     ended_at = _utc_now()
@@ -90,6 +84,92 @@ def _request(
         "response_preview": _preview_payload(response_body),
         "error_type": None,
         "error_message": None,
+    }
+
+
+def _request_via_curl(
+    *,
+    method: str,
+    url: str,
+    json_body: dict[str, Any] | None,
+    timeout: float,
+    started_at: str,
+    original_error: Exception,
+) -> dict[str, Any]:
+    start = time.perf_counter()
+    max_time = max(1, int(round(timeout)))
+    command = [
+        "curl",
+        "-L",
+        "--max-time",
+        str(max_time),
+        "-sS",
+        "-X",
+        method,
+        url,
+        "-w",
+        "\nHTTP_STATUS:%{http_code}",
+    ]
+    if json_body is not None:
+        command.extend(
+            [
+                "-H",
+                "Content-Type: application/json",
+                "--data",
+                json.dumps(json_body, ensure_ascii=False),
+            ]
+        )
+
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    latency_ms = round((time.perf_counter() - start) * 1000, 1)
+    ended_at = _utc_now()
+
+    if completed.returncode != 0:
+        stderr_text = completed.stderr.strip()
+        message = str(original_error)
+        if stderr_text:
+            message = f"{message}; curl fallback failed: {stderr_text}"
+        return {
+            "method": method,
+            "url": url,
+            "started_at_utc": started_at,
+            "ended_at_utc": ended_at,
+            "latency_ms": latency_ms,
+            "status_code": None,
+            "ok": False,
+            "request_json": json_body,
+            "response_body": None,
+            "response_preview": None,
+            "error_type": type(original_error).__name__,
+            "error_message": message,
+            "transport": "curl_fallback_failed",
+        }
+
+    body_text, _, status_text = completed.stdout.rpartition("\nHTTP_STATUS:")
+    status_code = None
+    if status_text.strip().isdigit():
+        status_code = int(status_text.strip())
+
+    body_text = body_text.strip()
+    try:
+        response_body: Any = json.loads(body_text) if body_text else None
+    except json.JSONDecodeError:
+        response_body = body_text
+
+    return {
+        "method": method,
+        "url": url,
+        "started_at_utc": started_at,
+        "ended_at_utc": ended_at,
+        "latency_ms": latency_ms,
+        "status_code": status_code,
+        "ok": bool(status_code and 200 <= status_code < 300),
+        "request_json": json_body,
+        "response_body": response_body,
+        "response_preview": _preview_payload(response_body),
+        "error_type": None,
+        "error_message": None,
+        "transport": "curl_fallback",
     }
 
 
@@ -137,22 +217,29 @@ def run_smoke(
         "started_at_utc": _utc_now(),
     }
 
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        records["health"] = _request(client, "GET", f"{base_url}/health")
-        records["openapi"] = _request(client, "GET", f"{base_url}/openapi.json")
-        records["metrics"] = _request(client, "GET", f"{base_url}/api/v1/metrics")
-        records["cache_stats"] = _request(client, "GET", f"{base_url}/api/v1/cache/stats")
+    with httpx.Client(timeout=timeout, follow_redirects=True, trust_env=False) as client:
+        records["health"] = _request(client, "GET", f"{base_url}/health", timeout=timeout)
+        records["openapi"] = _request(client, "GET", f"{base_url}/openapi.json", timeout=timeout)
+        records["metrics"] = _request(client, "GET", f"{base_url}/api/v1/metrics", timeout=timeout)
+        records["cache_stats"] = _request(
+            client,
+            "GET",
+            f"{base_url}/api/v1/cache/stats",
+            timeout=timeout,
+        )
         records["classify"] = _request(
             client,
             "POST",
             f"{base_url}/api/v1/classify",
             json_body={"raw_claim": TRIVIAL_CLAIM},
+            timeout=timeout,
         )
         records["formalize"] = _request(
             client,
             "POST",
             f"{base_url}/api/v1/formalize",
             json_body={"raw_claim": TRIVIAL_CLAIM},
+            timeout=timeout,
         )
 
         verify_record = _request(
@@ -160,6 +247,7 @@ def run_smoke(
             "POST",
             f"{base_url}/api/v1/verify",
             json_body={"theorem_code": TRIVIAL_THEOREM, "explain": False},
+            timeout=timeout,
         )
         records["verify"] = verify_record
 

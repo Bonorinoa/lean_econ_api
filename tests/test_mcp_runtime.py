@@ -15,6 +15,7 @@ def test_build_stdio_params_uses_repo_launcher() -> None:
     assert params.command.endswith("scripts/run_lean_lsp_mcp.sh")
     assert params.args == ["--transport", "stdio"]
     assert Path(params.cwd) == mcp_runtime.LEAN_WORKSPACE
+    assert params.env["LEANECON_MCP_RUNTIME_ROOT"].endswith(".tmp/lean-lsp-mcp")
 
 
 def test_lean_workspace_relative_path() -> None:
@@ -45,3 +46,19 @@ def test_parse_diagnostics_and_sorry_warning() -> None:
 def test_missing_run_context_hint_mentions_current_venv() -> None:
     exc = ModuleNotFoundError("missing-module")
     assert "./leanEconAPI_venv/bin/python" in mcp_runtime._missing_run_context_hint(exc)
+
+
+def test_build_stdio_params_respects_custom_runtime_root(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LEANECON_MCP_RUNTIME_ROOT", str(tmp_path / "mcp-runtime"))
+
+    params = mcp_runtime.build_lean_lsp_stdio_params()
+
+    assert params.env["LEANECON_MCP_RUNTIME_ROOT"] == str(tmp_path / "mcp-runtime")
+
+
+def test_mcp_startup_failure_message_mentions_local_binary_and_uvx_fallback() -> None:
+    message = mcp_runtime._mcp_startup_failure_message("dns failure")
+
+    assert "lean-lsp-mcp" in message
+    assert "uvx" in message
+    assert "dns failure" in message

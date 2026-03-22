@@ -9,9 +9,10 @@ Mistral RunContext setup, and shared MCP query helpers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
@@ -38,6 +39,8 @@ LEAN_WORKSPACE = PROJECT_ROOT / "lean_workspace"
 LEAN_LSP_MCP_COMMAND = str(PROJECT_ROOT / "scripts" / "run_lean_lsp_mcp.sh")
 LEAN_LSP_MCP_ARGS = ["--transport", "stdio"]
 LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
+DEFAULT_MCP_RUNTIME_ROOT = str(PROJECT_ROOT / ".tmp" / "lean-lsp-mcp")
+MCP_STARTUP_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_STARTUP_TIMEOUT_SECONDS", "30"))
 
 # NOTE (2026-03-21): we intentionally create a fresh MCPClientSTDIO for each
 # RunContext. Local probing showed that re-registering the same client instance
@@ -49,6 +52,16 @@ LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
 
 # Match the existing repo convention of loading .env from the project root.
 load_dotenv(PROJECT_ROOT / ".env")
+
+
+def _mcp_startup_failure_message(details: str) -> str:
+    return (
+        "Failed to start lean-lsp-mcp. The launcher now prefers a locally installed "
+        "`lean-lsp-mcp` binary and falls back to `uvx lean-lsp-mcp` only when no "
+        "binary is present. In offline or DNS-restricted environments, install "
+        "`lean-lsp-mcp` ahead of time or validate through the Docker image. "
+        f"Underlying error: {details}"
+    )
 
 
 def build_lean_lsp_stdio_params() -> StdioServerParameters:
@@ -63,6 +76,7 @@ def build_lean_lsp_stdio_params() -> StdioServerParameters:
         raise FileNotFoundError(f"Lean workspace not found: {LEAN_WORKSPACE}")
     env = get_default_environment()
     env.update(os.environ)
+    env.setdefault("LEANECON_MCP_RUNTIME_ROOT", DEFAULT_MCP_RUNTIME_ROOT)
     return StdioServerParameters(
         command=LEAN_LSP_MCP_COMMAND,
         args=list(LEAN_LSP_MCP_ARGS),
@@ -85,10 +99,28 @@ def lean_workspace_relative_path(path: Path) -> str:
 async def open_lean_mcp_session() -> AsyncIterator[ClientSession]:
     """Open an initialized raw MCP client session for lean-lsp-mcp."""
     params = build_lean_lsp_stdio_params()
-    async with stdio_client(params) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
+    try:
+        async with AsyncExitStack() as stack:
+            read_stream, write_stream = await asyncio.wait_for(
+                stack.enter_async_context(stdio_client(params)),
+                timeout=MCP_STARTUP_TIMEOUT_SECONDS,
+            )
+            session = await asyncio.wait_for(
+                stack.enter_async_context(ClientSession(read_stream, write_stream)),
+                timeout=MCP_STARTUP_TIMEOUT_SECONDS,
+            )
+            await asyncio.wait_for(session.initialize(), timeout=MCP_STARTUP_TIMEOUT_SECONDS)
             yield session
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(
+            _mcp_startup_failure_message(
+                f"timed out after {MCP_STARTUP_TIMEOUT_SECONDS:.0f}s during MCP session startup"
+            )
+        ) from exc
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(_mcp_startup_failure_message(str(exc))) from exc
 
 
 def build_mistral_mcp_client() -> MCPClientSTDIO:
@@ -129,7 +161,20 @@ async def open_mistral_run_context(
         raise RuntimeError(_missing_run_context_hint(exc)) from exc
 
     async with RunContext(model=model) as run_ctx:
-        await run_ctx.register_mcp_client(build_mistral_mcp_client())
+        try:
+            await asyncio.wait_for(
+                run_ctx.register_mcp_client(build_mistral_mcp_client()),
+                timeout=MCP_STARTUP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                _mcp_startup_failure_message(
+                    "timed out after "
+                    f"{MCP_STARTUP_TIMEOUT_SECONDS:.0f}s while registering MCP tools"
+                )
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(_mcp_startup_failure_message(str(exc))) from exc
         yield run_ctx
 
 

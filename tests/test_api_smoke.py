@@ -275,6 +275,42 @@ def test_job_status_queued_or_running() -> None:
     barrier.set()
 
 
+def test_job_status_includes_observability_metadata() -> None:
+    client = TestClient(api.app)
+
+    def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str, on_log=None) -> dict:
+        if on_log is not None:
+            on_log(
+                {
+                    "stage": "agentic_run",
+                    "message": "Leanstral proving loop started.",
+                    "status": "running",
+                }
+            )
+        return _make_verify_result()
+
+    with patch.object(api, "run_pipeline", side_effect=fake_run_pipeline):
+        response = client.post("/api/v1/verify", json={"theorem_code": RAW_LEAN_THEOREM})
+
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    for _ in range(20):
+        status_resp = client.get(f"/api/v1/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        data = status_resp.json()
+        if data["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+
+    assert data["status"] == "completed"
+    assert data["queued_at"] is not None
+    assert data["started_at"] is not None
+    assert data["finished_at"] is not None
+    assert data["last_progress_at"] is not None
+    assert data["current_stage"] == "agentic_run"
+
+
 def test_job_not_found() -> None:
     client = TestClient(api.app)
     response = client.get("/api/v1/jobs/00000000-0000-0000-0000-000000000000")

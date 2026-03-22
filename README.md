@@ -118,16 +118,30 @@ log at `logs/runs.jsonl`.
   persisted prover traces.
 - `scripts/semantic_grader.py` uses Leanstral as a semantic referee to score whether
   generated Lean code is a faithful, non-trivial translation of the original claim.
-- `scripts/run_uncharted_evals.py` bypasses classification, runs `formalize_claim(...)`
-  plus `run_pipeline(...)` with configurable `pass@k`, and writes JSON/Markdown
-  reports under `outputs/uncharted_evals/`.
+- `scripts/run_uncharted_evals.py` is now stage-aware: it can run
+  formalization-only, prover-only, or full end-to-end cases from a single JSONL
+  benchmark, and writes `case_records.jsonl`, `results.json`, and `report.md`
+  under `outputs/uncharted_evals/`.
 
-`run_uncharted_evals.py` is currently best treated as a high-cost frontier probe,
-not as the primary CI benchmark. A partial rerun on March 22, 2026 across 7
-frontier attempts on 2 hard claims produced a `0.978` tool-call waste ratio,
-multiple Lean LSP startup timeouts, and one Mistral `3051` input-too-large
-failure. For routine iteration, prefer small runs (`--limit 1` or `--limit 2`)
-with `--pass-k 1`, then inspect `logs/runs.jsonl` with `analyze_traces.py`.
+Use profiles intentionally:
+
+- `--profile ci` is the cheap default for day-to-day quality tracking.
+- `--profile core` adds semantic grading for a richer but costlier regression view.
+- `--profile frontier` restores the older high-cost behavior for research probes.
+
+In `dataset` stage mode, the runner respects per-case hints:
+
+- `expect: verify` runs full end-to-end evaluation.
+- `expect: formalize` and `expect: fail_gracefully` stop after formalization.
+- `theorem_code` or `preformalized_theorem` triggers prover-only evaluation.
+- unlabeled raw-claim cases still default to full end-to-end evaluation.
+
+This keeps routine benchmark runs honest without forcing every difficult claim
+through an expensive proving loop. `uncharted_claims.jsonl` is still best
+treated as a frontier probe, not as the primary CI benchmark. A partial rerun on
+March 22, 2026 across 7 frontier attempts on 2 hard claims produced a `0.978`
+tool-call waste ratio, multiple Lean LSP startup timeouts, and one Mistral
+`3051` input-too-large failure.
 
 Example commands:
 
@@ -139,7 +153,12 @@ Example commands:
   --theorem-file docs/legacy_examples/crra_pass.lean
 
 ./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
+  tests/fixtures/claims/test_claims.jsonl \
+  --profile ci
+
+./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
   tests/fixtures/claims/uncharted_claims.jsonl \
+  --profile frontier \
   --pass-k 1 \
   --limit 2
 ```
@@ -200,15 +219,27 @@ runtime verification uses isolated per-run files compiled with `lake env lean`.
 This means it cannot run on serverless platforms such as Vercel or static
 frontend hosts.
 
-For deployment, use Docker:
+Use local Docker and CI as the validation gate before considering a Railway
+rebuild. Railway is best treated as post-deploy confirmation, not the inner-loop
+feedback mechanism.
+
+For local validation and deployment, use Docker:
 
 ```bash
 docker build -t leanecon .
-docker run -p 8000:8000 -e MISTRAL_API_KEY=your_key_here leanecon
+docker run -p 8000:8000 \
+  -e MISTRAL_API_KEY=your_key_here \
+  -v "$(pwd)/.state:/app/state" \
+  leanecon
 ```
 
 A Dockerfile is provided at the project root. See
 [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for details.
+
+Runtime state defaults to repo-local paths in development. Set
+`LEANECON_STATE_DIR` to move the verified-result cache and JSONL run log under
+another directory. The Docker image now sets `LEANECON_STATE_DIR=/app/state`,
+so mounting `/app/state` preserves cache/log state across container restarts.
 
 ## Architecture
 

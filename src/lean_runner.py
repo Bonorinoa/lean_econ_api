@@ -12,12 +12,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
-from typing import Any
+import threading
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
 
 from mcp_runtime import open_lean_mcp_session
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+MCP_TOOL_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_TOOL_TIMEOUT_SECONDS", "10"))
 
 # Axioms that are standard in Mathlib-based proofs
 STANDARD_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
@@ -50,6 +55,33 @@ def _parse_structured(raw_text: str) -> dict[str, Any]:
         return {}
 
 
+def _run_sync(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
+    """Run an async helper from sync code, even if an event loop is already active."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(factory())
+
+    result: list[T] = []
+    error: list[BaseException] = []
+
+    def runner() -> None:
+        try:
+            result.append(asyncio.run(factory()))
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            error.append(exc)
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if error:
+        raise error[0]
+    if not result:  # pragma: no cover - defensive, should be unreachable
+        raise RuntimeError("Async wrapper exited without returning a result")
+    return result[0]
+
+
 # ---------------------------------------------------------------------------
 # lean_run_code wrapper
 # ---------------------------------------------------------------------------
@@ -66,7 +98,15 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
       - raw (str): Raw tool output
     """
     async with open_lean_mcp_session() as session:
-        result = await session.call_tool("lean_run_code", {"code": lean_code})
+        try:
+            result = await asyncio.wait_for(
+                session.call_tool("lean_run_code", {"code": lean_code}),
+                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
+            ) from exc
 
     if getattr(result, "isError", False):
         raise RuntimeError(f"lean_run_code MCP error: {result}")
@@ -112,7 +152,7 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
 
 def run_code(lean_code: str) -> dict[str, Any]:
     """Synchronous wrapper for _run_code_async."""
-    return asyncio.run(_run_code_async(lean_code))
+    return _run_sync(lambda: _run_code_async(lean_code))
 
 
 # ---------------------------------------------------------------------------
@@ -140,14 +180,22 @@ async def _verify_axioms_async(
       - source_warnings (list[dict]): Source scan warnings
     """
     async with open_lean_mcp_session() as session:
-        result = await session.call_tool(
-            "lean_verify",
-            {
-                "file_path": file_path,
-                "theorem_name": theorem_name,
-                "scan_source": True,
-            },
-        )
+        try:
+            result = await asyncio.wait_for(
+                session.call_tool(
+                    "lean_verify",
+                    {
+                        "file_path": file_path,
+                        "theorem_name": theorem_name,
+                        "scan_source": True,
+                    },
+                ),
+                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"lean_verify timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
+            ) from exc
 
     if getattr(result, "isError", False):
         raise RuntimeError(f"lean_verify MCP error: {result}")
@@ -176,7 +224,7 @@ async def _verify_axioms_async(
 
 def verify_axioms(file_path: str, theorem_name: str) -> dict[str, Any]:
     """Synchronous wrapper for _verify_axioms_async."""
-    return asyncio.run(_verify_axioms_async(file_path, theorem_name))
+    return _run_sync(lambda: _verify_axioms_async(file_path, theorem_name))
 
 
 # ---------------------------------------------------------------------------

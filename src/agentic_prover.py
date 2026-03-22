@@ -57,6 +57,7 @@ DEFAULT_MAX_SEARCH_TOOL_CALLS = 4
 DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS = 6
 LOCAL_FAST_PATH_MAX_CHARS = 1_400
 LOCAL_FAST_PATH_MAX_LINES = 18
+LOCAL_FAST_PATH_MAX_ATTEMPTS = 4
 TRACE_SCHEMA_VERSION = 2
 CIRCUIT_BREAKER_WARNING = (
     "CIRCUIT BREAKER TRIGGERED: You must use lean_diagnostic_messages to check your work "
@@ -111,16 +112,17 @@ LOCAL_FAST_PATH_CORE_TACTICS = (
     "constructor <;> aesop",
 )
 LOCAL_FAST_PATH_DISCRETE_TACTICS = (
-    "omega",
     "norm_num",
+    "omega",
 )
 LOCAL_FAST_PATH_ALGEBRA_TACTICS = (
-    "linarith",
-    "nlinarith",
     "ring_nf",
     "ring",
+    "linarith",
+    "nlinarith",
 )
 LOCAL_FAST_PATH_FIELD_TACTICS = ("field_simp\nring",)
+NUMERIC_LITERAL_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 
 
 class ToolBudgetExceededError(RuntimeError):
@@ -439,16 +441,24 @@ def _should_try_local_fast_path(theorem_with_sorry: str) -> bool:
 
 def _local_fast_path_tactics(theorem_with_sorry: str) -> list[str]:
     """Choose a short deterministic tactic list from theorem surface features."""
-    tactics: list[str] = list(LOCAL_FAST_PATH_CORE_TACTICS)
-    if any(token in theorem_with_sorry for token in ("ℕ", "Nat", "ℤ", "Int", "Even", "Odd")):
+    theorem_surface = theorem_with_sorry.split(":= by", 1)[0]
+    tactics: list[str] = []
+    looks_numeric_arithmetic = bool(NUMERIC_LITERAL_RE.search(theorem_surface)) and any(
+        token in theorem_surface for token in ("=", "≤", "<", "≥", ">", "+", "-", "*", "/")
+    )
+    if looks_numeric_arithmetic:
+        tactics.extend(LOCAL_FAST_PATH_DISCRETE_TACTICS)
+        tactics.extend(("ring_nf", "ring"))
+    elif any(token in theorem_surface for token in ("ℕ", "Nat", "ℤ", "Int", "Even", "Odd")):
         tactics.extend(LOCAL_FAST_PATH_DISCRETE_TACTICS)
     if any(
-        token in theorem_with_sorry
+        token in theorem_surface
         for token in ("ℝ", "Real", "ℚ", "Rat", "≤", "<", "≥", ">", "+", "-", "*", "=")
     ):
         tactics.extend(LOCAL_FAST_PATH_ALGEBRA_TACTICS)
-    if "/" in theorem_with_sorry or "⁻¹" in theorem_with_sorry:
+    if "/" in theorem_surface or "⁻¹" in theorem_surface:
         tactics.extend(LOCAL_FAST_PATH_FIELD_TACTICS)
+    tactics.extend(LOCAL_FAST_PATH_CORE_TACTICS)
     return list(dict.fromkeys(tactics))
 
 
@@ -488,15 +498,19 @@ def _try_local_tactic_fast_path(
         return None
 
     candidate_tactics = _local_fast_path_tactics(theorem_with_sorry)
+    bounded_candidates = candidate_tactics[:LOCAL_FAST_PATH_MAX_ATTEMPTS]
     _log(
         on_log,
         "agentic_fast_path",
-        f"Trying {len(candidate_tactics)} local tactic candidates before Leanstral...",
+        (
+            f"Trying up to {len(bounded_candidates)} local tactic candidates "
+            f"before Leanstral ({len(candidate_tactics)} available)..."
+        ),
         status="running",
     )
 
     tactic_call_log: list[dict[str, Any]] = []
-    for attempt_index, tactic in enumerate(candidate_tactics, start=1):
+    for attempt_index, tactic in enumerate(bounded_candidates, start=1):
         controller.replace_tactic_block(tactic)
         try:
             verification = verify(controller.current_lean_code, check_axioms=False)
@@ -508,9 +522,6 @@ def _try_local_tactic_fast_path(
                 "output_lean": None,
                 "axiom_info": None,
             }
-
-        if verification.get("success"):
-            verification = verify(controller.current_lean_code)
 
         tactic_call_log.append(
             _fast_path_attempt_record(
