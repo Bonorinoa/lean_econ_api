@@ -18,7 +18,12 @@ import threading
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 
-from mcp_runtime import open_lean_mcp_session
+from mcp_runtime import (
+    formalization_mcp_available,
+    mark_formalization_mcp_failure,
+    mark_formalization_mcp_success,
+    open_lean_mcp_session,
+)
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -97,6 +102,10 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
       - warnings (list[str]): Warning messages
       - raw (str): Raw tool output
     """
+    allowed, reason = formalization_mcp_available()
+    if not allowed:
+        raise RuntimeError(reason or "formalization MCP temporarily disabled")
+
     async with open_lean_mcp_session() as session:
         try:
             result = await asyncio.wait_for(
@@ -104,12 +113,17 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
                 timeout=MCP_TOOL_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError as exc:
+            mark_formalization_mcp_failure(
+                f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
+            )
             raise RuntimeError(
                 f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
             ) from exc
 
     if getattr(result, "isError", False):
-        raise RuntimeError(f"lean_run_code MCP error: {result}")
+        raw_error = _extract_text(result)
+        mark_formalization_mcp_failure(raw_error or "lean_run_code MCP error")
+        raise RuntimeError(f"lean_run_code MCP error: {raw_error or result}")
 
     raw_text = _extract_text(result)
     data = _parse_structured(raw_text)
@@ -141,6 +155,8 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
     if not tool_success and len(real_errors) == 0:
         # Tool reported failure, but no real errors — likely only sorry warnings
         valid = True
+
+    mark_formalization_mcp_success()
 
     return {
         "valid": valid,

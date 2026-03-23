@@ -224,7 +224,7 @@ The formalizer system prompt should include:
 1. **Explicit import path guidance** — never generate bare module prefixes. Always use full `Mathlib.X.Y.Z` paths.
 2. **Type class checklist** — before generating a formalization, verify that the types used have the required instances. Don't assume `MetricSpace` on products or function spaces without checking.
 3. **Identifier verification** — use `lean_local_search` to verify that identifiers exist before using them in the formalization.
-4. **Fallback strategy** — if the first formalization attempt uses an unknown identifier, the retry should search Mathlib for the correct one rather than guessing a different wrong name.
+4. **Fallback strategy** — if the first formalization attempt uses an unknown identifier, bucket the compiler failure first, then run a targeted repair prompt rather than a generic retry.
 
 ### Search-assisted formalization pattern
 
@@ -232,13 +232,14 @@ For claims in uncharted territory, the formalizer should follow this workflow:
 
 ```
 1. Parse the claim into its core mathematical components
-2. For each component, search Mathlib:
-   - lean_local_search("component keyword")
-   - lean_leansearch("natural language description")
-3. If all components have Mathlib counterparts, construct the formalization using the found identifiers
-4. If any component is missing, report which specific concepts lack Mathlib coverage
-5. Validate the formalization with `lean_run_code` before returning
-6. If `lean_run_code` is unavailable, fall back to a direct `lake env lean` file check rather than relying on a project-wide `lake build`
+2. Build bounded retrieval context from:
+   - preamble matches
+   - curated import and identifier templates
+   - MCP search only when it is healthy and within budget
+3. Construct the formalization using those bounded hints
+4. Validate the formalization with `lean_run_code` when available
+5. If `lean_run_code` is unavailable, fall back to a direct `lake env lean` file check rather than relying on a project-wide `lake build`
+6. Bucket compiler failures and run targeted repair for the bucket instead of a generic retry
 ```
 
 This search-first approach would have caught the `StrictConcave`, `hessian`, and `Topology` errors before they became formalization failures.

@@ -84,7 +84,9 @@ Request:
 Important request fields:
 
 - `raw_claim`: plain text, LaTeX, or raw Lean input
-- `preamble_names`: optional explicit preamble module names to inject
+- `preamble_names`: optional explicit preamble module names to inject; when
+  omitted, the formalizer may auto-select matching preambles using bounded
+  retrieval
 
 Use [`PREAMBLE_CATALOG.md`](./PREAMBLE_CATALOG.md) to choose valid
 `preamble_names`.
@@ -102,6 +104,15 @@ Important response fields:
 
 If `raw_claim` already looks like Lean and contains a proof stub, this endpoint
 passes it through unchanged with `attempts = 0`.
+
+Formalization notes:
+
+- the formalizer now builds bounded retrieval context before generation
+- it can auto-select matching LeanEcon preambles when `preamble_names` is empty
+- compile failures are bucketed into import/module, identifier, typeclass,
+  syntax, or semantic classes before targeted repair
+- MCP-backed search is opportunistic only; when unavailable, the formalizer
+  falls back to curated hints plus local Lean compilation
 
 ## 3. Verify
 
@@ -339,10 +350,80 @@ metrics.
 For release gating, prefer local lint, non-live pytest, Lean/MCP smoke checks,
 and local Docker validation before trusting any Railway response.
 
+## Latest benchmark summary
+
+`GET /api/v1/benchmarks/latest` returns the summary-only view of the newest
+offline benchmark snapshot under `benchmarks/snapshots/`.
+
+Example response:
+
+```json
+{
+  "generated_at": "2026-03-22T20:00:00+00:00",
+  "benchmark_file": "benchmarks/tier0_smoke.jsonl",
+  "config": {
+    "mode": "full",
+    "repetitions": 3,
+    "use_cache": false,
+    "lane_order": [
+      "raw_claim_full_api",
+      "theorem_stub_verify",
+      "raw_lean_verify"
+    ]
+  },
+  "summary": {
+    "total_cases": 3,
+    "lanes": {
+      "raw_claim_full_api": {
+        "pass_at_1": 1.0,
+        "pass_at_3": 1.0
+      }
+    }
+  }
+}
+```
+
+This endpoint intentionally excludes per-claim internals. Use the on-disk
+snapshot and report artifacts for benchmark debugging.
+
 ## Offline evaluation scripts
 
 LeanEcon also includes script-level evaluation tooling that operates on the
 append-only log and pipeline outputs.
+
+### Benchmark harness
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_benchmark.py benchmarks/tier0_smoke.jsonl --repetitions 3 --no-cache
+```
+
+This harness measures three separate lanes when inputs are available:
+
+- `raw_claim -> full API`
+- `theorem_stub -> verify`
+- `raw_lean -> verify`
+
+It also supports a faster formalizer-only gate:
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_benchmark.py benchmarks/tier1_core.jsonl --mode formalizer-only
+```
+
+Focused formalizer regression gate:
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_benchmark.py benchmarks/formalizer_regressions.jsonl --mode formalizer-only
+```
+
+Artifacts land in:
+
+- `benchmarks/snapshots/*.json` — machine-readable benchmark snapshots
+- `benchmarks/reports/*.md` — human-readable reports
+
+Per-claim and aggregate outputs include pass@k, p50/p95 latency, failure stage,
+error code, stop reason, and formalizer telemetry such as validation method,
+repair buckets, and retrieval-source counts. Cache is disabled by default so
+warm-cache hits do not flatter benchmark numbers.
 
 ### Deep trace analysis
 

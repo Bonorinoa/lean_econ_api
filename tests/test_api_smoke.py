@@ -73,6 +73,7 @@ def test_app_imports_and_routes() -> None:
     assert "/api/v1/jobs/{job_id}/stream" in route_paths
     assert "/api/v1/explain" in route_paths
     assert "/api/v1/metrics" in route_paths
+    assert "/api/v1/benchmarks/latest" in route_paths
     assert "/api/v1/cache/stats" in route_paths
     assert "/api/v1/cache" in route_paths
     assert "/health" in route_paths
@@ -148,6 +149,59 @@ def test_formalize_raw_lean_bypass() -> None:
     assert body["theorem_code"] == RAW_LEAN_THEOREM.strip()
 
 
+def test_formalize_compile_failure_sets_error_code() -> None:
+    client = TestClient(api.app)
+    with patch.object(
+        api,
+        "formalize_claim",
+        return_value={
+            "success": False,
+            "theorem_code": "import Mathlib\n\ntheorem broken : True := by\n  sorry\n",
+            "attempts": 3,
+            "errors": ["unknown identifier `foo`"],
+            "formalization_failed": False,
+            "failure_reason": None,
+            "preamble_used": [],
+            "diagnosis": "The theorem does not compile.",
+            "suggested_fix": "Replace `foo` with a valid identifier.",
+            "fixable": True,
+        },
+    ):
+        response = client.post("/api/v1/formalize", json={"raw_claim": "broken claim"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is False
+    assert body["error_code"] == "formalization_failed"
+
+
+def test_formalize_response_hides_internal_formalizer_telemetry() -> None:
+    client = TestClient(api.app)
+    with patch.object(
+        api,
+        "formalize_claim",
+        return_value={
+            "success": True,
+            "theorem_code": "import Mathlib\n\ntheorem foo : True := by\n  sorry\n",
+            "attempts": 1,
+            "errors": [],
+            "formalization_failed": False,
+            "failure_reason": None,
+            "preamble_used": [],
+            "diagnosis": None,
+            "suggested_fix": None,
+            "fixable": None,
+            "formalizer_telemetry": {"model_calls": 1, "validation_method": "lake_env_lean"},
+        },
+    ):
+        response = client.post("/api/v1/formalize", json={"raw_claim": "foo"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert "formalizer_telemetry" not in body
+
+
 def test_verify_exceptions_return_500() -> None:
     client = TestClient(api.app, raise_server_exceptions=False)
     with patch.object(api, "run_pipeline", side_effect=RuntimeError("boom")):
@@ -173,9 +227,42 @@ def test_openapi_schema() -> None:
     assert "/api/v1/verify" in schema["paths"]
     assert "/api/v1/jobs/{job_id}/stream" in schema["paths"]
     assert "/api/v1/metrics" in schema["paths"]
+    assert "/api/v1/benchmarks/latest" in schema["paths"]
     assert "VerifyRequest" in schema["components"]["schemas"]
     assert "VerifyAcceptedResponse" in schema["components"]["schemas"]
     assert "JobStatusResponse" in schema["components"]["schemas"]
+
+
+def test_benchmark_status_summary_endpoint() -> None:
+    client = TestClient(api.app)
+    with patch.object(
+        api,
+        "latest_snapshot_summary",
+        return_value={
+            "generated_at": "2026-03-22T20:00:00+00:00",
+            "benchmark_file": "benchmarks/tier0_smoke.jsonl",
+            "config": {"mode": "full", "repetitions": 3, "use_cache": False},
+            "summary": {
+                "total_cases": 3,
+                "lanes": {"raw_claim_full_api": {"pass_at_1": 1.0}},
+            },
+        },
+    ):
+        response = client.get("/api/v1/benchmarks/latest")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["benchmark_file"] == "benchmarks/tier0_smoke.jsonl"
+    assert body["summary"]["total_cases"] == 3
+    assert "cases" not in body
+
+
+def test_benchmark_status_returns_404_when_missing() -> None:
+    client = TestClient(api.app)
+    with patch.object(api, "latest_snapshot_summary", return_value=None):
+        response = client.get("/api/v1/benchmarks/latest")
+
+    assert response.status_code == 404
 
 
 # ---------------------------------------------------------------------------

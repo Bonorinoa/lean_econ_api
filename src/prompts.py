@@ -210,9 +210,20 @@ Output ONLY the corrected .lean file. No markdown fences. No explanation.
 
 def build_formalize_prompt(
     preamble_block: str | None = None,
+    context_block: str | None = None,
 ) -> str:
     """Build the formalize system prompt with optional preamble context."""
     prompt = FORMALIZE_SYSTEM_PROMPT
+
+    if context_block:
+        prompt += f"""
+
+        {context_block}
+
+        Use the retrieval context above as bounded hints. Prefer the listed imports,
+        identifiers, and preambles when they fit the claim exactly. Do not invent
+        identifiers beyond them unless you are very sure they exist.
+        """
 
     if preamble_block:
         prompt += f"""
@@ -227,6 +238,74 @@ def build_formalize_prompt(
         When using these definitions, reference them by name in the theorem statement.
         """
 
+    return prompt
+
+
+REPAIR_PROMPT_INTROS = {
+    "unknown_import_module": """\
+UNKNOWN IMPORT OR MODULE FAILURE
+
+The previous Lean file failed because one or more imports or module paths do
+not exist. Fix imports first. Use `import Mathlib` or full `Mathlib.X.Y`
+paths. Remove bare prefixes such as `import Topology` or `import Analysis`.
+Do not invent LeanEcon module names.
+""",
+    "unknown_identifier": """\
+UNKNOWN IDENTIFIER FAILURE
+
+The previous Lean file failed because it used at least one identifier that Lean
+does not know. Replace guessed names with real Mathlib or LeanEcon identifiers.
+Prefer the retrieval context identifiers when available. If no exact identifier
+is known, restate the property from first principles instead of hallucinating.
+""",
+    "typeclass_instance": """\
+TYPECLASS OR INSTANCE FAILURE
+
+The previous Lean file failed because its typeclass context is incomplete or
+mis-specified. Add the minimal explicit hypotheses or instances needed. Prefer
+specializing to `ℝ` rather than leaving generic scalar fields when possible.
+Do not add unnecessary abstractions.
+""",
+    "syntax_notation": """\
+SYNTAX OR NOTATION FAILURE
+
+The previous Lean file failed because the Lean syntax or notation is malformed.
+Repair the file shape first: valid imports, optional docstring, theorem header,
+and `:= by` body ending in `sorry`. Keep the theorem mathematically faithful.
+""",
+    "semantic_mismatch": """\
+SEMANTIC MISMATCH FAILURE
+
+The previous Lean file parses, but the theorem statement or hypotheses do not
+match Lean's expected types or structures. Make the minimal semantic repair:
+add missing hypotheses, switch to the correct Mathlib structure, or restate the
+claim in a faithful first-principles form.
+""",
+}
+
+
+def build_repair_prompt(
+    bucket: str,
+    *,
+    context_block: str | None = None,
+) -> str:
+    """Build a bucket-specific repair prompt."""
+    intro = REPAIR_PROMPT_INTROS.get(bucket, REPAIR_PROMPT_INTROS["semantic_mismatch"])
+    prompt = (
+        "You are an expert in Lean 4 and Mathlib. A previous attempt to formalize an "
+        "economics claim produced a theorem statement that does not compile in Lean 4.\n\n"
+        f"{intro}\n"
+        "You will be given:\n"
+        "1. The original claim\n"
+        "2. The Lean 4 file that failed\n"
+        "3. The exact Lean compiler error messages\n\n"
+        "Fix the Lean 4 file so it compiles with only a `sorry` warning.\n"
+        "Apply the MINIMUM changes needed. Do not rewrite from scratch unless the "
+        "errors indicate a fundamental approach problem.\n"
+    )
+    if context_block:
+        prompt += f"\n{context_block}\n"
+    prompt += "\nOutput ONLY the corrected .lean file. No markdown fences. No explanation.\n"
     return prompt
 
 

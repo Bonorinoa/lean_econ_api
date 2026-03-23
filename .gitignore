@@ -19,3 +19,5 @@ lean_workspace/LeanEcon/AgenticProof_*.lean
 .coverage
 .tmp/
 lean_workspace/LeanEcon/test_*.lean
+benchmarks/snapshots/
+benchmarks/reports/

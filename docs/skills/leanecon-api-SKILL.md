@@ -129,10 +129,19 @@ Generates a Lean 4 theorem stub with `sorry` placeholder.
 }
 ```
 
-The formalizer retries up to 3 times with diagnostic feedback between attempts.
+The formalizer uses up to 3 model calls, with compiler feedback and
+deterministic repairs between attempts.
 `formalization_failed=true` is reserved for explicit out-of-scope rejections; a
 compile failure after retries can still return `formalization_failed=false`
 alongside `diagnosis`, `suggested_fix`, and `fixable`.
+
+Current implementation details:
+- The formalizer now builds bounded retrieval context before the first model call.
+- If `preamble_names` is omitted, it may auto-select matching preamble modules.
+- Repair is compiler-bucketed: import/module, identifier, typeclass, syntax, or
+  semantic mismatch.
+- MCP-backed retrieval is opportunistic only. If MCP is unhealthy, the
+  formalizer skips it and relies on curated hints plus local compilation.
 
 ### POST /api/v1/verify
 
@@ -260,12 +269,15 @@ Generates natural language explanation of any pipeline result. Can accept verifi
 
 - `GET /health` → `{"status": "ok"}`
 - `GET /api/v1/metrics` → Aggregate verification stats from the JSONL eval log
+- `GET /api/v1/benchmarks/latest` → Latest summary-only offline benchmark snapshot
 - `GET /api/v1/cache/stats` → `{"size": N}`
 - `DELETE /api/v1/cache` → Clear verified result cache
 
 Runtime state lives in repo-local paths by default. When `LEANECON_STATE_DIR`
 is set, the JSONL run log moves to `${LEANECON_STATE_DIR}/logs/runs.jsonl` and
 the verified-result cache moves to `${LEANECON_STATE_DIR}/data/verified_cache.json`.
+The benchmark status endpoint intentionally excludes per-claim details; read
+`benchmarks/snapshots/*.json` directly when you need case-level internals.
 
 ## Critical integration patterns
 
@@ -431,6 +443,54 @@ Lean LSP startup timeouts, and one Mistral `3051` input-too-large failure.
 - `Tool Call Efficiency` / `Tool Call Waste Ratio` — global proof-stage efficiency measures
 - `Global Error Frequency` — most common Lean errors across proof attempts
 
+### run_benchmark.py
+
+Use this when you want the lighter benchmark foundation for a research preview,
+with explicit lane separation and stable snapshot/report artifacts.
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_benchmark.py \
+  benchmarks/tier0_smoke.jsonl \
+  --repetitions 3 \
+  --no-cache
+```
+
+Fast formalizer-only gate:
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_benchmark.py \
+  benchmarks/tier1_core.jsonl \
+  --mode formalizer-only
+```
+
+Focused formalizer regression gate:
+
+```bash
+./leanEconAPI_venv/bin/python scripts/run_benchmark.py \
+  benchmarks/formalizer_regressions.jsonl \
+  --mode formalizer-only
+```
+
+**Lanes:**
+- `raw_claim -> full API`
+- `theorem_stub -> verify`
+- `raw_lean -> verify`
+
+**Artifacts:**
+- `benchmarks/snapshots/*.json`
+- `benchmarks/reports/*.md`
+
+**Tracked metrics:**
+- `pass@1` as the primary product metric
+- `pass@3` as the main retry/internal metric
+- `pass@5` when repetitions are at least 5
+- `p50` / `p95` latency
+- `failure_stage`, `error_code`, and `stop_reason`
+- `validation_method_counts`, `repair_bucket_counts`, and `retrieval_source_counts`
+
+Cache is disabled by default so benchmark runs are not flattered by warm
+verified-result replays.
+
 ### Designing test claims
 
 Test claims should span these categories:
@@ -562,6 +622,10 @@ For test suites, support batch submission:
 ## Limitations to communicate honestly
 
 - **Formalization is the bottleneck.** ~80% of advanced claims fail at formalization, not proving. The formalizer doesn't know all Mathlib paths for topology, measure theory, or advanced analysis.
+- **Formalization is now search-assisted but still bounded.** LeanEcon uses
+  preamble matching, curated import/identifier hints, and compiler-bucketed
+  repair before spending more model calls. This improves reliability, but it is
+  still not an open-ended proving loop.
 - **Verification is stochastic.** The same claim may pass on one run and fail on the next. Offer retry buttons.
 - **Currently strongest on algebraic identities** (field arithmetic, ring algebra) and preamble-backed claims. Claims involving `Real.rpow` with variable exponents are brittle.
 - **Fixed-point and measure-theoretic claims** are stretch goals, not impossible in principle. Expect many of them to land in `MATHLIB_NATIVE` or fail during formalization.

@@ -17,23 +17,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 
+from formalization_search import FormalizationContext, build_formalization_context
 from lean_verifier import run_direct_lean_check, write_lean_file
 from leanstral_utils import call_leanstral, strip_fences
-from preamble_library import (
-    build_preamble_block,
-    build_preamble_imports,
-    find_matching_preambles,
-    get_preamble_entries,
-)
+from preamble_library import find_matching_preambles
 from prompts import (
     DIAGNOSE_SYSTEM_PROMPT,
-    REPAIR_SYSTEM_PROMPT,
     build_classify_prompt,
     build_formalize_prompt,
+    build_repair_prompt,
 )
 
 # Load .env from project root (one level up from src/)
@@ -44,6 +41,12 @@ FORMALIZE_MAX_TOKENS = 4096  # theorem statements are short
 MAX_FORMALIZATION_ATTEMPTS = 3
 SORRY_VALIDATION_TIMEOUT = 120  # seconds for direct Lean fallback with sorry
 _client: Mistral | None = None
+
+REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE = "unknown_import_module"
+REPAIR_BUCKET_UNKNOWN_IDENTIFIER = "unknown_identifier"
+REPAIR_BUCKET_TYPECLASS_INSTANCE = "typeclass_instance"
+REPAIR_BUCKET_SYNTAX_NOTATION = "syntax_notation"
+REPAIR_BUCKET_SEMANTIC_MISMATCH = "semantic_mismatch"
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -94,6 +97,135 @@ def _inject_preamble_imports(lean_code: str, import_lines: list[str]) -> str:
         updated.append("")
     updated.extend(suffix)
     return "\n".join(updated).rstrip() + "\n"
+
+
+def _normalize_imports(lean_code: str) -> str:
+    """Drop obviously invalid bare imports and ensure `import Mathlib` is present."""
+    lines = lean_code.splitlines()
+    normalized: list[str] = []
+    kept_imports: list[str] = []
+    saw_import_block = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("import "):
+            saw_import_block = True
+            if (
+                stripped == "import Mathlib"
+                or stripped.startswith("import Mathlib.")
+                or stripped.startswith("import LeanEcon.")
+                or stripped.startswith("import Std")
+            ):
+                kept_imports.append(stripped)
+            continue
+        normalized.append(line)
+
+    if "import Mathlib" not in kept_imports:
+        kept_imports.insert(0, "import Mathlib")
+
+    rebuilt: list[str] = []
+    if kept_imports:
+        rebuilt.extend(dict.fromkeys(kept_imports))
+        rebuilt.append("")
+    rebuilt.extend(normalized if saw_import_block else lines)
+    return "\n".join(rebuilt).rstrip() + "\n"
+
+
+def classify_repair_bucket(errors: list[str]) -> str:
+    """Classify compiler failures into bounded repair buckets."""
+    combined = " ".join(errors).lower()
+    if any(
+        token in combined
+        for token in (
+            "unknown module prefix",
+            "unknown package",
+            "unknown import",
+            "did not find imported file",
+        )
+    ):
+        return REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE
+    if any(
+        token in combined
+        for token in (
+            "unknown identifier",
+            "unknown constant",
+            "unknown namespace",
+            "invalid field notation",
+        )
+    ):
+        return REPAIR_BUCKET_UNKNOWN_IDENTIFIER
+    if any(
+        token in combined
+        for token in (
+            "failed to synthesize",
+            "typeclass",
+            "instance problem",
+            "has no instance",
+        )
+    ):
+        return REPAIR_BUCKET_TYPECLASS_INSTANCE
+    if any(
+        token in combined
+        for token in (
+            "unexpected token",
+            "invalid syntax",
+            "parser error",
+            "expected command",
+            "expected term",
+        )
+    ):
+        return REPAIR_BUCKET_SYNTAX_NOTATION
+    return REPAIR_BUCKET_SEMANTIC_MISMATCH
+
+
+def _apply_deterministic_repairs(
+    lean_code: str,
+    errors: list[str],
+    context: FormalizationContext,
+) -> tuple[str, list[str]]:
+    """Apply bounded deterministic fixes before spending another model call."""
+    repairs: list[str] = []
+    repaired = lean_code
+    bucket = classify_repair_bucket(errors)
+
+    if bucket == REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE:
+        normalized_imports = _normalize_imports(repaired)
+        if normalized_imports != repaired:
+            repaired = normalized_imports
+            repairs.append("normalize_imports")
+
+    if context.preamble_imports:
+        with_preambles = _inject_preamble_imports(repaired, context.preamble_imports)
+        if with_preambles != repaired:
+            repaired = with_preambles
+            if "inject_preamble_imports" not in repairs:
+                repairs.append("inject_preamble_imports")
+
+    return repaired, repairs
+
+
+def _build_formalizer_telemetry(
+    context: FormalizationContext,
+    *,
+    model_calls: int,
+    validation_methods: list[str],
+    repair_buckets: list[str],
+    deterministic_repairs_applied: list[str],
+) -> dict[str, Any]:
+    context_telemetry = context.telemetry()
+    return {
+        "model_calls": model_calls,
+        "validation_method": validation_methods[-1] if validation_methods else None,
+        "validation_methods": list(validation_methods),
+        "repair_buckets": list(repair_buckets),
+        "last_repair_bucket": repair_buckets[-1] if repair_buckets else None,
+        "deterministic_repairs_applied": list(deterministic_repairs_applied),
+        "selected_preambles": context_telemetry["selected_preambles"],
+        "explicit_preambles": context_telemetry["explicit_preambles"],
+        "auto_preambles": context_telemetry["auto_preambles"],
+        "retrieval": context_telemetry["retrieval"],
+        "mcp": context_telemetry["mcp"],
+    }
 
 
 def _diagnose_formalization_failure(
@@ -369,35 +501,25 @@ def formalize(
         else:
             print(f"[formalizer] {message}")
 
-    # Shared default fields for all return paths
-    _defaults = {
-        "preamble_used": [],
-        "diagnosis": None,
-        "suggested_fix": None,
-        "fixable": None,
-    }
-
     _log("Starting formalization...", status="running")
 
-    # Resolve preamble modules (opt-in only via explicit preamble_names)
-    preamble_block = None
-    preamble_imports: list[str] = []
-    preamble_used: list[str] = []
-
-    if preamble_names:
-        entries = get_preamble_entries(preamble_names)
-        if entries:
-            preamble_block = build_preamble_block(entries)
-            preamble_imports = build_preamble_imports(entries)
-            preamble_used = [e.name for e in entries]
-            _log(f"Using explicit preamble: {', '.join(preamble_used)}", status="running")
+    context = build_formalization_context(claim_text, explicit_preamble_names=preamble_names)
+    preamble_used = list(context.preamble_names)
+    if preamble_used:
+        mode = "explicit" if context.explicit_preamble_names else "auto-selected"
+        _log(f"Using {mode} preambles: {', '.join(preamble_used)}", status="running")
 
     # Formalize → sorry-validate → repair loop
     client = _get_client()
     lean_code = ""
     last_errors: list[str] = []
+    validation_methods: list[str] = []
+    repair_buckets: list[str] = []
+    deterministic_repairs_applied: list[str] = []
+    model_calls = 0
     system_prompt = build_formalize_prompt(
-        preamble_block=preamble_block,
+        preamble_block=context.preamble_block,
+        context_block=context.build_prompt_block(),
     )
 
     for attempt in range(1, MAX_FORMALIZATION_ATTEMPTS + 1):
@@ -411,8 +533,13 @@ def formalize(
                 {"role": "user", "content": claim_text},
             ]
         else:
+            repair_bucket = classify_repair_bucket(last_errors)
+            repair_buckets.append(repair_bucket)
             _log(
-                f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: requesting repair...",
+                (
+                    f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: "
+                    f"requesting {repair_bucket} repair..."
+                ),
                 status="running",
             )
             repair_content = (
@@ -421,10 +548,17 @@ def formalize(
                 f"Errors:\n" + "\n".join(last_errors)
             )
             messages = [
-                {"role": "system", "content": REPAIR_SYSTEM_PROMPT},
+                {
+                    "role": "system",
+                    "content": build_repair_prompt(
+                        repair_bucket,
+                        context_block=context.build_prompt_block(),
+                    ),
+                },
                 {"role": "user", "content": repair_content},
             ]
 
+        model_calls += 1
         raw = call_leanstral(
             client,
             messages,
@@ -448,13 +582,21 @@ def formalize(
                 "diagnosis": None,
                 "suggested_fix": None,
                 "fixable": None,
+                "formalizer_telemetry": _build_formalizer_telemetry(
+                    context,
+                    model_calls=model_calls,
+                    validation_methods=validation_methods,
+                    repair_buckets=repair_buckets,
+                    deterministic_repairs_applied=deterministic_repairs_applied,
+                ),
             }
 
-        if preamble_imports:
-            lean_code = _inject_preamble_imports(lean_code, preamble_imports)
+        if context.preamble_imports:
+            lean_code = _inject_preamble_imports(lean_code, context.preamble_imports)
 
         _log(f"Attempt {attempt}: running sorry-validation...", data=lean_code, status="running")
         sv = sorry_validate(lean_code)
+        validation_methods.append(sv.get("method", "unknown"))
 
         if sv["valid"]:
             _log(f"Sorry-validation passed on attempt {attempt}", status="done")
@@ -469,6 +611,13 @@ def formalize(
                 "diagnosis": None,
                 "suggested_fix": None,
                 "fixable": None,
+                "formalizer_telemetry": _build_formalizer_telemetry(
+                    context,
+                    model_calls=model_calls,
+                    validation_methods=validation_methods,
+                    repair_buckets=repair_buckets,
+                    deterministic_repairs_applied=deterministic_repairs_applied,
+                ),
             }
 
         last_errors = sv["errors"]
@@ -477,6 +626,44 @@ def formalize(
             data="\n".join(last_errors[:3]),
             status="error",
         )
+
+        repaired_code, repairs = _apply_deterministic_repairs(lean_code, last_errors, context)
+        if repairs:
+            deterministic_repairs_applied.extend(
+                repair for repair in repairs if repair not in deterministic_repairs_applied
+            )
+            lean_code = repaired_code
+            _log(
+                f"Attempt {attempt}: applying deterministic repair(s): {', '.join(repairs)}",
+                status="running",
+            )
+            sv = sorry_validate(lean_code)
+            validation_methods.append(sv.get("method", "unknown"))
+            if sv["valid"]:
+                _log(
+                    f"Sorry-validation passed after deterministic repair on attempt {attempt}",
+                    status="done",
+                )
+                return {
+                    "success": True,
+                    "theorem_code": lean_code,
+                    "attempts": attempt,
+                    "errors": [],
+                    "formalization_failed": False,
+                    "failure_reason": None,
+                    "preamble_used": preamble_used,
+                    "diagnosis": None,
+                    "suggested_fix": None,
+                    "fixable": None,
+                    "formalizer_telemetry": _build_formalizer_telemetry(
+                        context,
+                        model_calls=model_calls,
+                        validation_methods=validation_methods,
+                        repair_buckets=repair_buckets,
+                        deterministic_repairs_applied=deterministic_repairs_applied,
+                    ),
+                }
+            last_errors = sv["errors"]
 
     # All attempts exhausted — run failure diagnosis
     _log("Running failure diagnosis...", status="running")
@@ -497,6 +684,13 @@ def formalize(
         "diagnosis": diag["diagnosis"],
         "suggested_fix": diag["suggested_fix"],
         "fixable": diag["fixable"],
+        "formalizer_telemetry": _build_formalizer_telemetry(
+            context,
+            model_calls=model_calls,
+            validation_methods=validation_methods,
+            repair_buckets=repair_buckets,
+            deterministic_repairs_applied=deterministic_repairs_applied,
+        ),
     }
 
 

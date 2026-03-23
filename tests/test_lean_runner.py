@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import lean_runner
+import mcp_runtime
 
 
 class _FakeSession:
@@ -142,3 +143,45 @@ def test_verify_axioms_sync_wrapper_works_inside_running_event_loop(monkeypatch)
 
 def test_extract_theorem_name() -> None:
     assert lean_runner.extract_theorem_name("theorem demo : True := by trivial") == "demo"
+
+
+def test_run_code_circuit_breaker_skips_repeated_failures(monkeypatch) -> None:
+    mcp_runtime.reset_formalization_mcp_status()
+    calls = {"count": 0}
+
+    class _ProjectPathSession:
+        async def call_tool(self, name: str, arguments: dict):
+            calls["count"] += 1
+            assert name == "lean_run_code"
+            assert isinstance(arguments, dict)
+            return SimpleNamespace(
+                isError=True,
+                content=[
+                    {
+                        "text": (
+                            "Error executing tool lean_run_code: "
+                            "No valid Lean project path found. Run another tool first to set it up."
+                        )
+                    }
+                ],
+            )
+
+    class _ProjectPathContext:
+        async def __aenter__(self):
+            return _ProjectPathSession()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(lean_runner, "open_lean_mcp_session", lambda: _ProjectPathContext())
+
+    with pytest.raises(RuntimeError, match="No valid Lean project path found"):
+        asyncio.run(lean_runner._run_code_async("import Mathlib"))
+
+    assert calls["count"] == 1
+
+    with pytest.raises(RuntimeError, match="temporarily disabled"):
+        asyncio.run(lean_runner._run_code_async("import Mathlib"))
+
+    assert calls["count"] == 1
+    mcp_runtime.reset_formalization_mcp_status()

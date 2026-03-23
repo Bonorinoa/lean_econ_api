@@ -10,6 +10,7 @@ This module exposes a frontend-friendly, multi-step API:
   - GET  /api/v1/jobs/{job_id}/stream
   - POST /api/v1/explain
   - GET  /api/v1/metrics
+  - GET  /api/v1/benchmarks/latest
   - GET  /api/v1/cache/stats
   - DELETE /api/v1/cache
 
@@ -36,12 +37,14 @@ from pydantic import BaseModel, ConfigDict, Field
 # app is launched via `uvicorn src.api:app`.
 sys.path.insert(0, str(Path(__file__).parent))
 
+from benchmark_harness import latest_snapshot_summary
 from error_codes import LeanEconErrorCode
 from eval_logger import LOG_FILE
 from explainer import explain_result
 from formalizer import classify_claim
 from job_store import JobStatus, job_store
 from lean_verifier import LEAN_SOURCE_DIR, VERIFICATION_FILE_PREFIX
+from outcome_codes import formalize_error_code, verify_error_code
 from pipeline import formalize_claim, parse_claim, run_pipeline
 from result_cache import result_cache
 
@@ -76,7 +79,8 @@ Recommended client workflow:
    returns additive observability metadata such as queue/start/finish timestamps
    and the latest reported pipeline stage.
 5. Use `POST /api/v1/explain` for natural-language summaries of outcomes.
-6. Use `GET /api/v1/metrics` and `GET /api/v1/cache/stats` for operational insight.
+6. Use `GET /api/v1/metrics`, `GET /api/v1/benchmarks/latest`, and
+   `GET /api/v1/cache/stats` for operational insight.
 
 Important behavior:
 
@@ -283,7 +287,8 @@ class FormalizeRequest(BaseModel):
         default_factory=list,
         description=(
             "Optional list of preamble definition names to inject. "
-            "If empty, auto-detected from the classifier for DEFINABLE claims."
+            "If empty, the formalizer may auto-select matching preamble modules "
+            "using bounded retrieval."
         ),
     )
 
@@ -529,6 +534,19 @@ class MetricsResponse(BaseModel):
     cache_hit_rate: float = Field(description="Cache-hit runs divided by total runs.")
 
 
+class BenchmarkStatusResponse(BaseModel):
+    """Summary-only view of the newest offline benchmark snapshot."""
+
+    generated_at: str = Field(description="UTC timestamp of the newest benchmark snapshot.")
+    benchmark_file: str = Field(description="Benchmark JSONL used to produce the snapshot.")
+    config: dict[str, Any] = Field(
+        description="Benchmark runner configuration for the latest snapshot."
+    )
+    summary: dict[str, Any] = Field(
+        description="Aggregate benchmark results without per-claim internals."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -558,30 +576,6 @@ def _looks_like_formalized_theorem(theorem_code: str) -> bool:
 def _server_error(message: str, exc: Exception) -> HTTPException:
     """Standardize 500 responses across endpoints."""
     return HTTPException(status_code=500, detail=f"{message}: {exc}")
-
-
-def _formalize_error_code(result: dict) -> LeanEconErrorCode:
-    """Choose the right error code for a failed formalization result."""
-    if not result.get("formalization_failed"):
-        return LeanEconErrorCode.NONE
-    reason = (result.get("failure_reason") or "").lower()
-    if any(kw in reason for kw in ("unformalizable", "not supported", "requires", "definition")):
-        return LeanEconErrorCode.FORMALIZATION_UNFORMALIZABLE
-    return LeanEconErrorCode.FORMALIZATION_FAILED
-
-
-def _verify_error_code(result: dict) -> LeanEconErrorCode:
-    """Choose the right error code for a completed pipeline result."""
-    if result.get("success"):
-        return LeanEconErrorCode.NONE
-    if result.get("stop_reason") == "timeout":
-        return LeanEconErrorCode.PROOF_TIMEOUT
-    lean_code = result.get("lean_code", "")
-    if lean_code and "sorry" in lean_code:
-        return LeanEconErrorCode.VERIFICATION_SORRY
-    if result.get("proof_generated") is False:
-        return LeanEconErrorCode.PROOF_NOT_FOUND
-    return LeanEconErrorCode.VERIFICATION_REJECTED
 
 
 def _format_sse_event(event: dict[str, Any]) -> str:
@@ -635,7 +629,7 @@ def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
             preformalized_theorem=theorem_code,
             on_log=on_log,
         )
-        error_code = _verify_error_code(result)
+        error_code = verify_error_code(result)
         response_data: dict[str, Any] = {
             "error_code": error_code,
             **result,
@@ -741,7 +735,8 @@ def classify_endpoint(request: ClaimRequest) -> ClassifyResponse:
     description=(
         "Convert natural language or LaTeX into a Lean theorem file that still "
         "contains `:= by sorry`. Raw Lean input is passed through unchanged. "
-        "Optionally accepts `preamble_names` to inject known definitions."
+        "Optionally accepts `preamble_names` to inject known definitions; when "
+        "omitted, the formalizer may auto-select matching preambles."
     ),
     responses={
         422: {"description": "The claim was blank."},
@@ -755,7 +750,7 @@ def formalize_endpoint(request: FormalizeRequest) -> FormalizeResponse:
     try:
         preamble_names = request.preamble_names or None
         result = formalize_claim(raw_claim, preamble_names=preamble_names)
-        error_code = _formalize_error_code(result)
+        error_code = formalize_error_code(result)
         return FormalizeResponse(error_code=error_code, **result)
     except HTTPException:
         raise
@@ -1006,6 +1001,26 @@ def metrics() -> MetricsResponse:
         verification_rate=round(verified / total, 3),
         cache_hit_rate=round(cache_hits / total, 3),
     )
+
+
+@router.get(
+    "/benchmarks/latest",
+    response_model=BenchmarkStatusResponse,
+    summary="Latest benchmark snapshot summary",
+    description=(
+        "Return the summary-only view of the newest offline benchmark snapshot "
+        "under `benchmarks/snapshots/`, without exposing per-claim internals."
+    ),
+    responses={
+        404: {"description": "No benchmark snapshot has been generated yet."},
+    },
+)
+def benchmark_status() -> BenchmarkStatusResponse:
+    """Return the newest benchmark summary, if available."""
+    summary = latest_snapshot_summary()
+    if summary is None:
+        raise HTTPException(status_code=404, detail="No benchmark snapshot found.")
+    return BenchmarkStatusResponse(**summary)
 
 
 @router.get(

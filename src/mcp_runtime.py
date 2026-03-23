@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -42,6 +43,11 @@ LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
 DEFAULT_MCP_RUNTIME_ROOT = str(PROJECT_ROOT / ".tmp" / "lean-lsp-mcp")
 MCP_STARTUP_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_STARTUP_TIMEOUT_SECONDS", "30"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_TOOL_TIMEOUT_SECONDS", "60"))
+FORMALIZATION_MCP_COOLDOWN_SECONDS = float(
+    os.environ.get("LEANECON_FORMALIZATION_MCP_COOLDOWN_SECONDS", "120")
+)
+_FORMALIZATION_MCP_DISABLED_UNTIL = 0.0
+_FORMALIZATION_MCP_LAST_FAILURE: str | None = None
 
 # NOTE (2026-03-21): we intentionally create a fresh MCPClientSTDIO for each
 # RunContext. Local probing showed that re-registering the same client instance
@@ -63,6 +69,37 @@ def _mcp_startup_failure_message(details: str) -> str:
         "`lean-lsp-mcp` ahead of time or validate through the Docker image. "
         f"Underlying error: {details}"
     )
+
+
+def reset_formalization_mcp_status() -> None:
+    """Clear formalizer-side MCP cooldown state."""
+    global _FORMALIZATION_MCP_DISABLED_UNTIL, _FORMALIZATION_MCP_LAST_FAILURE
+    _FORMALIZATION_MCP_DISABLED_UNTIL = 0.0
+    _FORMALIZATION_MCP_LAST_FAILURE = None
+
+
+def mark_formalization_mcp_failure(reason: str) -> None:
+    """Open the formalizer MCP circuit breaker for a short cooldown window."""
+    global _FORMALIZATION_MCP_DISABLED_UNTIL, _FORMALIZATION_MCP_LAST_FAILURE
+    _FORMALIZATION_MCP_DISABLED_UNTIL = time.monotonic() + FORMALIZATION_MCP_COOLDOWN_SECONDS
+    _FORMALIZATION_MCP_LAST_FAILURE = reason
+
+
+def mark_formalization_mcp_success() -> None:
+    """Clear any existing formalizer MCP cooldown after a successful tool call."""
+    reset_formalization_mcp_status()
+
+
+def formalization_mcp_available() -> tuple[bool, str | None]:
+    """Return whether formalizer-side MCP helpers should currently run."""
+    remaining = _FORMALIZATION_MCP_DISABLED_UNTIL - time.monotonic()
+    if remaining > 0:
+        reason = _FORMALIZATION_MCP_LAST_FAILURE or "recent MCP failure"
+        return False, (
+            "formalization MCP temporarily disabled after recent failure: "
+            f"{reason} (retry in ~{int(remaining)}s)"
+        )
+    return True, None
 
 
 def build_lean_lsp_stdio_params() -> StdioServerParameters:

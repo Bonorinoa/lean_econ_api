@@ -82,3 +82,21 @@ def test_query_lean_state_raises_runtime_error_on_tool_call_timeout(monkeypatch)
     with patch.object(mcp_runtime, "open_lean_mcp_session", _fake_mcp_session):
         with pytest.raises(RuntimeError, match="timed out"):
             asyncio.run(mcp_runtime.query_lean_state("LeanEcon/Fake.lean", 1))
+
+
+def test_formalization_mcp_status_circuit_breaker_round_trip() -> None:
+    mcp_runtime.reset_formalization_mcp_status()
+
+    allowed, reason = mcp_runtime.formalization_mcp_available()
+    assert allowed is True
+    assert reason is None
+
+    mcp_runtime.mark_formalization_mcp_failure("lean_run_code bootstrap failed")
+    allowed, reason = mcp_runtime.formalization_mcp_available()
+    assert allowed is False
+    assert "bootstrap failed" in (reason or "")
+
+    mcp_runtime.reset_formalization_mcp_status()
+    allowed, reason = mcp_runtime.formalization_mcp_available()
+    assert allowed is True
+    assert reason is None

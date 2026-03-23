@@ -14,7 +14,16 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from formalizer import _inject_preamble_imports, formalize
+from formalizer import (
+    REPAIR_BUCKET_SEMANTIC_MISMATCH,
+    REPAIR_BUCKET_SYNTAX_NOTATION,
+    REPAIR_BUCKET_TYPECLASS_INSTANCE,
+    REPAIR_BUCKET_UNKNOWN_IDENTIFIER,
+    REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE,
+    _inject_preamble_imports,
+    classify_repair_bucket,
+    formalize,
+)
 from preamble_library import (
     PREAMBLE_LIBRARY,
     build_preamble_block,
@@ -417,7 +426,7 @@ def test_formalize_with_explicit_preamble() -> None:
 
 
 def test_formalize_without_preamble_names() -> None:
-    """formalize() without preamble_names should NOT inject any preamble."""
+    """formalize() auto-selects matching preambles when names are omitted."""
     import formalizer
 
     lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
@@ -432,10 +441,106 @@ def test_formalize_without_preamble_names() -> None:
                 "method": "lean_run_code",
             },
         ):
-            result = formalizer.formalize("Some economic claim")
+            result = formalizer.formalize(
+                "For Cobb-Douglas preferences, Marshallian demand for good 1 is alpha * m / p1."
+            )
     assert result["success"] is True
-    assert result["preamble_used"] == []
-    assert "LeanEcon.Preamble" not in result["theorem_code"]
+    assert "marshallian_demand" in result["preamble_used"]
+    assert "LeanEcon.Preamble.Consumer.MarshallianDemand" in result["theorem_code"]
+
+
+def test_classify_repair_bucket() -> None:
+    assert classify_repair_bucket(["unknown module prefix 'Topology'"]) == (
+        REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE
+    )
+    assert classify_repair_bucket(["unknown identifier 'StrictConcave'"]) == (
+        REPAIR_BUCKET_UNKNOWN_IDENTIFIER
+    )
+    assert classify_repair_bucket(["failed to synthesize instance MetricSpace α"]) == (
+        REPAIR_BUCKET_TYPECLASS_INSTANCE
+    )
+    assert classify_repair_bucket(["unexpected token ':'; expected command"]) == (
+        REPAIR_BUCKET_SYNTAX_NOTATION
+    )
+    assert classify_repair_bucket(["application type mismatch"]) == REPAIR_BUCKET_SEMANTIC_MISMATCH
+
+
+def test_formalize_applies_deterministic_import_repair_before_second_model_call() -> None:
+    import formalizer
+
+    responses = [
+        "import Topology\n\ntheorem foo : True := by\n  sorry\n",
+    ]
+    validations = [
+        {
+            "valid": False,
+            "errors": ["unknown module prefix 'Topology'"],
+            "warnings": [],
+            "method": "lean_run_code",
+        },
+        {
+            "valid": True,
+            "errors": [],
+            "warnings": ["declaration uses `sorry`"],
+            "method": "lake_env_lean",
+        },
+    ]
+
+    with patch.object(formalizer, "call_leanstral", side_effect=responses) as mock_call:
+        with patch.object(formalizer, "sorry_validate", side_effect=validations):
+            result = formalizer.formalize("A trivial true claim.")
+
+    assert result["success"] is True
+    assert result["attempts"] == 1
+    assert mock_call.call_count == 1
+    assert result["formalizer_telemetry"]["deterministic_repairs_applied"] == [
+        "normalize_imports"
+    ]
+    assert result["formalizer_telemetry"]["validation_methods"] == [
+        "lean_run_code",
+        "lake_env_lean",
+    ]
+
+
+def test_formalize_uses_bucket_specific_repair_prompt() -> None:
+    import formalizer
+
+    lean_code = "import Mathlib\n\ntheorem foo : True := by\n  sorry\n"
+    prompts: list[str] = []
+
+    def fake_call(_client, messages, _stage, **_kwargs):
+        prompts.append(messages[0]["content"])
+        if len(prompts) == 1:
+            return lean_code
+        return "import Mathlib\n\ntheorem foo : True := by\n  sorry\n"
+
+    with patch.object(formalizer, "call_leanstral", side_effect=fake_call):
+        with patch.object(
+            formalizer,
+            "sorry_validate",
+            side_effect=[
+                {
+                    "valid": False,
+                    "errors": ["unknown identifier 'StrictConcave'"],
+                    "warnings": [],
+                    "method": "lean_run_code",
+                },
+                {
+                    "valid": True,
+                    "errors": [],
+                    "warnings": ["declaration uses `sorry`"],
+                    "method": "lake_env_lean",
+                },
+            ],
+        ):
+            result = formalizer.formalize("A strictly concave function has a property.")
+
+    assert result["success"] is True
+    assert len(prompts) == 2
+    assert "UNKNOWN IDENTIFIER" in prompts[1]
+    assert result["formalizer_telemetry"]["repair_buckets"] == [
+        REPAIR_BUCKET_UNKNOWN_IDENTIFIER
+    ]
 
 
 def test_expanded_keyword_strictly_concave() -> None:
