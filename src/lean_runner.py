@@ -10,7 +10,6 @@ Used by:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -18,6 +17,7 @@ import threading
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 
+from lean_diagnostics import extract_json_object, extract_mcp_text, normalize_structured_diagnostics
 from mcp_runtime import (
     formalization_mcp_available,
     mark_formalization_mcp_failure,
@@ -31,33 +31,6 @@ MCP_TOOL_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_TOOL_TIMEOUT_SECON
 
 # Axioms that are standard in Mathlib-based proofs
 STANDARD_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _extract_text(result: Any) -> str:
-    """Defensively extract text content from an MCP tool result."""
-    content = getattr(result, "content", None)
-    if content is None:
-        return str(result)
-    parts: list[str] = []
-    for item in content:
-        if hasattr(item, "text"):
-            parts.append(item.text)
-        elif isinstance(item, dict) and "text" in item:
-            parts.append(item["text"])
-    return "\n".join(parts)
-
-
-def _parse_structured(raw_text: str) -> dict[str, Any]:
-    """Try to parse the MCP response as JSON, return empty dict on failure."""
-    try:
-        return json.loads(raw_text)
-    except (json.JSONDecodeError, TypeError):
-        return {}
 
 
 def _run_sync(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
@@ -85,6 +58,16 @@ def _run_sync(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
     if not result:  # pragma: no cover - defensive, should be unreachable
         raise RuntimeError("Async wrapper exited without returning a result")
     return result[0]
+
+
+def _extract_text(result: Any) -> str:
+    """Backward-compatible wrapper for MCP text extraction."""
+    return extract_mcp_text(result)
+
+
+def _parse_structured(text: str) -> dict[str, Any]:
+    """Backward-compatible wrapper for JSON payload parsing."""
+    return extract_json_object(text) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -121,26 +104,20 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
             ) from exc
 
     if getattr(result, "isError", False):
-        raw_error = _extract_text(result)
+        raw_error = extract_mcp_text(result)
         mark_formalization_mcp_failure(raw_error or "lean_run_code MCP error")
         raise RuntimeError(f"lean_run_code MCP error: {raw_error or result}")
 
-    raw_text = _extract_text(result)
-    data = _parse_structured(raw_text)
+    raw_text = extract_mcp_text(result)
+    data = extract_json_object(raw_text) or {}
 
     # lean_run_code returns:
     #   {"success": bool, "diagnostics": [{"severity": str, "message": str, ...}]}
-    diagnostics = data.get("diagnostics", [])
-
-    errors: list[str] = []
-    warnings: list[str] = []
-    for d in diagnostics:
-        sev = d.get("severity", "")
-        msg = d.get("message", "")
-        if sev == "error":
-            errors.append(msg)
-        elif sev == "warning":
-            warnings.append(msg)
+    normalized = normalize_structured_diagnostics(
+        {"success": data.get("success", False), "items": data.get("diagnostics", [])}
+    )
+    errors = normalized["errors"]
+    warnings = normalized["warnings"]
 
     # Filter sorry-related messages — sorry is expected during sorry-validation
     real_errors = [
@@ -216,8 +193,8 @@ async def _verify_axioms_async(
     if getattr(result, "isError", False):
         raise RuntimeError(f"lean_verify MCP error: {result}")
 
-    raw_text = _extract_text(result)
-    data = _parse_structured(raw_text)
+    raw_text = extract_mcp_text(result)
+    data = extract_json_object(raw_text) or {}
 
     # lean_verify returns:
     #   {"axioms": [str], "warnings": [{"line": int, "pattern": str}]}

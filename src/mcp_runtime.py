@@ -22,6 +22,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment, stdio_client
 from mistralai.extra.mcp.stdio import MCPClientSTDIO
 
+from lean_diagnostics import normalize_structured_diagnostics
+
 # Suppress noisy "Failed to parse JSONRPC message" warnings from the MCP stdio
 # client. These fire whenever `lake build` writes plain-text progress messages
 # (e.g. "Current branch: HEAD", "Using cache (Azure) from...") to stdout,
@@ -227,19 +229,8 @@ def parse_diagnostics(diagnostics_structured: dict[str, Any]) -> tuple[list[str]
 
     Each item is formatted as "line N: message" when a line number is present.
     """
-    result = diagnostics_structured.get("result", {})
-    items = result.get("items", [])
-    errors: list[str] = []
-    warnings: list[str] = []
-    for item in items:
-        message = item.get("message", "")
-        line = item.get("line")
-        prefix = f"line {line}: " if line else ""
-        if item.get("severity") == "error":
-            errors.append(prefix + message)
-        elif item.get("severity") == "warning":
-            warnings.append(prefix + message)
-    return errors, warnings
+    normalized = normalize_structured_diagnostics(diagnostics_structured, result_key="result")
+    return normalized["errors"], normalized["warnings"]
 
 
 def has_sorry_warning(warnings: list[str]) -> bool:

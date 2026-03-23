@@ -26,6 +26,7 @@ from mcp_runtime import (
     open_lean_mcp_session,
     open_mistral_run_context,
 )
+from model_config import LEANSTRAL_MODEL
 
 FIXTURE_PATH = LEAN_WORKSPACE / "LeanEcon" / "McpSmoke.lean"
 TARGET_FILE = lean_workspace_relative_path(FIXTURE_PATH)
@@ -86,7 +87,7 @@ def _extract_goals_after(goal_result) -> list[str]:
 
 
 async def _verify_run_context_tools() -> list[str]:
-    async with open_mistral_run_context(model="labs-leanstral-2603") as run_ctx:
+    async with open_mistral_run_context(model=LEANSTRAL_MODEL) as run_ctx:
         tool_names = _tool_names(run_ctx)
         missing = sorted(REQUIRED_TOOLS - set(tool_names))
         if missing:

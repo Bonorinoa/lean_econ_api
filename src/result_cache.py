@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import threading
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
@@ -35,16 +36,37 @@ def _state_dir() -> Path:
 
 CACHE_DIR = _state_dir() / "data"
 CACHE_FILE = CACHE_DIR / "verified_cache.json"
+FORMALIZATION_CACHE_FILE = CACHE_DIR / "formalization_cache.json"
 
 
-class ResultCache:
-    """Thread-safe result cache backed by a JSON file."""
+def _structured_key(payload: Any) -> str:
+    normalized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+class _JsonBackedCache(ABC):
+    """Thread-safe JSON-backed cache with shallow LRU eviction."""
 
     def __init__(self, cache_file: Path | None = None):
-        self._cache_file = cache_file or CACHE_FILE
+        self._cache_file = cache_file or self.default_cache_file()
         self._cache: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._load()
+
+    @classmethod
+    @abstractmethod
+    def default_cache_file(cls) -> Path:
+        """Return the on-disk JSON file used by this cache."""
+
+    @staticmethod
+    @abstractmethod
+    def _make_key(cache_input: Any) -> str:
+        """Normalize cache input into a stable key."""
+
+    @staticmethod
+    @abstractmethod
+    def should_cache(result: dict[str, Any]) -> bool:
+        """Whether the result is worth caching."""
 
     def _load(self) -> None:
         if not self._cache_file.is_file():
@@ -70,13 +92,8 @@ class ResultCache:
         except OSError as exc:
             logger.warning("Cache save failed: %s", exc)
 
-    @staticmethod
-    def _make_key(claim_text: str) -> str:
-        normalized = claim_text.strip()
-        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-
-    def get(self, claim_text: str) -> dict[str, Any] | None:
-        key = self._make_key(claim_text)
+    def get(self, cache_input: Any) -> dict[str, Any] | None:
+        key = self._make_key(cache_input)
         with self._lock:
             entry = self._cache.get(key)
             if entry is None:
@@ -84,11 +101,11 @@ class ResultCache:
             logger.info("Cache hit for key %s", key)
             return copy.deepcopy(entry.get("result"))
 
-    def put(self, claim_text: str, result: dict[str, Any]) -> None:
-        if not result.get("success"):
+    def put(self, cache_input: Any, result: dict[str, Any]) -> None:
+        if not self.should_cache(result):
             return
 
-        key = self._make_key(claim_text)
+        key = self._make_key(cache_input)
         with self._lock:
             if key in self._cache:
                 del self._cache[key]
@@ -97,7 +114,7 @@ class ResultCache:
                 del self._cache[oldest_key]
 
             self._cache[key] = {
-                "claim_text": claim_text.strip(),
+                "cache_input": copy.deepcopy(cache_input),
                 "result": copy.deepcopy(result),
             }
             self._save()
@@ -113,4 +130,38 @@ class ResultCache:
             return len(self._cache)
 
 
+class ResultCache(_JsonBackedCache):
+    """Thread-safe verified-result cache backed by a JSON file."""
+
+    @classmethod
+    def default_cache_file(cls) -> Path:
+        return CACHE_FILE
+
+    @staticmethod
+    def _make_key(claim_text: str) -> str:
+        normalized = claim_text.strip()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def should_cache(result: dict[str, Any]) -> bool:
+        return bool(result.get("success"))
+
+
+class FormalizationCache(_JsonBackedCache):
+    """Cache successful or explicitly unformalizable formalization results."""
+
+    @classmethod
+    def default_cache_file(cls) -> Path:
+        return FORMALIZATION_CACHE_FILE
+
+    @staticmethod
+    def _make_key(cache_input: dict[str, Any]) -> str:
+        return _structured_key(cache_input)
+
+    @staticmethod
+    def should_cache(result: dict[str, Any]) -> bool:
+        return bool(result.get("success") or result.get("formalization_failed"))
+
+
 result_cache = ResultCache()
+formalization_cache = FormalizationCache()

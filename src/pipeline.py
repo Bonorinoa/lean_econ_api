@@ -17,6 +17,7 @@ from typing import Any, TypedDict
 
 from eval_logger import log_run
 from formalizer import formalize
+from model_config import LEANSTRAL_MODEL
 from prover_backend import get_prover
 from result_cache import result_cache
 
@@ -101,30 +102,176 @@ def parse_claim(raw_input: str) -> dict:
     return {"text": text}
 
 
+def _is_raw_lean_input(raw_input: str) -> bool:
+    """Detect theorem-stub input that can skip the natural-language formalizer."""
+    return "import Mathlib" in raw_input or (":= by" in raw_input and "sorry" in raw_input)
+
+
+def _formalization_model_label(formalization: dict[str, Any]) -> str:
+    telemetry = formalization.get("formalizer_telemetry") or {}
+    model = telemetry.get("model")
+    if model:
+        return str(model)
+    if formalization.get("attempts", 0) == 0:
+        return "raw_lean_bypass"
+    return LEANSTRAL_MODEL
+
+
+def _formalization_log_payload(formalization: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "success": formalization.get("success", False),
+        "attempts": formalization.get("attempts", 0),
+        "theorem_code": formalization.get("theorem_code", ""),
+        "errors": formalization.get("errors", []),
+        "model": _formalization_model_label(formalization),
+        "formalization_failed": formalization.get("formalization_failed", False),
+        "failure_reason": formalization.get("failure_reason"),
+        "formalizer_telemetry": formalization.get("formalizer_telemetry", {}),
+    }
+
+
+def _raw_lean_formalization_result(raw_input: str) -> dict[str, Any]:
+    return {
+        "success": True,
+        "theorem_code": raw_input.strip(),
+        "attempts": 0,
+        "errors": [],
+        "formalization_failed": False,
+        "failure_reason": None,
+        "preamble_used": [],
+        "diagnosis": None,
+        "suggested_fix": None,
+        "fixable": None,
+        "formalizer_telemetry": {
+            "model": "raw_lean_bypass",
+            "cache_hit": False,
+            "validation_method": None,
+            "validation_methods": [],
+            "validation_fallback_reasons": [],
+            "repair_buckets": [],
+            "deterministic_repairs_applied": [],
+            "selected_preambles": [],
+            "explicit_preambles": [],
+            "auto_preambles": [],
+            "retrieval": {},
+            "mcp": {},
+        },
+    }
+
+
+def _preformalized_result(theorem_code: str) -> dict[str, Any]:
+    return {
+        "success": True,
+        "theorem_code": theorem_code.strip(),
+        "attempts": 0,
+        "errors": [],
+        "formalization_failed": False,
+        "failure_reason": None,
+        "preamble_used": [],
+        "diagnosis": None,
+        "suggested_fix": None,
+        "fixable": None,
+        "formalizer_telemetry": {
+            "model": "preformalized_input",
+            "cache_hit": False,
+            "validation_method": None,
+            "validation_methods": [],
+            "validation_fallback_reasons": [],
+            "repair_buckets": [],
+            "deterministic_repairs_applied": [],
+            "selected_preambles": [],
+            "explicit_preambles": [],
+            "auto_preambles": [],
+            "retrieval": {},
+            "mcp": {},
+        },
+    }
+
+
+def _failed_pipeline_result(f_result: dict[str, Any], *, started_at: float) -> dict[str, Any]:
+    return {
+        "success": False,
+        "lean_code": f_result.get("theorem_code", ""),
+        "errors": f_result.get("errors", []),
+        "warnings": [],
+        "proof_strategy": "",
+        "proof_tactics": "",
+        "theorem_statement": f_result.get("theorem_code", ""),
+        "formalization_attempts": f_result.get("attempts", 0),
+        "formalization_failed": f_result.get("formalization_failed", False),
+        "failure_reason": f_result.get("failure_reason"),
+        "output_lean": None,
+        "proof_generated": False,
+        "phase": "failed",
+        "elapsed_seconds": time.time() - started_at,
+        "from_cache": False,
+        "partial": False,
+        "stop_reason": None,
+        "tool_trace": [],
+        "tactic_calls": [],
+        "trace_schema_version": 1,
+        "agent_summary": "",
+        "agent_elapsed_seconds": 0.0,
+        "axiom_info": None,
+    }
+
+
+def _successful_pipeline_result(
+    *,
+    theorem_with_sorry: str,
+    f_result: dict[str, Any],
+    pv_result: ProveResult,
+    started_at: float,
+) -> dict[str, Any]:
+    if pv_result["success"]:
+        phase = "verified"
+    elif pv_result["proof_generated"]:
+        phase = "proved"
+    else:
+        phase = "failed"
+
+    return {
+        "success": pv_result["success"],
+        "lean_code": pv_result["lean_code"],
+        "errors": pv_result["errors"],
+        "warnings": pv_result["warnings"],
+        "proof_strategy": pv_result["proof_strategy"],
+        "proof_tactics": pv_result["proof_tactics"],
+        "theorem_statement": theorem_with_sorry,
+        "formalization_attempts": f_result["attempts"],
+        "formalization_failed": False,
+        "failure_reason": None,
+        "output_lean": pv_result["output_lean"],
+        "proof_generated": pv_result["proof_generated"],
+        "phase": phase,
+        "elapsed_seconds": time.time() - started_at,
+        "from_cache": False,
+        "partial": pv_result["partial"],
+        "stop_reason": pv_result["stop_reason"],
+        "attempts_used": pv_result["attempts_used"],
+        "tool_trace": pv_result["tool_trace"],
+        "tactic_calls": pv_result["tactic_calls"],
+        "trace_schema_version": pv_result["trace_schema_version"],
+        "agent_summary": pv_result["agent_summary"],
+        "agent_elapsed_seconds": pv_result["agent_elapsed_seconds"],
+        "axiom_info": pv_result.get("axiom_info"),
+    }
+
+
 def formalize_claim(
     raw_input: str,
     on_log: callable | None = None,
     preamble_names: list[str] | None = None,
+    use_cache: bool = True,
 ) -> dict:
     """
     Phase 1: parse + formalize only. Returns the theorem statement for user review.
 
     Auto-detects raw Lean input and skips formalization if detected.
     """
-    if "import Mathlib" in raw_input or (":= by" in raw_input and "sorry" in raw_input):
+    if _is_raw_lean_input(raw_input):
         _log(on_log, "parse", "Raw Lean input detected — skipping formalization", status="done")
-        return {
-            "success": True,
-            "theorem_code": raw_input.strip(),
-            "attempts": 0,
-            "errors": [],
-            "formalization_failed": False,
-            "failure_reason": None,
-            "preamble_used": [],
-            "diagnosis": None,
-            "suggested_fix": None,
-            "fixable": None,
-        }
+        return _raw_lean_formalization_result(raw_input)
 
     _log(on_log, "parse", "Cleaning input...", status="running")
     t_parse = time.time()
@@ -133,7 +280,12 @@ def formalize_claim(
 
     _log(on_log, "formalize", "Calling Leanstral to formalize claim...", status="running")
     t_formalize = time.time()
-    result = formalize(parsed["text"], on_log=on_log, preamble_names=preamble_names)
+    result = formalize(
+        parsed["text"],
+        on_log=on_log,
+        preamble_names=preamble_names,
+        use_cache=use_cache,
+    )
     formalize_elapsed_ms = (time.time() - t_formalize) * 1000
 
     if result["formalization_failed"]:
@@ -251,6 +403,7 @@ def run_pipeline(
                         "model": "cache_replay",
                         "formalization_failed": False,
                         "failure_reason": None,
+                        "formalizer_telemetry": {},
                     },
                     proving={
                         "success": cached.get("success", True),
@@ -277,61 +430,18 @@ def run_pipeline(
             return cached
 
     if preformalized_theorem is not None:
-        f_result = {
-            "success": True,
-            "theorem_code": preformalized_theorem.strip(),
-            "attempts": 0,
-            "errors": [],
-            "formalization_failed": False,
-            "failure_reason": None,
-            "preamble_used": [],
-            "diagnosis": None,
-            "suggested_fix": None,
-            "fixable": None,
-        }
+        f_result = _preformalized_result(preformalized_theorem)
     else:
-        f_result = formalize_claim(raw_input, on_log=on_log)
+        f_result = formalize_claim(raw_input, on_log=on_log, use_cache=use_cache)
 
     if not f_result["success"]:
-        result = {
-            "success": False,
-            "lean_code": f_result.get("theorem_code", ""),
-            "errors": f_result.get("errors", []),
-            "warnings": [],
-            "proof_strategy": "",
-            "proof_tactics": "",
-            "theorem_statement": f_result.get("theorem_code", ""),
-            "formalization_attempts": f_result.get("attempts", 0),
-            "formalization_failed": f_result.get("formalization_failed", False),
-            "failure_reason": f_result.get("failure_reason"),
-            "output_lean": None,
-            "proof_generated": False,
-            "phase": "failed",
-            "elapsed_seconds": time.time() - start,
-            "from_cache": False,
-            "partial": False,
-            "stop_reason": None,
-            "tool_trace": [],
-            "tactic_calls": [],
-            "trace_schema_version": 1,
-            "agent_summary": "",
-            "agent_elapsed_seconds": 0.0,
-            "axiom_info": None,
-        }
+        result = _failed_pipeline_result(f_result, started_at=start)
         log_run(
             _build_run_log_entry(
                 raw_input=raw_input,
                 input_text=raw_input[:500] if preformalized_theorem is None else "",
                 input_mode="raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
-                formalization={
-                    "success": f_result["success"],
-                    "attempts": f_result["attempts"],
-                    "theorem_code": f_result.get("theorem_code", ""),
-                    "errors": f_result.get("errors", []),
-                    "model": "labs-leanstral-2603",
-                    "formalization_failed": f_result.get("formalization_failed", False),
-                    "failure_reason": f_result.get("failure_reason"),
-                },
+                formalization=_formalization_log_payload(f_result),
                 proving={
                     "success": False,
                     "attempts_used": 0,
@@ -357,40 +467,12 @@ def run_pipeline(
 
     theorem_with_sorry = f_result["theorem_code"]
     pv_result = prove_and_verify(theorem_with_sorry, on_log=on_log)
-
-    if pv_result["success"]:
-        phase = "verified"
-    elif pv_result["proof_generated"]:
-        phase = "proved"
-    else:
-        phase = "failed"
-
-    result = {
-        "success": pv_result["success"],
-        "lean_code": pv_result["lean_code"],
-        "errors": pv_result["errors"],
-        "warnings": pv_result["warnings"],
-        "proof_strategy": pv_result["proof_strategy"],
-        "proof_tactics": pv_result["proof_tactics"],
-        "theorem_statement": theorem_with_sorry,
-        "formalization_attempts": f_result["attempts"],
-        "formalization_failed": False,
-        "failure_reason": None,
-        "output_lean": pv_result["output_lean"],
-        "proof_generated": pv_result["proof_generated"],
-        "phase": phase,
-        "elapsed_seconds": time.time() - start,
-        "from_cache": False,
-        "partial": pv_result["partial"],
-        "stop_reason": pv_result["stop_reason"],
-        "attempts_used": pv_result["attempts_used"],
-        "tool_trace": pv_result["tool_trace"],
-        "tactic_calls": pv_result["tactic_calls"],
-        "trace_schema_version": pv_result["trace_schema_version"],
-        "agent_summary": pv_result["agent_summary"],
-        "agent_elapsed_seconds": pv_result["agent_elapsed_seconds"],
-        "axiom_info": pv_result.get("axiom_info"),
-    }
+    result = _successful_pipeline_result(
+        theorem_with_sorry=theorem_with_sorry,
+        f_result=f_result,
+        pv_result=pv_result,
+        started_at=start,
+    )
 
     if use_cache and result["success"]:
         result_cache.put(cache_key_input, result)
@@ -400,15 +482,7 @@ def run_pipeline(
             raw_input=raw_input,
             input_text=raw_input[:500] if preformalized_theorem is None else "",
             input_mode="raw_lean" if f_result["attempts"] == 0 else "latex_or_text",
-            formalization={
-                "success": f_result["success"],
-                "attempts": f_result["attempts"],
-                "theorem_code": f_result["theorem_code"],
-                "errors": f_result["errors"],
-                "model": "labs-leanstral-2603",
-                "formalization_failed": f_result["formalization_failed"],
-                "failure_reason": f_result["failure_reason"],
-            },
+            formalization=_formalization_log_payload(f_result),
             proving={
                 "success": pv_result["success"],
                 "attempts_used": pv_result["attempts_used"],

@@ -16,9 +16,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 
+from model_config import LEANSTRAL_MODEL
+
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-MODEL = "labs-leanstral-2603"
 DEFAULT_TEMPERATURE = 1.0
 DEFAULT_MAX_TOKENS = 32000
 MAX_RETRIES = 2
@@ -72,7 +73,7 @@ def call_leanstral(
     messages: list[dict],
     stage: str,
     *,
-    model: str = MODEL,
+    model: str = LEANSTRAL_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
 ) -> str:

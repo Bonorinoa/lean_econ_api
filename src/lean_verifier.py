@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
+from lean_diagnostics import parse_plain_lean_diagnostics
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -212,76 +214,8 @@ def verify(
 
 
 def _parse_diagnostics(text: str, level: str) -> list[str]:
-    """
-    Extract error or warning lines from Lean compiler output.
-
-    The verifier currently sees diagnostics in one of two styles:
-      A) Lean text format:
-         `LeanEcon/AgenticProof_ab12cd34ef56.lean:5:2: error: message`
-      B) Lake summary format:
-         `error: LeanEcon/AgenticProof_ab12cd34ef56.lean:5:2: message`
-
-    We capture the message part and up to 3 continuation lines (for goal state).
-
-    Args:
-        text: Combined stdout + stderr from the verification command.
-        level: "error" or "warning".
-
-    Returns:
-        List of diagnostic message strings, each prefixed with location if available.
-    """
-    lines = text.splitlines()
-    results = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        msg = None
-        location = None
-
-        # Style A: `path:line:col: error: message`  (lean raw text output)
-        if f": {level}:" in line:
-            parts = line.split(f": {level}:", 1)
-            msg = parts[1].strip() if len(parts) > 1 else line.strip()
-            location = parts[0].strip()
-
-        # Style B: `error: path:line:col: message`  (lake formatted output)
-        elif line.startswith(f"{level}: "):
-            rest = line[len(level) + 2 :]
-            # Confirm it looks like a path diagnostic (contains .lean:N:M:)
-            if re.match(r".*\.lean:\d+:\d+:", rest):
-                # Find second colon after .lean:N:
-                m = re.match(r"(.*\.lean:\d+:\d+):(.*)", rest)
-                if m:
-                    location = m.group(1).strip()
-                    msg = m.group(2).strip()
-            # Also catch bare `error: some message` (no path) like "error: build failed"
-            elif level == "error" and not re.match(r".*\.lean", rest):
-                # Skip non-diagnostic error lines like "error: build failed"
-                pass
-
-        if msg:
-            # Grab up to 3 continuation lines (indented goal state, `|` context, `^` markers)
-            context_lines = []
-            j = i + 1
-            while j < len(lines) and j < i + 5:
-                next_line = lines[j]
-                if (
-                    next_line.startswith("  ")
-                    or next_line.startswith("| ")
-                    or next_line.startswith("^")
-                    or next_line.startswith("⊢")
-                ):
-                    context_lines.append(next_line)
-                    j += 1
-                else:
-                    break
-            full_msg = f"{location}: {msg}" if location else msg
-            if context_lines:
-                full_msg += "\n" + "\n".join(context_lines)
-            results.append(full_msg)
-
-        i += 1
-    return results
+    """Extract error or warning lines from Lean compiler output."""
+    return parse_plain_lean_diagnostics(text, level)
 
 
 def _save_to_outputs(lean_code: str, lean_path: Path, result: dict):

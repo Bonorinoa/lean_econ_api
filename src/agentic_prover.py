@@ -30,8 +30,10 @@ from typing import Any, cast
 
 from dotenv import load_dotenv
 
+from lean_diagnostics import extract_json_payload, normalize_structured_diagnostics
 from lean_verifier import verify
 from mcp_runtime import PROJECT_ROOT, open_mistral_run_context
+from model_config import LEANSTRAL_MODEL
 from proof_file_controller import ProofFileController
 from prover_backend import register_prover
 
@@ -41,7 +43,6 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Constants
 # ---------------------------------------------------------------------------
 
-MODEL = "labs-leanstral-2603"
 TIMEOUT_MS = 120_000  # 2 minutes for the full run_async conversation
 DEFAULT_MAX_STEPS = 12  # not enforced directly — run_async manages its own loop
 
@@ -123,6 +124,7 @@ LOCAL_FAST_PATH_ALGEBRA_TACTICS = (
 )
 LOCAL_FAST_PATH_FIELD_TACTICS = ("field_simp\nring",)
 NUMERIC_LITERAL_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
+TACTIC_HYPOTHESIS_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
 
 
 class ToolBudgetExceededError(RuntimeError):
@@ -447,10 +449,54 @@ def _should_try_local_fast_path(theorem_with_sorry: str) -> bool:
     return not any(marker in stripped for marker in LOCAL_FAST_PATH_BLOCKLIST)
 
 
+def _top_level_parenthesized_binders(theorem_surface: str) -> list[str]:
+    binders: list[str] = []
+    depth = 0
+    start: int | None = None
+    for index, char in enumerate(theorem_surface):
+        if char == "(":
+            if depth == 0:
+                start = index + 1
+            depth += 1
+        elif char == ")" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                binders.append(theorem_surface[start:index].strip())
+                start = None
+    return binders
+
+
+def _exact_hypothesis_names(theorem_surface: str) -> list[str]:
+    if ":" not in theorem_surface:
+        return []
+    conclusion = " ".join(theorem_surface.rsplit(":", 1)[-1].split())
+    if not conclusion:
+        return []
+
+    names: list[str] = []
+    for binder in _top_level_parenthesized_binders(theorem_surface):
+        if ":" not in binder:
+            continue
+        raw_names, raw_type = binder.split(":", 1)
+        hypothesis_type = " ".join(raw_type.split())
+        if hypothesis_type != conclusion:
+            continue
+        for candidate in raw_names.split():
+            if TACTIC_HYPOTHESIS_NAME_RE.match(candidate):
+                names.append(candidate)
+    return names
+
+
 def _local_fast_path_tactics(theorem_with_sorry: str) -> list[str]:
     """Choose a short deterministic tactic list from theorem surface features."""
     theorem_surface = theorem_with_sorry.split(":= by", 1)[0]
     tactics: list[str] = []
+    exact_hypotheses = _exact_hypothesis_names(theorem_surface)
+    for hypothesis_name in exact_hypotheses:
+        tactics.append(f"exact {hypothesis_name}")
+        tactics.append(f"simpa using {hypothesis_name}")
+    if exact_hypotheses:
+        tactics.append("assumption")
     looks_numeric_arithmetic = bool(NUMERIC_LITERAL_RE.search(theorem_surface)) and any(
         token in theorem_surface for token in ("=", "≤", "<", "≥", ">", "+", "-", "*", "/")
     )
@@ -583,69 +629,12 @@ def _try_local_tactic_fast_path(
     return None
 
 
-def _extract_json_like_payload(value: Any) -> dict[str, Any] | None:
-    """Best-effort parse of MCP result payloads that embed JSON as text."""
-    payload = value
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError:
-            return None
-
-    if isinstance(payload, dict):
-        return payload
-
-    if isinstance(payload, list) and payload:
-        first = payload[0]
-        if isinstance(first, dict):
-            text = first.get("text")
-            if isinstance(text, str):
-                try:
-                    nested = json.loads(text)
-                except json.JSONDecodeError:
-                    return None
-                if isinstance(nested, dict):
-                    return nested
-    return None
-
-
 def _parse_diagnostic_payload(result_text: Any) -> dict[str, Any] | None:
     """Extract Lean kernel diagnostics from an MCP tool result."""
-    payload = _extract_json_like_payload(result_text)
+    payload = extract_json_payload(result_text)
     if not isinstance(payload, dict):
         return None
-
-    items = payload.get("items", [])
-    if not isinstance(items, list):
-        items = []
-
-    errors: list[str] = []
-    warnings: list[str] = []
-    normalized_items: list[dict[str, Any]] = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        message = str(item.get("message", "")).strip()
-        line = item.get("line")
-        prefix = f"line {line}: " if line else ""
-        normalized = {
-            "severity": item.get("severity"),
-            "message": message,
-            "line": line,
-            "column": item.get("column"),
-        }
-        normalized_items.append(normalized)
-        if item.get("severity") == "error":
-            errors.append(prefix + message)
-        elif item.get("severity") == "warning":
-            warnings.append(prefix + message)
-
-    return {
-        "success": bool(payload.get("success", False)),
-        "errors": errors,
-        "warnings": warnings,
-        "items": normalized_items,
-    }
+    return normalize_structured_diagnostics(payload)
 
 
 def _status_code_from_exception(exc: Exception) -> int | None:
@@ -1316,7 +1305,7 @@ async def _prove_theorem_agentic_async(
         run_ctx = None
 
         try:
-            async with open_mistral_run_context(model=MODEL) as run_ctx:
+            async with open_mistral_run_context(model=LEANSTRAL_MODEL) as run_ctx:
                 run_ctx.agentic_tool_tracker = tool_tracker
                 run_ctx.register_func(apply_tactic_fn)
                 removed_tools = _prune_agentic_tools(run_ctx)

@@ -11,8 +11,11 @@ Includes:
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from formalizer import (
     REPAIR_BUCKET_SEMANTIC_MISMATCH,
@@ -34,6 +37,15 @@ from preamble_library import (
     read_preamble_source,
 )
 from prompts import build_classify_prompt
+from result_cache import FormalizationCache
+
+
+@pytest.fixture(autouse=True)
+def _stub_formalizer_client():
+    import formalizer
+
+    with patch.object(formalizer, "get_client", return_value=object()):
+        yield
 
 # ---------------------------------------------------------------------------
 # Live smoke tests (require MISTRAL_API_KEY + local Lean toolchain)
@@ -325,6 +337,21 @@ def test_diagnose_valid_json() -> None:
     assert result["fixable"] is True
 
 
+def test_diagnose_fenced_json() -> None:
+    import formalizer
+
+    mock_response = """```json
+{"diagnosis": "Preserve hypotheses", "suggested_fix": "Use the existing assumption", "fixable": true}
+```"""
+    with patch.object(formalizer, "call_leanstral", return_value=mock_response):
+        result = formalizer._diagnose_formalization_failure(
+            "some claim", "import Mathlib\nsorry", ["error: type mismatch"]
+        )
+    assert result["diagnosis"] == "Preserve hypotheses"
+    assert result["suggested_fix"] == "Use the existing assumption"
+    assert result["fixable"] is True
+
+
 def test_diagnose_invalid_json_fallback() -> None:
     import formalizer
 
@@ -488,7 +515,7 @@ def test_formalize_applies_deterministic_import_repair_before_second_model_call(
 
     with patch.object(formalizer, "call_leanstral", side_effect=responses) as mock_call:
         with patch.object(formalizer, "sorry_validate", side_effect=validations):
-            result = formalizer.formalize("A trivial true claim.")
+            result = formalizer.formalize("A trivial true claim.", use_cache=False)
 
     assert result["success"] is True
     assert result["attempts"] == 1
@@ -500,6 +527,34 @@ def test_formalize_applies_deterministic_import_repair_before_second_model_call(
         "lean_run_code",
         "lake_env_lean",
     ]
+
+
+def test_formalize_cache_hit_skips_second_model_call() -> None:
+    import formalizer
+
+    lean_code = "import Mathlib\n\ntheorem foo : True := by\n  sorry\n"
+    validation = {
+        "valid": True,
+        "errors": [],
+        "warnings": ["declaration uses `sorry`"],
+        "method": "lean_run_code",
+    }
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = FormalizationCache(cache_file=Path(tmpdir) / "formalization_cache.json")
+        with (
+            patch.object(formalizer, "formalization_cache", cache),
+            patch.object(formalizer, "call_leanstral", return_value=lean_code) as mock_call,
+            patch.object(formalizer, "sorry_validate", return_value=validation) as mock_validate,
+        ):
+            first = formalizer.formalize("1 + 1 = 2", use_cache=True)
+            second = formalizer.formalize("1 + 1 = 2", use_cache=True)
+
+    assert first["success"] is True
+    assert second["success"] is True
+    assert mock_call.call_count == 1
+    assert mock_validate.call_count == 1
+    assert second["formalizer_telemetry"]["cache_hit"] is True
 
 
 def test_formalize_uses_bucket_specific_repair_prompt() -> None:
@@ -533,7 +588,10 @@ def test_formalize_uses_bucket_specific_repair_prompt() -> None:
                 },
             ],
         ):
-            result = formalizer.formalize("A strictly concave function has a property.")
+            result = formalizer.formalize(
+                "A strictly concave function has a property.",
+                use_cache=False,
+            )
 
     assert result["success"] is True
     assert len(prompts) == 2

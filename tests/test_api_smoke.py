@@ -245,6 +245,7 @@ def test_benchmark_status_summary_endpoint() -> None:
             "summary": {
                 "total_cases": 3,
                 "lanes": {"raw_claim_full_api": {"pass_at_1": 1.0}},
+                "by_tier": {"tier0_smoke": {"total_cases": 3}},
             },
         },
     ):
@@ -254,6 +255,7 @@ def test_benchmark_status_summary_endpoint() -> None:
     body = response.json()
     assert body["benchmark_file"] == "benchmarks/tier0_smoke.jsonl"
     assert body["summary"]["total_cases"] == 3
+    assert body["summary"]["by_tier"]["tier0_smoke"]["total_cases"] == 3
     assert "cases" not in body
 
 

@@ -14,10 +14,11 @@ from typing import Any, Sequence
 
 from outcome_codes import formalize_error_code, verify_error_code
 from pipeline import formalize_claim, run_pipeline
+from semantic_alignment import grade_semantic_alignment
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "benchmarks"
-SNAPSHOT_SCHEMA_VERSION = 2
+SNAPSHOT_SCHEMA_VERSION = 3
 
 MODE_FULL = "full"
 MODE_FORMALIZER_ONLY = "formalizer-only"
@@ -271,6 +272,7 @@ def _lane_attempt_summary(
     failure_reason: str | None = None,
     formalization_failed: bool = False,
     formalizer_telemetry: dict[str, Any] | None = None,
+    semantic_alignment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "success": success,
@@ -289,10 +291,21 @@ def _lane_attempt_summary(
         "errors": errors,
         "warnings": warnings,
         "formalizer_telemetry": dict(formalizer_telemetry or {}),
+        "semantic_alignment": dict(semantic_alignment or {}),
     }
 
 
-def _run_formalizer_only_attempt(case: BenchmarkCase) -> dict[str, Any]:
+def _grade_formalization_semantics(
+    case: BenchmarkCase,
+    *,
+    theorem_code: str | None,
+) -> dict[str, Any] | None:
+    if not case.raw_claim or not theorem_code:
+        return None
+    return grade_semantic_alignment(case.raw_claim, theorem_code)
+
+
+def _run_formalizer_only_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[str, Any]:
     if not case.raw_claim:
         raise ValueError("formalizer-only lane requires `raw_claim`.")
 
@@ -306,9 +319,15 @@ def _run_formalizer_only_attempt(case: BenchmarkCase) -> dict[str, Any]:
         case.raw_claim,
         on_log=on_log,
         preamble_names=case.preamble_names or None,
+        use_cache=use_cache,
     )
     latency_ms = (time.perf_counter() - start) * 1000
     success = bool(result.get("success"))
+    semantic_alignment = (
+        _grade_formalization_semantics(case, theorem_code=result.get("theorem_code"))
+        if success
+        else None
+    )
     return _lane_attempt_summary(
         success=success,
         latency_ms=latency_ms,
@@ -330,6 +349,7 @@ def _run_formalizer_only_attempt(case: BenchmarkCase) -> dict[str, Any]:
         failure_reason=result.get("failure_reason"),
         formalization_failed=bool(result.get("formalization_failed")),
         formalizer_telemetry=result.get("formalizer_telemetry"),
+        semantic_alignment=semantic_alignment,
     )
 
 
@@ -347,6 +367,7 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
         case.raw_claim,
         on_log=on_log,
         preamble_names=case.preamble_names or None,
+        use_cache=use_cache,
     )
     formalization_success = bool(formalization.get("success"))
     if not formalization_success:
@@ -372,8 +393,13 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
             failure_reason=formalization.get("failure_reason"),
             formalization_failed=bool(formalization.get("formalization_failed")),
             formalizer_telemetry=formalization.get("formalizer_telemetry"),
+            semantic_alignment=None,
         )
 
+    semantic_alignment = _grade_formalization_semantics(
+        case,
+        theorem_code=formalization.get("theorem_code"),
+    )
     verify_result = run_pipeline(
         raw_input=case.raw_claim,
         preformalized_theorem=str(formalization["theorem_code"]),
@@ -401,6 +427,7 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
         errors=_normalize_messages(verify_result.get("errors")),
         warnings=_normalize_messages(verify_result.get("warnings")),
         formalizer_telemetry=formalization.get("formalizer_telemetry"),
+        semantic_alignment=semantic_alignment,
     )
 
 
@@ -437,6 +464,7 @@ def _run_theorem_stub_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[s
         errors=_normalize_messages(result.get("errors")),
         warnings=_normalize_messages(result.get("warnings")),
         formalizer_telemetry=None,
+        semantic_alignment=None,
     )
 
 
@@ -477,12 +505,13 @@ def _run_raw_lean_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[str, 
         errors=_normalize_messages(result.get("errors")),
         warnings=_normalize_messages(result.get("warnings")),
         formalizer_telemetry=None,
+        semantic_alignment=None,
     )
 
 
 def _run_attempt(case: BenchmarkCase, lane: str, *, use_cache: bool) -> dict[str, Any]:
     if lane == LANE_FORMALIZER_ONLY:
-        return _run_formalizer_only_attempt(case)
+        return _run_formalizer_only_attempt(case, use_cache=use_cache)
     if lane == LANE_RAW_CLAIM_FULL_API:
         return _run_raw_claim_full_api_attempt(case, use_cache=use_cache)
     if lane == LANE_THEOREM_STUB_VERIFY:
@@ -490,6 +519,41 @@ def _run_attempt(case: BenchmarkCase, lane: str, *, use_cache: bool) -> dict[str
     if lane == LANE_RAW_LEAN_VERIFY:
         return _run_raw_lean_attempt(case, use_cache=use_cache)
     raise ValueError(f"Unsupported benchmark lane: {lane}")
+
+
+def _semantic_alignment_summary(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    semantic_payloads = [
+        attempt.get("semantic_alignment") or {}
+        for attempt in attempts
+        if attempt.get("semantic_alignment")
+    ]
+    scores = [
+        int(payload["score"])
+        for payload in semantic_payloads
+        if isinstance(payload.get("score"), int)
+    ]
+    verdict_counts = Counter(
+        str(payload.get("verdict"))
+        for payload in semantic_payloads
+        if payload.get("verdict")
+    )
+    flag_counts = Counter(
+        str(flag)
+        for payload in semantic_payloads
+        for flag in payload.get("trivialization_flags", [])
+        if flag
+    )
+    return {
+        "graded_attempts": len(semantic_payloads),
+        "avg_score": round(sum(scores) / len(scores), 2) if scores else None,
+        "score_p50": _percentile([float(score) for score in scores], 0.50),
+        "score_p95": _percentile([float(score) for score in scores], 0.95),
+        "score_ge_4_rate": round(sum(1 for score in scores if score >= 4) / len(scores), 3)
+        if scores
+        else None,
+        "verdict_counts": _ordered_counter(verdict_counts),
+        "trivialization_flag_counts": _ordered_counter(flag_counts),
+    }
 
 
 def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -514,6 +578,13 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         for attempt in attempts
         for telemetry in [attempt.get("formalizer_telemetry") or {}]
         if telemetry.get("validation_method")
+    )
+    validation_fallback_reason_counts = Counter(
+        str(reason)
+        for attempt in attempts
+        for telemetry in [attempt.get("formalizer_telemetry") or {}]
+        for reason in telemetry.get("validation_fallback_reasons", [])
+        if reason
     )
     repair_bucket_counts = Counter(
         str(bucket)
@@ -543,9 +614,11 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         "error_code_counts": _ordered_counter(error_code_counts),
         "stop_reason_counts": _ordered_counter(stop_reason_counts),
         "validation_method_counts": _ordered_counter(validation_method_counts),
+        "validation_fallback_reason_counts": _ordered_counter(validation_fallback_reason_counts),
         "repair_bucket_counts": _ordered_counter(repair_bucket_counts),
         "retrieval_source_counts": _ordered_counter(retrieval_source_counts),
         "cache_hits": sum(1 for attempt in attempts if attempt.get("from_cache")),
+        "semantic_alignment": _semantic_alignment_summary(attempts),
     }
 
 
@@ -566,9 +639,11 @@ def _skipped_lane_record(reason: str) -> dict[str, Any]:
             "error_code_counts": {},
             "stop_reason_counts": {},
             "validation_method_counts": {},
+            "validation_fallback_reason_counts": {},
             "repair_bucket_counts": {},
             "retrieval_source_counts": {},
             "cache_hits": 0,
+            "semantic_alignment": _semantic_alignment_summary([]),
         },
     }
 
@@ -624,6 +699,13 @@ def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, 
         for telemetry in [attempt.get("formalizer_telemetry") or {}]
         if telemetry.get("validation_method")
     )
+    validation_fallback_reason_counts = Counter(
+        str(reason)
+        for attempt in all_attempts
+        for telemetry in [attempt.get("formalizer_telemetry") or {}]
+        for reason in telemetry.get("validation_fallback_reasons", [])
+        if reason
+    )
     repair_bucket_counts = Counter(
         str(bucket)
         for attempt in all_attempts
@@ -659,9 +741,28 @@ def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, 
         "error_code_counts": _ordered_counter(error_code_counts),
         "stop_reason_counts": _ordered_counter(stop_reason_counts),
         "validation_method_counts": _ordered_counter(validation_method_counts),
+        "validation_fallback_reason_counts": _ordered_counter(validation_fallback_reason_counts),
         "repair_bucket_counts": _ordered_counter(repair_bucket_counts),
         "retrieval_source_counts": _ordered_counter(retrieval_source_counts),
         "cache_hits": sum(1 for attempt in all_attempts if attempt.get("from_cache")),
+        "semantic_alignment": _semantic_alignment_summary(all_attempts),
+    }
+
+
+def _aggregate_by_tier(
+    case_records: list[dict[str, Any]],
+    *,
+    selected_lanes: Sequence[str],
+) -> dict[str, Any]:
+    tier_records: dict[str, list[dict[str, Any]]] = {}
+    for record in case_records:
+        tier_records.setdefault(str(record["tier"]), []).append(record)
+    return {
+        tier: {
+            "total_cases": len(records),
+            "lanes": {lane: _aggregate_lane(records, lane) for lane in selected_lanes},
+        }
+        for tier, records in tier_records.items()
     }
 
 
@@ -720,6 +821,7 @@ def build_snapshot(
             lane: _aggregate_lane(case_records, lane)
             for lane in selected_lanes
         },
+        "by_tier": _aggregate_by_tier(case_records, selected_lanes=selected_lanes),
     }
 
     return {
@@ -783,6 +885,29 @@ def render_report(snapshot: dict[str, Any]) -> str:
             f"{lane_summary['cache_hits']} |"
         )
 
+    lines.extend(["", "## Aggregate Tier Summary", ""])
+    for tier, tier_summary in summary.get("by_tier", {}).items():
+        lines.extend(
+            [
+                f"### {tier}",
+                "",
+                "| Lane | Cases | Attempts | pass@1 | p95 ms | Semantic >=4 |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for lane in config["lane_order"]:
+            lane_summary = tier_summary["lanes"][lane]
+            lines.append(
+                "| "
+                f"{LANE_LABELS[lane]} | "
+                f"{lane_summary['applicable_cases']} | "
+                f"{lane_summary['attempts_run']} | "
+                f"{_format_pass_metric(lane_summary['pass_at_1'])} | "
+                f"{_format_latency(lane_summary['latency_ms']['p95'])} | "
+                f"{_format_pass_metric(lane_summary['semantic_alignment']['score_ge_4_rate'])} |"
+            )
+        lines.append("")
+
     for lane in config["lane_order"]:
         lane_summary = summary["lanes"][lane]
         lines.extend(
@@ -794,8 +919,10 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"- Error codes: {lane_summary['error_code_counts'] or '(none)'}",
                 f"- Stop reasons: {lane_summary['stop_reason_counts'] or '(none)'}",
                 f"- Validation methods: {lane_summary['validation_method_counts'] or '(none)'}",
+                f"- Validation fallback reasons: {lane_summary['validation_fallback_reason_counts'] or '(none)'}",
                 f"- Repair buckets: {lane_summary['repair_bucket_counts'] or '(none)'}",
                 f"- Retrieval sources: {lane_summary['retrieval_source_counts'] or '(none)'}",
+                f"- Semantic alignment: {lane_summary['semantic_alignment'] or '(none)'}",
             ]
         )
 
@@ -832,7 +959,9 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"error_codes={lane_summary['error_code_counts'] or '(none)'}, "
                 f"stop_reasons={lane_summary['stop_reason_counts'] or '(none)'}, "
                 f"validation_methods={lane_summary['validation_method_counts'] or '(none)'}, "
-                f"repair_buckets={lane_summary['repair_bucket_counts'] or '(none)'}"
+                f"validation_fallbacks={lane_summary['validation_fallback_reason_counts'] or '(none)'}, "
+                f"repair_buckets={lane_summary['repair_bucket_counts'] or '(none)'}, "
+                f"semantic_alignment={lane_summary['semantic_alignment'] or '(none)'}"
             )
         lines.append("")
 

@@ -55,6 +55,7 @@ def _fake_formalizer_telemetry(
         "model_calls": 1,
         "validation_method": validation_method,
         "validation_methods": [validation_method],
+        "validation_fallback_reasons": [],
         "repair_buckets": list(repair_buckets or []),
         "last_repair_bucket": (repair_buckets or [None])[-1],
         "deterministic_repairs_applied": [],
@@ -63,6 +64,16 @@ def _fake_formalizer_telemetry(
             "candidate_imports": ["Mathlib.Analysis.Convex.Basic"],
             "candidate_identifiers": ["StrictConcaveOn"],
         },
+    }
+
+
+def _fake_semantic_alignment(score: int = 5) -> dict:
+    return {
+        "score": score,
+        "verdict": "faithful",
+        "rationale": "Synthetic semantic alignment result.",
+        "trivialization_flags": [],
+        "generated": True,
     }
 
 
@@ -128,9 +139,10 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
 
     theorem_stub_attempts = {"count": 0}
 
-    def fake_formalize_claim(raw_claim: str, on_log=None, preamble_names=None):
+    def fake_formalize_claim(raw_claim: str, on_log=None, preamble_names=None, use_cache=True):
         assert raw_claim == "Claim A"
         assert preamble_names == ["budget_set"]
+        assert use_cache is False
         if on_log:
             on_log({"stage": "formalize", "status": "done", "message": "formalized"})
         return {
@@ -203,6 +215,11 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
     ]
     with (
         patch.object(benchmark_harness, "formalize_claim", side_effect=fake_formalize_claim),
+        patch.object(
+            benchmark_harness,
+            "grade_semantic_alignment",
+            return_value=_fake_semantic_alignment(),
+        ),
         patch.object(benchmark_harness, "run_pipeline", side_effect=fake_run_pipeline),
         patch.object(sys, "argv", argv),
         patch.dict("os.environ", {"MISTRAL_API_KEY": "test-key"}, clear=False),
@@ -217,17 +234,21 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
 
     payload = json.loads(snapshot_files[0].read_text(encoding="utf-8"))
     lane_summary = payload["summary"]["lanes"]
+    by_tier = payload["summary"]["by_tier"]
     assert payload["config"]["use_cache"] is False
-    assert payload["snapshot_schema_version"] == 2
+    assert payload["snapshot_schema_version"] == 3
     assert lane_summary["raw_claim_full_api"]["pass_at_1"] == 1.0
     assert lane_summary["raw_claim_full_api"]["pass_at_3"] == 1.0
     assert lane_summary["raw_claim_full_api"]["validation_method_counts"]["lake_env_lean"] == 3
     assert lane_summary["raw_claim_full_api"]["retrieval_source_counts"]["curated"] == 6
+    assert lane_summary["raw_claim_full_api"]["semantic_alignment"]["graded_attempts"] == 3
+    assert lane_summary["raw_claim_full_api"]["semantic_alignment"]["score_ge_4_rate"] == 1.0
     assert lane_summary["theorem_stub_verify"]["pass_at_1"] == 0.0
     assert lane_summary["theorem_stub_verify"]["pass_at_3"] == 1.0
     assert lane_summary["raw_lean_verify"]["pass_at_3"] == 0.0
     assert lane_summary["raw_lean_verify"]["error_code_counts"]["proof_timeout"] == 3
     assert lane_summary["raw_lean_verify"]["failure_stage_counts"]["agentic_verify"] == 3
+    assert by_tier["tier0_smoke"]["lanes"]["raw_claim_full_api"]["pass_at_1"] == 1.0
 
     case_record = payload["cases"][0]
     assert case_record["lanes"]["theorem_stub_verify"]["summary"]["pass_at_3"] is True
@@ -242,6 +263,7 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
     report_text = report_files[0].read_text(encoding="utf-8")
     assert "LeanEcon Benchmark Report" in report_text
     assert "raw_claim -> full API" in report_text
+    assert "Aggregate Tier Summary" in report_text
     assert "bench_001" in report_text
 
 
@@ -262,7 +284,8 @@ def test_formalizer_only_mode_skips_verify_lanes(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    def fake_formalize_claim(raw_claim: str, on_log=None, preamble_names=None):
+    def fake_formalize_claim(raw_claim: str, on_log=None, preamble_names=None, use_cache=True):
+        assert use_cache is False
         if on_log:
             on_log({"stage": "formalize", "status": "done", "message": "formalized"})
         return {
@@ -292,6 +315,11 @@ def test_formalizer_only_mode_skips_verify_lanes(tmp_path: Path) -> None:
     ]
     with (
         patch.object(benchmark_harness, "formalize_claim", side_effect=fake_formalize_claim),
+        patch.object(
+            benchmark_harness,
+            "grade_semantic_alignment",
+            return_value=_fake_semantic_alignment(score=4),
+        ),
         patch.object(benchmark_harness, "run_pipeline") as mock_run_pipeline,
         patch.object(sys, "argv", argv),
         patch.dict("os.environ", {"MISTRAL_API_KEY": "test-key"}, clear=False),
@@ -307,6 +335,7 @@ def test_formalizer_only_mode_skips_verify_lanes(tmp_path: Path) -> None:
     assert payload["summary"]["lanes"]["formalizer_only"]["validation_method_counts"] == {
         "lean_run_code": 3
     }
+    assert payload["summary"]["lanes"]["formalizer_only"]["semantic_alignment"]["graded_attempts"] == 3
     assert payload["summary"]["lanes"]["formalizer_only"]["repair_bucket_counts"] == {
         "unknown_identifier": 3
     }

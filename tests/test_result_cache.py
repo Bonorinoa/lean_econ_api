@@ -7,11 +7,15 @@ import tempfile
 import threading
 from pathlib import Path
 
-from result_cache import MAX_CACHE_SIZE, ResultCache
+from result_cache import FormalizationCache, MAX_CACHE_SIZE, ResultCache
 
 
 def _make_cache(tmpdir: str) -> ResultCache:
     return ResultCache(cache_file=Path(tmpdir) / "cache.json")
+
+
+def _make_formalization_cache(tmpdir: str) -> FormalizationCache:
+    return FormalizationCache(cache_file=Path(tmpdir) / "formalization_cache.json")
 
 
 def test_put_and_get() -> None:
@@ -134,3 +138,44 @@ def test_default_cache_path_respects_state_dir(monkeypatch, tmp_path) -> None:
 
     cache = result_cache_module.ResultCache()
     assert cache._cache_file == tmp_path / "data" / "verified_cache.json"
+
+
+def test_formalization_cache_put_and_get_structured_key() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = _make_formalization_cache(tmpdir)
+        cache_key = {
+            "claim_text": "1 + 1 = 2",
+            "preamble_names": [],
+            "namespace": "formalize:test",
+        }
+        result = {
+            "success": True,
+            "theorem_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry\n",
+            "formalization_failed": False,
+        }
+        cache.put(cache_key, result)
+        got = cache.get(cache_key)
+    assert got is not None
+    assert got["success"] is True
+    assert "theorem one_plus_one" in got["theorem_code"]
+
+
+def test_formalization_cache_keeps_explicit_failures() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = _make_formalization_cache(tmpdir)
+        cache_key = {
+            "claim_text": "hard claim",
+            "preamble_names": [],
+            "namespace": "formalize:test",
+        }
+        cache.put(
+            cache_key,
+            {
+                "success": False,
+                "formalization_failed": True,
+                "failure_reason": "Requires unavailable definitions.",
+            },
+        )
+        got = cache.get(cache_key)
+    assert got is not None
+    assert got["formalization_failed"] is True

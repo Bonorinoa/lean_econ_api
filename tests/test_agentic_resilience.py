@@ -214,6 +214,25 @@ theorem one_plus_one : 1 + 1 = 2 := by
     assert tactics.index("norm_num") < tactics.index("aesop")
 
 
+def test_local_fast_path_prioritizes_exact_hypothesis_tactics() -> None:
+    theorem = """\
+import Mathlib
+open Real
+
+theorem benchmark_budget_constraint
+    (m p1 p2 x1 x2 : ℝ)
+    (hm : m > 0) (hp1 : p1 > 0) (hp2 : p2 > 0)
+    (hspend : p1 * x1 + p2 * x2 = m) :
+    p1 * x1 + p2 * x2 = m := by
+  sorry
+"""
+
+    tactics = _local_fast_path_tactics(theorem)
+
+    assert tactics[:3] == ["exact hspend", "simpa using hspend", "assumption"]
+    assert tactics.index("exact hspend") < tactics.index("omega")
+
+
 def test_local_fast_path_respects_compile_budget(monkeypatch, tmp_path) -> None:
     theorem = """\
 import Mathlib

@@ -12,11 +12,11 @@ from dotenv import load_dotenv
 from mistralai.client import Mistral
 
 from leanstral_utils import call_leanstral
+from model_config import LEANSTRAL_MODEL
 
 # Load .env from the project root (one level up from src/)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-MODEL = "labs-leanstral-2603"
 EXPLAIN_TEMPERATURE = 0.3
 EXPLAIN_MAX_TOKENS = 1024
 EXPLAIN_TIMEOUT_SECONDS = 7
@@ -290,7 +290,7 @@ def explain_result(
 
         _log(
             on_log,
-            f"Calling {MODEL} to generate explanation...",
+            f"Calling {LEANSTRAL_MODEL} to generate explanation...",
             status="running",
         )
         explanation = _call_with_timeout(user_prompt)

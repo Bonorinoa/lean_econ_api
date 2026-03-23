@@ -129,8 +129,8 @@ Generates a Lean 4 theorem stub with `sorry` placeholder.
 }
 ```
 
-The formalizer uses up to 3 model calls, with compiler feedback and
-deterministic repairs between attempts.
+The formalizer uses up to 2 model calls and 3 validations, with compiler
+feedback and deterministic repairs between attempts.
 `formalization_failed=true` is reserved for explicit out-of-scope rejections; a
 compile failure after retries can still return `formalization_failed=false`
 alongside `diagnosis`, `suggested_fix`, and `fixable`.
@@ -170,6 +170,8 @@ Submits a theorem for agentic proving. **This is async — returns immediately w
 ```
 
 The proof takes 30-120 seconds. You MUST either poll or stream — never block the UI.
+For the fastest user-facing flow, keep `explain=false` on `/verify` and call
+`POST /api/v1/explain` only after the verify job completes.
 
 ### GET /api/v1/jobs/{job_id}/stream
 
@@ -446,7 +448,8 @@ Lean LSP startup timeouts, and one Mistral `3051` input-too-large failure.
 ### run_benchmark.py
 
 Use this when you want the lighter benchmark foundation for a research preview,
-with explicit lane separation and stable snapshot/report artifacts.
+with explicit lane separation, semantic grading for raw-claim lanes, per-tier
+aggregation, and stable snapshot/report artifacts.
 
 ```bash
 ./leanEconAPI_venv/bin/python scripts/run_benchmark.py \
@@ -471,6 +474,12 @@ Focused formalizer regression gate:
   --mode formalizer-only
 ```
 
+Recommended benchmark files:
+- `benchmarks/tier0_smoke.jsonl` — release smoke gate for arithmetic, direct-hypothesis reuse, and one-step preamble basics
+- `benchmarks/tier1_core.jsonl` — release gate for core preamble-backed economics identities
+- `benchmarks/tier2_frontier.jsonl` — acceptance-only Mathlib-native or search-heavy claims
+- `benchmarks/formalizer_regressions.jsonl` — focused regression slice with real `tier` values plus regression tags
+
 **Lanes:**
 - `raw_claim -> full API`
 - `theorem_stub -> verify`
@@ -486,7 +495,9 @@ Focused formalizer regression gate:
 - `pass@5` when repetitions are at least 5
 - `p50` / `p95` latency
 - `failure_stage`, `error_code`, and `stop_reason`
-- `validation_method_counts`, `repair_bucket_counts`, and `retrieval_source_counts`
+- `validation_method_counts`, `validation_fallback_reason_counts`, `repair_bucket_counts`, and `retrieval_source_counts`
+- semantic-alignment grading on `raw_claim` lanes
+- additive `summary.by_tier` aggregates in snapshot and `/api/v1/benchmarks/latest`
 
 Cache is disabled by default so benchmark runs are not flattered by warm
 verified-result replays.
@@ -495,28 +506,26 @@ verified-result replays.
 
 Test claims should span these categories:
 
-**Tier 1 — Should pass (baseline regression):**
-Algebraic identities and preamble-backed claims where the system has proven track record.
-- "Under CRRA utility, relative risk aversion equals gamma"
-- "Cobb-Douglas output elasticity w.r.t. capital equals alpha"
+**Tier 0 — Smoke gate:**
+Arithmetic, exact-hypothesis reuse, and one-step preamble definitions that should pass at very high rates.
 - "1 + 1 = 2"
 - Budget constraint equalities
+- Budget-set membership from a direct inequality hypothesis
 
-**Tier 2 — Should formalize, may not prove (stretch goals):**
-Claims that require deeper Mathlib engagement but are within formalization scope.
-- Derivative-based claims using preamble lemmas
-- CES production properties
-- Envelope theorem applications
-- Many claims that classify as `MATHLIB_NATIVE`
+**Tier 1 — Core release gate:**
+Preamble-backed economics identities where the system has a real baseline and should clear product targets.
+- "Under CRRA utility, relative risk aversion equals gamma"
+- "Cobb-Douglas output elasticity w.r.t. capital equals alpha"
+- "Marshallian demand for good 1 is alpha * m / p1"
+- "The New Keynesian Phillips Curve identity"
 
-**Tier 3 — Uncharted territory (capability probes):**
-Claims that test the system's limits. Expect formalization failures here — the diagnostic data is the value.
+**Tier 2 — Frontier acceptance:**
+Claims that test Mathlib-native retrieval or deeper search. Track them honestly, but do not market them as the shipping baseline.
 - Fixed-point theorems (Banach, Brouwer)
-- Bellman operator properties
-- Measure-theoretic claims
+- Monotone-sequence convergence
 - Hessian/second-order conditions
 
-**Tier 4 — Should be correctly rejected:**
+**Out-of-scope rejection set:**
 Claims the classifier should route to `REQUIRES_DEFINITIONS`.
 - "Nash equilibrium exists in finite games"
 - General equilibrium existence

@@ -2,11 +2,11 @@
 formalizer.py
 
 Translate natural language / LaTeX economics claims into valid Lean 4 theorem
-statements using Leanstral. Validates each statement compiles with sorry before
-sending it to the proving stage.
+statements using the configured Leanstral-compatible model. Each candidate is
+validated with `sorry` before it reaches the proving stage.
 
-Uses the same Leanstral model (labs-leanstral-2603) as the proving stage, but
-at lower temperature (0.3) for more conservative/deterministic output.
+The formalizer now runs on a bounded budget: up to two model calls and three
+validations, with deterministic repairs attempted before a second repair prompt.
 
 Public API:
   formalize(claim_text, on_log=None) -> dict   # main entry point
@@ -20,11 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from mistralai.client import Mistral
 
 from formalization_search import FormalizationContext, build_formalization_context
+from lean_diagnostics import extract_json_object
 from lean_verifier import run_direct_lean_check, write_lean_file
-from leanstral_utils import call_leanstral, strip_fences
+from leanstral_utils import call_leanstral, get_client, strip_fences
+from model_config import LEANSTRAL_MODEL, model_fingerprint
 from preamble_library import find_matching_preambles
 from prompts import (
     DIAGNOSE_SYSTEM_PROMPT,
@@ -32,15 +33,25 @@ from prompts import (
     build_formalize_prompt,
     build_repair_prompt,
 )
+from result_cache import formalization_cache
 
 # Load .env from project root (one level up from src/)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 FORMALIZE_TEMPERATURE = 0.3  # lower than proving (1.0) — we want conservative output
 FORMALIZE_MAX_TOKENS = 4096  # theorem statements are short
-MAX_FORMALIZATION_ATTEMPTS = 3
+MAX_FORMALIZATION_MODEL_CALLS = 2
+MAX_FORMALIZATION_VALIDATIONS = 3
 SORRY_VALIDATION_TIMEOUT = 120  # seconds for direct Lean fallback with sorry
-_client: Mistral | None = None
+FORMALIZATION_CACHE_NAMESPACE = model_fingerprint(
+    scope="formalize",
+    extras={
+        "temperature": FORMALIZE_TEMPERATURE,
+        "max_tokens": FORMALIZE_MAX_TOKENS,
+        "model_calls": MAX_FORMALIZATION_MODEL_CALLS,
+        "validations": MAX_FORMALIZATION_VALIDATIONS,
+    },
+)
 
 REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE = "unknown_import_module"
 REPAIR_BUCKET_UNKNOWN_IDENTIFIER = "unknown_identifier"
@@ -51,14 +62,6 @@ REPAIR_BUCKET_SEMANTIC_MISMATCH = "semantic_mismatch"
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-
-def _get_client() -> Mistral:
-    """Create the shared Mistral client lazily."""
-    global _client
-    if _client is None:
-        _client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
-    return _client
 
 
 def _detect_formalization_failed(lean_code: str) -> tuple[bool, str | None]:
@@ -209,14 +212,20 @@ def _build_formalizer_telemetry(
     *,
     model_calls: int,
     validation_methods: list[str],
+    validation_fallback_reasons: list[str],
     repair_buckets: list[str],
     deterministic_repairs_applied: list[str],
+    cache_hit: bool,
 ) -> dict[str, Any]:
     context_telemetry = context.telemetry()
     return {
+        "model": LEANSTRAL_MODEL,
+        "cache_hit": cache_hit,
+        "cache_namespace": FORMALIZATION_CACHE_NAMESPACE,
         "model_calls": model_calls,
         "validation_method": validation_methods[-1] if validation_methods else None,
         "validation_methods": list(validation_methods),
+        "validation_fallback_reasons": list(validation_fallback_reasons),
         "repair_buckets": list(repair_buckets),
         "last_repair_bucket": repair_buckets[-1] if repair_buckets else None,
         "deterministic_repairs_applied": list(deterministic_repairs_applied),
@@ -225,6 +234,46 @@ def _build_formalizer_telemetry(
         "auto_preambles": context_telemetry["auto_preambles"],
         "retrieval": context_telemetry["retrieval"],
         "mcp": context_telemetry["mcp"],
+    }
+
+
+def _formalization_cache_key(
+    claim_text: str,
+    context: FormalizationContext,
+) -> dict[str, Any]:
+    return {
+        "claim_text": claim_text.strip(),
+        "preamble_names": list(context.preamble_names),
+        "namespace": FORMALIZATION_CACHE_NAMESPACE,
+    }
+
+
+def _build_formalize_result(
+    *,
+    success: bool,
+    theorem_code: str,
+    attempts: int,
+    errors: list[str],
+    formalization_failed: bool,
+    failure_reason: str | None,
+    preamble_used: list[str],
+    diagnosis: str | None,
+    suggested_fix: str | None,
+    fixable: bool | None,
+    formalizer_telemetry: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "success": success,
+        "theorem_code": theorem_code,
+        "attempts": attempts,
+        "errors": errors,
+        "formalization_failed": formalization_failed,
+        "failure_reason": failure_reason,
+        "preamble_used": preamble_used,
+        "diagnosis": diagnosis,
+        "suggested_fix": suggested_fix,
+        "fixable": fixable,
+        "formalizer_telemetry": formalizer_telemetry,
     }
 
 
@@ -238,9 +287,7 @@ def _diagnose_formalization_failure(
 
     Returns dict with diagnosis, suggested_fix, fixable.
     """
-    import json as _json
-
-    client = _get_client()
+    client = get_client()
     user_content = (
         f"Original claim:\n{claim_text}\n\n"
         f"Last Lean 4 code:\n{lean_code[:2000]}\n\n"
@@ -258,7 +305,9 @@ def _diagnose_formalization_failure(
             temperature=0.0,
             max_tokens=512,
         )
-        result = _json.loads(raw.strip())
+        result = extract_json_object(raw)
+        if result is None:
+            raise ValueError("diagnoser did not return a JSON object")
         return {
             "diagnosis": result.get("diagnosis", "Analysis unavailable."),
             "suggested_fix": result.get("suggested_fix"),
@@ -297,7 +346,7 @@ def classify_claim(claim_text: str) -> dict:
           - suggested_reformulation (str | None): Guidance for the user
           - mathlib_hint (str | None): Mathlib navigation hint for MATHLIB_NATIVE
     """
-    client = _get_client()
+    client = get_client()
     messages = [
         {"role": "system", "content": build_classify_prompt()},
         {"role": "user", "content": claim_text},
@@ -434,6 +483,7 @@ def sorry_validate(lean_code: str) -> dict:
           - method (str): "lean_run_code" or "lake_env_lean".
     """
     # Fast path: lean_run_code via MCP (no file writes, ~2-5s)
+    fallback_reason = None
     try:
         from lean_runner import run_code
 
@@ -444,8 +494,8 @@ def sorry_validate(lean_code: str) -> dict:
             "warnings": result["warnings"],
             "method": "lean_run_code",
         }
-    except Exception:
-        pass  # Fall through to direct Lean check
+    except Exception as exc:
+        fallback_reason = str(exc)
 
     # Slow path: write to Proof.lean + direct Lean check.
     lean_path = write_lean_file(lean_code)
@@ -457,24 +507,28 @@ def sorry_validate(lean_code: str) -> dict:
         for e in raw["errors"]
         if "declaration uses `sorry`" not in e and "Proof contains" not in e
     ]
-    return {
+    result = {
         "valid": valid,
         "errors": real_errors if not valid else [],
         "warnings": raw["warnings"],
         "method": raw.get("verification_method", "lake_env_lean"),
     }
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
+    return result
 
 
 def formalize(
     claim_text: str,
     on_log: callable | None = None,
     preamble_names: list[str] | None = None,
+    use_cache: bool = True,
 ) -> dict:
     """
     Translate a natural language / LaTeX claim into a Lean 4 theorem using Leanstral.
 
-    Runs the formalize → sorry-validate → repair cycle up to
-    MAX_FORMALIZATION_ATTEMPTS times. Optionally adds preamble imports.
+    Runs a bounded formalize → sorry-validate → repair cycle with at most two
+    model calls and three validations. Optionally adds preamble imports.
 
     Args:
         claim_text: Cleaned claim text (output of parse_claim()["text"]).
@@ -501,6 +555,54 @@ def formalize(
         else:
             print(f"[formalizer] {message}")
 
+    def _telemetry(*, cache_hit: bool) -> dict[str, Any]:
+        return _build_formalizer_telemetry(
+            context,
+            model_calls=model_calls,
+            validation_methods=validation_methods,
+            validation_fallback_reasons=validation_fallback_reasons,
+            repair_buckets=repair_buckets,
+            deterministic_repairs_applied=deterministic_repairs_applied,
+            cache_hit=cache_hit,
+        )
+
+    def _result(
+        *,
+        success: bool,
+        theorem_code: str,
+        attempts: int,
+        errors: list[str],
+        formalization_failed: bool,
+        failure_reason: str | None,
+        diagnosis: str | None,
+        suggested_fix: str | None,
+        fixable: bool | None,
+        cache_hit: bool = False,
+    ) -> dict[str, Any]:
+        return _build_formalize_result(
+            success=success,
+            theorem_code=theorem_code,
+            attempts=attempts,
+            errors=errors,
+            formalization_failed=formalization_failed,
+            failure_reason=failure_reason,
+            preamble_used=preamble_used,
+            diagnosis=diagnosis,
+            suggested_fix=suggested_fix,
+            fixable=fixable,
+            formalizer_telemetry=_telemetry(cache_hit=cache_hit),
+        )
+
+    def _record_validation(lean_code: str) -> dict[str, Any]:
+        nonlocal validation_calls
+        validation_calls += 1
+        validation = sorry_validate(lean_code)
+        validation_methods.append(validation.get("method", "unknown"))
+        fallback_reason = validation.get("fallback_reason")
+        if fallback_reason:
+            validation_fallback_reasons.append(str(fallback_reason))
+        return validation
+
     _log("Starting formalization...", status="running")
 
     context = build_formalization_context(claim_text, explicit_preamble_names=preamble_names)
@@ -509,23 +611,36 @@ def formalize(
         mode = "explicit" if context.explicit_preamble_names else "auto-selected"
         _log(f"Using {mode} preambles: {', '.join(preamble_used)}", status="running")
 
-    # Formalize → sorry-validate → repair loop
-    client = _get_client()
+    cache_key = _formalization_cache_key(claim_text, context)
+    if use_cache:
+        cached = formalization_cache.get(cache_key)
+        if cached is not None:
+            _log("Formalization cache hit", status="done")
+            cached_result = dict(cached)
+            cached_result["formalizer_telemetry"] = {
+                **dict(cached.get("formalizer_telemetry", {})),
+                "cache_hit": True,
+            }
+            return cached_result
+
+    client = get_client()
     lean_code = ""
     last_errors: list[str] = []
     validation_methods: list[str] = []
+    validation_fallback_reasons: list[str] = []
     repair_buckets: list[str] = []
     deterministic_repairs_applied: list[str] = []
     model_calls = 0
+    validation_calls = 0
     system_prompt = build_formalize_prompt(
         preamble_block=context.preamble_block,
         context_block=context.build_prompt_block(),
     )
 
-    for attempt in range(1, MAX_FORMALIZATION_ATTEMPTS + 1):
+    for attempt in range(1, MAX_FORMALIZATION_MODEL_CALLS + 1):
         if attempt == 1:
             _log(
-                f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: calling Leanstral...",
+                f"Attempt {attempt}/{MAX_FORMALIZATION_MODEL_CALLS}: calling Leanstral...",
                 status="running",
             )
             messages = [
@@ -537,7 +652,7 @@ def formalize(
             repair_buckets.append(repair_bucket)
             _log(
                 (
-                    f"Attempt {attempt}/{MAX_FORMALIZATION_ATTEMPTS}: "
+                    f"Attempt {attempt}/{MAX_FORMALIZATION_MODEL_CALLS}: "
                     f"requesting {repair_bucket} repair..."
                 ),
                 status="running",
@@ -571,54 +686,43 @@ def formalize(
         failed, reason = _detect_formalization_failed(lean_code)
         if failed:
             _log(f"Leanstral flagged claim as unformalizable: {reason}", status="error")
-            return {
-                "success": False,
-                "theorem_code": lean_code,
-                "attempts": attempt,
-                "errors": [],
-                "formalization_failed": True,
-                "failure_reason": reason,
-                "preamble_used": preamble_used,
-                "diagnosis": None,
-                "suggested_fix": None,
-                "fixable": None,
-                "formalizer_telemetry": _build_formalizer_telemetry(
-                    context,
-                    model_calls=model_calls,
-                    validation_methods=validation_methods,
-                    repair_buckets=repair_buckets,
-                    deterministic_repairs_applied=deterministic_repairs_applied,
-                ),
-            }
+            result = _result(
+                success=False,
+                theorem_code=lean_code,
+                attempts=attempt,
+                errors=[],
+                formalization_failed=True,
+                failure_reason=reason,
+                diagnosis=None,
+                suggested_fix=None,
+                fixable=None,
+            )
+            if use_cache:
+                formalization_cache.put(cache_key, result)
+            return result
 
         if context.preamble_imports:
             lean_code = _inject_preamble_imports(lean_code, context.preamble_imports)
 
         _log(f"Attempt {attempt}: running sorry-validation...", data=lean_code, status="running")
-        sv = sorry_validate(lean_code)
-        validation_methods.append(sv.get("method", "unknown"))
+        sv = _record_validation(lean_code)
 
         if sv["valid"]:
             _log(f"Sorry-validation passed on attempt {attempt}", status="done")
-            return {
-                "success": True,
-                "theorem_code": lean_code,
-                "attempts": attempt,
-                "errors": [],
-                "formalization_failed": False,
-                "failure_reason": None,
-                "preamble_used": preamble_used,
-                "diagnosis": None,
-                "suggested_fix": None,
-                "fixable": None,
-                "formalizer_telemetry": _build_formalizer_telemetry(
-                    context,
-                    model_calls=model_calls,
-                    validation_methods=validation_methods,
-                    repair_buckets=repair_buckets,
-                    deterministic_repairs_applied=deterministic_repairs_applied,
-                ),
-            }
+            result = _result(
+                success=True,
+                theorem_code=lean_code,
+                attempts=attempt,
+                errors=[],
+                formalization_failed=False,
+                failure_reason=None,
+                diagnosis=None,
+                suggested_fix=None,
+                fixable=None,
+            )
+            if use_cache:
+                formalization_cache.put(cache_key, result)
+            return result
 
         last_errors = sv["errors"]
         _log(
@@ -627,8 +731,11 @@ def formalize(
             status="error",
         )
 
-        repaired_code, repairs = _apply_deterministic_repairs(lean_code, last_errors, context)
-        if repairs:
+        if attempt == 1 and validation_calls < MAX_FORMALIZATION_VALIDATIONS:
+            repaired_code, repairs = _apply_deterministic_repairs(lean_code, last_errors, context)
+        else:
+            repaired_code, repairs = lean_code, []
+        if repairs and validation_calls < MAX_FORMALIZATION_VALIDATIONS:
             deterministic_repairs_applied.extend(
                 repair for repair in repairs if repair not in deterministic_repairs_applied
             )
@@ -637,33 +744,32 @@ def formalize(
                 f"Attempt {attempt}: applying deterministic repair(s): {', '.join(repairs)}",
                 status="running",
             )
-            sv = sorry_validate(lean_code)
-            validation_methods.append(sv.get("method", "unknown"))
+            sv = _record_validation(lean_code)
             if sv["valid"]:
                 _log(
                     f"Sorry-validation passed after deterministic repair on attempt {attempt}",
                     status="done",
                 )
-                return {
-                    "success": True,
-                    "theorem_code": lean_code,
-                    "attempts": attempt,
-                    "errors": [],
-                    "formalization_failed": False,
-                    "failure_reason": None,
-                    "preamble_used": preamble_used,
-                    "diagnosis": None,
-                    "suggested_fix": None,
-                    "fixable": None,
-                    "formalizer_telemetry": _build_formalizer_telemetry(
-                        context,
-                        model_calls=model_calls,
-                        validation_methods=validation_methods,
-                        repair_buckets=repair_buckets,
-                        deterministic_repairs_applied=deterministic_repairs_applied,
-                    ),
-                }
+                result = _result(
+                    success=True,
+                    theorem_code=lean_code,
+                    attempts=attempt,
+                    errors=[],
+                    formalization_failed=False,
+                    failure_reason=None,
+                    diagnosis=None,
+                    suggested_fix=None,
+                    fixable=None,
+                )
+                if use_cache:
+                    formalization_cache.put(cache_key, result)
+                return result
             last_errors = sv["errors"]
+        elif repairs:
+            _log(
+                "Validation budget exhausted before checking deterministic repairs",
+                status="error",
+            )
 
     # All attempts exhausted — run failure diagnosis
     _log("Running failure diagnosis...", status="running")
@@ -673,25 +779,17 @@ def formalize(
         diag = {"diagnosis": None, "suggested_fix": None, "fixable": None}
     _log(f"Diagnosis: {diag.get('diagnosis', 'unavailable')}", status="done")
 
-    return {
-        "success": False,
-        "theorem_code": lean_code,
-        "attempts": MAX_FORMALIZATION_ATTEMPTS,
-        "errors": last_errors,
-        "formalization_failed": False,
-        "failure_reason": None,
-        "preamble_used": preamble_used,
-        "diagnosis": diag["diagnosis"],
-        "suggested_fix": diag["suggested_fix"],
-        "fixable": diag["fixable"],
-        "formalizer_telemetry": _build_formalizer_telemetry(
-            context,
-            model_calls=model_calls,
-            validation_methods=validation_methods,
-            repair_buckets=repair_buckets,
-            deterministic_repairs_applied=deterministic_repairs_applied,
-        ),
-    }
+    return _result(
+        success=False,
+        theorem_code=lean_code,
+        attempts=model_calls,
+        errors=last_errors,
+        formalization_failed=False,
+        failure_reason=None,
+        diagnosis=diag["diagnosis"],
+        suggested_fix=diag["suggested_fix"],
+        fixable=diag["fixable"],
+    )
 
 
 if __name__ == "__main__":

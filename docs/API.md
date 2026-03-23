@@ -133,6 +133,7 @@ Important request rules:
 - `theorem_code` must look like a Lean theorem, lemma, or example
 - it must still contain `:= by sorry`
 - `explain=true` asks LeanEcon to include an explanation in the final job result
+- for the fastest user-facing verify path, prefer `explain=false` and call `POST /api/v1/explain` after the job completes
 - the endpoint responds immediately with HTTP `202`
 
 Verification notes:
@@ -378,6 +379,11 @@ Example response:
         "pass_at_1": 1.0,
         "pass_at_3": 1.0
       }
+    },
+    "by_tier": {
+      "tier0_smoke": {
+        "total_cases": 3
+      }
     }
   }
 }
@@ -415,15 +421,24 @@ Focused formalizer regression gate:
 ./leanEconAPI_venv/bin/python scripts/run_benchmark.py benchmarks/formalizer_regressions.jsonl --mode formalizer-only
 ```
 
+Recommended three-tier benchmark layout:
+
+- `benchmarks/tier0_smoke.jsonl` — arithmetic, exact-hypothesis reuse, and one-step preamble basics
+- `benchmarks/tier1_core.jsonl` — preamble-backed economics identities used for release gating
+- `benchmarks/tier2_frontier.jsonl` — Mathlib-native or search-heavy acceptance tracking
+- `benchmarks/formalizer_regressions.jsonl` — focused regression slice with real `tier` values plus regression tags
+
 Artifacts land in:
 
 - `benchmarks/snapshots/*.json` — machine-readable benchmark snapshots
 - `benchmarks/reports/*.md` — human-readable reports
 
 Per-claim and aggregate outputs include pass@k, p50/p95 latency, failure stage,
-error code, stop reason, and formalizer telemetry such as validation method,
-repair buckets, and retrieval-source counts. Cache is disabled by default so
-warm-cache hits do not flatter benchmark numbers.
+error code, stop reason, semantic-alignment grading for raw-claim lanes, and
+formalizer telemetry such as validation method, validation fallback reasons,
+repair buckets, and retrieval-source counts. The snapshot summary now also
+includes additive `by_tier` aggregates. Cache is disabled by default so warm
+cache hits do not flatter benchmark numbers.
 
 ### Deep trace analysis
 
