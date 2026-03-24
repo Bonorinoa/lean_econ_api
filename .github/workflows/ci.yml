@@ -18,6 +18,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip setuptools wheel
       - run: pip install ruff
       - run: ruff check src/ tests/ scripts/
 
@@ -33,6 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip setuptools wheel
       - run: pip install -e ".[dev]"
       - run: pytest -m "not live and not slow" --tb=short -q
 
