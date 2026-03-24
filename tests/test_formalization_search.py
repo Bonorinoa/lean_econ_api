@@ -33,6 +33,26 @@ def test_build_context_explicit_preambles_override_auto_selection() -> None:
     assert "discount_factor" in context.telemetry()["selected_preambles"]
 
 
+def test_build_context_crra_auto_selection_avoids_cara_noise() -> None:
+    context = build_formalization_context(
+        "Under CRRA utility, relative risk aversion simplifies to gamma."
+    )
+
+    assert "crra_utility" in context.auto_preamble_names
+    assert "cara_utility" not in context.auto_preamble_names
+    assert len(context.auto_preamble_names) <= 2
+
+
+def test_build_context_cobb_auto_selection_avoids_ces_noise() -> None:
+    context = build_formalization_context(
+        "For a two-factor Cobb-Douglas production function, "
+        "output elasticity with respect to capital is alpha."
+    )
+
+    assert "cobb_douglas_2factor" in context.auto_preamble_names
+    assert "ces_2factor" not in context.auto_preamble_names
+
+
 def test_build_context_skips_mcp_when_temporarily_unavailable() -> None:
     with patch(
         "formalization_search.formalization_mcp_available",

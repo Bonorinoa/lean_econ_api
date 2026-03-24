@@ -224,6 +224,10 @@ Observability notes:
 - wrapper stages such as `prover_dispatch` may still appear in
   `stage_timings`, but `current_stage` prefers the most specific active stage
   instead of being overwritten by a later wrapper-stage `done` event
+- low-level cancellation noise is normalized in user-facing warnings; for
+  example, partial runs should no longer expose raw anyio cancel-scope mismatch
+  wording in `warnings`, though the detailed cause may still appear in
+  `agent_summary` or traces
 - the JSONL run log lives at `logs/runs.jsonl` by default, or at
   `${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR` is set
 
@@ -256,8 +260,8 @@ Notes:
 - failed jobs return `{"type":"complete","status":"failed","error":"..."}` and then close
 - keepalive comments may appear as `: keepalive`
 - typical progress stages include `parse`, `formalize`, `prover_dispatch`,
-  `agentic_init`, `agentic_setup`, `agentic_run`, `agentic_check`,
-  `agentic_verify`, `cache`, and `explain`
+  `agentic_init`, `agentic_fast_path`, `agentic_setup`, `agentic_run`,
+  `agentic_check`, `agentic_verify`, `cache`, and `explain`
 - the stream does not include the final verify payload; fetch `GET /api/v1/jobs/{job_id}` for that
 
 Frontend example:
@@ -356,6 +360,11 @@ and local Docker validation before trusting any Railway response.
 `GET /api/v1/benchmarks/latest` returns the summary-only view of the newest
 offline benchmark snapshot under `benchmarks/snapshots/`.
 
+If the deployed service has not been given any local snapshot artifacts yet,
+this endpoint can legitimately return `404` with
+`{"detail":"No benchmark snapshot found."}`. That is a deployment/content gap,
+not necessarily an API bug.
+
 Example response:
 
 ```json
@@ -391,6 +400,60 @@ Example response:
 
 This endpoint intentionally excludes per-claim internals. Use the on-disk
 snapshot and report artifacts for benchmark debugging.
+
+## Current measured status (2026-03-23)
+
+Local repo status after the current formalizer/runtime cleanup:
+
+- `pytest -m "not live and not slow"`: `190 passed, 13 deselected`
+- focused formalizer/prover regressions:
+  `tests/test_agentic_resilience.py`, `tests/test_formalizer.py`,
+  `tests/test_formalization_search.py`: `68 passed`
+- selected live/local prover checks:
+  `test_one_plus_one_agentic`, `test_local_fast_path_solves_trivial_theorem`,
+  `test_crra_raw_agentic`, and `test_cobb_raw_agentic`: `4 passed`
+- `lake build` in `lean_workspace`: successful
+
+Measured benchmark snapshots:
+
+- Tier 0 formalizer-only:
+  `benchmarks/snapshots/tier0_smoke_formalizer_only_20260323T233445Z.json`
+  → `3/3`, `pass@1 = 1.0`, semantic average `3.33`
+- Tier 0 full:
+  `benchmarks/snapshots/tier0_smoke_full_20260323T234951Z.json`
+  → `raw_claim_full_api pass@1 = 1.0` with semantic average `3.0`;
+  `theorem_stub_verify pass@1 = 1.0`; `raw_lean_verify pass@1 = 1.0`
+- Tier 1 core formalizer-only:
+  `benchmarks/snapshots/tier1_core_formalizer_only_20260323T231742Z.json`
+  → `6/6`, `pass@1 = 1.0`, semantic average `4.67`
+- Tier 2 frontier formalizer-only:
+  `benchmarks/snapshots/tier2_frontier_formalizer_only_20260324T000400Z.json`
+  → `1/3`, `pass@1 = 0.333`
+- Formalizer regressions:
+  `benchmarks/snapshots/formalizer_regressions_formalizer_only_20260323T232552Z.json`
+  → `6/7`, `pass@1 = 0.857`, semantic average `4.17`
+
+Additional full-lane confirmation beyond Tier 0:
+
+- the Marshallian-demand Tier 1 claim now verifies end-to-end locally in
+  `150.1s` after the inline-`sorry` normalization fix
+- the selected CRRA and Cobb-Douglas raw-theorem prover regressions still pass
+
+Live service smoke on 2026-03-23:
+
+- `GET /health` returned `{"status":"ok"}`
+- `GET /openapi.json` matched the async v1 job API
+- `GET /api/v1/metrics` returned
+  `total_runs=18`, `verified=17`, `proof_failures=1`, `cache_hits=3`,
+  `partial_runs=3`, `avg_elapsed_seconds=33.0`
+- `GET /api/v1/benchmarks/latest` still returned `404`
+- a raw-Lean live verify probe succeeded in `13.2s` with `partial=false`
+
+Important caveat:
+
+- the live natural-language budget-set probe still produced a biconditional on
+  2026-03-23, which means the deployed app/API pair has not yet picked up the
+  local formalizer prompt/acceptance fixes described here
 
 ## Offline evaluation scripts
 
@@ -491,9 +554,17 @@ It writes `case_records.jsonl`, `results.json`, and `report.md` under
 `outputs/uncharted_evals/`.
 
 This harness is currently a frontier-diagnostics tool, not the main release or
-CI benchmark. A partial rerun on March 22, 2026 across 7 frontier attempts on 2
-hard claims produced a `0.978` tool-call waste ratio, repeated Lean LSP startup
-timeouts, and one Mistral `3051` input-too-large failure. Use explicit profiles:
+CI benchmark. A post-fix formalization-only rerun on 2026-03-24 over
+`tests/fixtures/claims/uncharted_claims.jsonl` with
+`--profile core --stage-mode formalization` produced:
+
+- `2/5` formalizations (`formalization_robustness = 0.4`)
+- semantic average `4.5` on the two successful formalizations
+- successes: Brouwer-style fixed-point phrasing and the envelope-theorem case
+- failures: Bellman contraction (invented/missing LeanEcon module), Hessian to
+  matrix typing, and Solow/Inada formulation shape
+
+Use explicit profiles:
 
 - `--profile ci` for cheap day-to-day regression tracking
 - `--profile core` when you also want semantic grading

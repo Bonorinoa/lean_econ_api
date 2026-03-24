@@ -15,7 +15,8 @@ Public API:
 
 from __future__ import annotations
 
-import os
+import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ from formalization_search import FormalizationContext, build_formalization_conte
 from lean_diagnostics import extract_json_object
 from lean_verifier import run_direct_lean_check, write_lean_file
 from leanstral_utils import call_leanstral, get_client, strip_fences
+from mcp_runtime import formalization_mcp_available
 from model_config import LEANSTRAL_MODEL, model_fingerprint
 from preamble_library import find_matching_preambles
 from prompts import (
@@ -58,6 +60,64 @@ REPAIR_BUCKET_UNKNOWN_IDENTIFIER = "unknown_identifier"
 REPAIR_BUCKET_TYPECLASS_INSTANCE = "typeclass_instance"
 REPAIR_BUCKET_SYNTAX_NOTATION = "syntax_notation"
 REPAIR_BUCKET_SEMANTIC_MISMATCH = "semantic_mismatch"
+DECLARATION_SUFFIX_BYTES = 6
+LEAN_RUN_CODE_NO_PROJECT_PATH = "lean_run_code_unavailable:no_project_path"
+LEAN_RUN_CODE_COOLDOWN = "lean_run_code_unavailable:cooldown"
+LEAN_RUN_CODE_GENERIC_UNAVAILABLE = "lean_run_code_unavailable"
+WRAPPER_TEXT_ERROR = "formalizer output contained explanation text or markdown fences"
+MISPLACED_IMPORT_ERROR = "formalizer output placed `import` after non-import Lean code"
+BICONDITIONAL_REWRITE_ERROR = (
+    "formalizer output changed a one-way claim into a biconditional; "
+    "replace `↔` with hypotheses implying the conclusion"
+)
+TAUTOLOGY_ERROR = "formalizer output collapsed the claim into a tautology"
+SPECIALIZATION_ERROR = (
+    "formalizer output narrowed the claim to an unrelated special functional form"
+)
+CONTRACTING_SCALAR_ERROR = (
+    "formalizer output gave ContractingWith a real-valued coefficient instead of NNReal"
+)
+UNIQUE_DECLARATION_MARKER = "_leanecon_"
+_LEAN_RUN_CODE_DISABLED_REASON: str | None = None
+
+DECLARATION_RE = re.compile(r"(?m)^\s*(theorem|lemma)\s+([A-Za-z_][A-Za-z0-9_']*)\b")
+LEAN_COMMAND_PREFIXES = (
+    "import ",
+    "open ",
+    "theorem ",
+    "lemma ",
+    "example ",
+    "def ",
+    "noncomputable ",
+    "namespace ",
+    "section ",
+    "variable ",
+    "/-",
+    "--",
+    "#",
+)
+SPECIALIZED_FORM_IMPORT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "LeanEcon.Preamble.Producer.CobbDouglas2Factor",
+        ("cobb-douglas", "cobb douglas", "output elasticity", "factor share"),
+    ),
+    (
+        "LeanEcon.Preamble.Producer.CES2Factor",
+        ("ces", "constant elasticity of substitution", "elasticity of substitution"),
+    ),
+    (
+        "LeanEcon.Preamble.Consumer.CRRAUtility",
+        ("crra", "isoelastic", "power utility", "constant relative risk aversion"),
+    ),
+    (
+        "LeanEcon.Preamble.Consumer.CARAUtility",
+        ("cara", "constant absolute risk aversion", "exponential utility"),
+    ),
+    (
+        "LeanEcon.Preamble.Consumer.StoneGearyUtility",
+        ("stone-geary", "stone geary", "les utility"),
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Private helpers
@@ -76,6 +136,219 @@ def _detect_formalization_failed(lean_code: str) -> tuple[bool, str | None]:
                     break
             return True, reason
     return False, None
+
+
+def _normalized_validation_fallback_reason(reason: str | None) -> str | None:
+    if not reason:
+        return None
+    lowered = reason.lower()
+    if "no valid lean project path found" in lowered:
+        return LEAN_RUN_CODE_NO_PROJECT_PATH
+    if "temporarily disabled after recent failure" in lowered:
+        return LEAN_RUN_CODE_COOLDOWN
+    if "timed out" in lowered:
+        return "lean_run_code_unavailable:timeout"
+    if "mcp error" in lowered:
+        return "lean_run_code_unavailable:mcp_error"
+    return LEAN_RUN_CODE_GENERIC_UNAVAILABLE
+
+
+def _is_comment_line(line: str) -> bool:
+    stripped = line.strip()
+    return not stripped or stripped.startswith(("--", "/-", "-/"))
+
+
+def _first_meaningful_command_index(lines: list[str]) -> int | None:
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _is_comment_line(line):
+            continue
+        if stripped.startswith(LEAN_COMMAND_PREFIXES):
+            return index
+        return None
+    return None
+
+
+def _uniquify_primary_declaration_name(claim_text: str, lean_code: str) -> str:
+    """Append a deterministic suffix to theorem/lemma names to avoid collisions."""
+    match = DECLARATION_RE.search(lean_code)
+    if match is None:
+        return lean_code
+
+    original_name = match.group(2)
+    if UNIQUE_DECLARATION_MARKER in original_name:
+        return lean_code
+
+    suffix = hashlib.sha256(claim_text.strip().encode("utf-8")).hexdigest()[
+        :DECLARATION_SUFFIX_BYTES
+    ]
+    unique_name = f"{original_name}{UNIQUE_DECLARATION_MARKER}{suffix}"
+    start, end = match.span(2)
+    return lean_code[:start] + unique_name + lean_code[end:]
+
+
+def _has_wrapper_text(raw_output: str) -> bool:
+    stripped = raw_output.strip()
+    lines = [line for line in stripped.splitlines() if not line.strip().startswith("```")]
+    command_index = _first_meaningful_command_index(lines)
+    if command_index is None:
+        return bool(strip_fences(raw_output))
+
+    for line in lines[:command_index]:
+        if not _is_comment_line(line):
+            return True
+    return False
+
+
+def _header_before_proof(lean_code: str) -> str:
+    proof_index = lean_code.find(":= by")
+    if proof_index == -1:
+        return lean_code
+    return lean_code[:proof_index]
+
+
+def _proposition_text(lean_code: str) -> str:
+    header = _header_before_proof(lean_code)
+    if ":" not in header:
+        return ""
+    return header.rsplit(":", 1)[1].strip()
+
+
+def _normalized_prop(prop: str) -> str:
+    return " ".join(prop.split())
+
+
+def _claim_mentions(claim_text: str, *phrases: str) -> bool:
+    lowered = claim_text.lower()
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _is_reflexive_statement(prop: str) -> bool:
+    normalized = _normalized_prop(prop)
+    for token in (" ↔ ", " = "):
+        if token not in normalized:
+            continue
+        left, right = normalized.rsplit(token, 1)
+        left_clean = re.sub(r"^\(+|\)+$", "", left.strip())
+        right_clean = re.sub(r"^\(+|\)+$", "", right.strip())
+        if left_clean and left_clean == right_clean:
+            return True
+    return False
+
+
+def _has_misplaced_import(lean_code: str) -> bool:
+    saw_non_import_code = False
+    for line in lean_code.splitlines():
+        stripped = line.strip()
+        if not stripped or _is_comment_line(line):
+            continue
+        if stripped.startswith("import "):
+            if saw_non_import_code:
+                return True
+            continue
+        if stripped.startswith("open "):
+            saw_non_import_code = True
+            continue
+        if stripped.startswith(LEAN_COMMAND_PREFIXES):
+            saw_non_import_code = True
+    return False
+
+
+def _has_unrelated_specialization(claim_text: str, lean_code: str) -> bool:
+    lowered_claim = claim_text.lower()
+    imports = {
+        line.strip()
+        for line in lean_code.splitlines()
+        if line.strip().startswith("import ")
+    }
+    for import_line, hints in SPECIALIZED_FORM_IMPORT_HINTS:
+        if f"import {import_line}" not in imports:
+            continue
+        if any(hint in lowered_claim for hint in hints):
+            continue
+        return True
+    return False
+
+
+def _has_contractingwith_scalar_mismatch(lean_code: str) -> bool:
+    if "ContractingWith" not in lean_code:
+        return False
+
+    header = _header_before_proof(lean_code)
+    real_scalars: set[str] = set()
+    for binder_names, binder_type in re.findall(r"\(([^:()]+):\s*([^)]+)\)", header):
+        normalized_type = " ".join(binder_type.split())
+        if normalized_type not in {"ℝ", "Real"}:
+            continue
+        for candidate in binder_names.split():
+            cleaned = candidate.strip("{}[]")
+            if cleaned:
+                real_scalars.add(cleaned)
+
+    return any(f"ContractingWith {name}" in header for name in real_scalars)
+
+
+def _candidate_acceptance_errors(
+    claim_text: str,
+    lean_code: str,
+) -> list[str]:
+    errors: list[str] = []
+    if "```" in lean_code:
+        errors.append(WRAPPER_TEXT_ERROR)
+    if _has_misplaced_import(lean_code):
+        errors.append(MISPLACED_IMPORT_ERROR)
+
+    prop = _proposition_text(lean_code)
+    lowered_claim = claim_text.lower()
+    if prop and "↔" in prop and not _claim_mentions(
+        lowered_claim,
+        "if and only if",
+        "iff",
+        "equivalent",
+        "equivalence",
+    ):
+        errors.append(BICONDITIONAL_REWRITE_ERROR)
+    if prop and _is_reflexive_statement(prop):
+        errors.append(TAUTOLOGY_ERROR)
+    if (
+        _claim_mentions(lowered_claim, "has a fixed point", "there exists a fixed point")
+        and "∃" not in prop
+    ):
+        errors.append("formalizer output dropped existence from a fixed-point claim")
+    if _claim_mentions(lowered_claim, "unique fixed point") and "∃!" not in prop:
+        errors.append("formalizer output dropped uniqueness from a fixed-point claim")
+    if _has_unrelated_specialization(claim_text, lean_code):
+        errors.append(SPECIALIZATION_ERROR)
+    if _has_contractingwith_scalar_mismatch(lean_code):
+        errors.append(CONTRACTING_SCALAR_ERROR)
+    return errors
+
+
+def _prepare_candidate_for_validation(
+    *,
+    claim_text: str,
+    raw_output: str,
+    context: FormalizationContext,
+) -> tuple[str, list[str], list[str]]:
+    structural_repairs: list[str] = []
+    if _has_wrapper_text(raw_output):
+        structural_repairs.append("strip_wrapper_text")
+
+    lean_code = strip_fences(raw_output)
+    if context.preamble_imports:
+        lean_code = _inject_preamble_imports(lean_code, context.preamble_imports)
+    uniquified = _uniquify_primary_declaration_name(claim_text, lean_code)
+    if uniquified != lean_code:
+        lean_code = uniquified
+        structural_repairs.append("uniquify_declaration_name")
+    if _has_misplaced_import(lean_code):
+        normalized = _normalize_imports(lean_code)
+        if normalized != lean_code:
+            lean_code = normalized
+            structural_repairs.append("normalize_imports")
+    return lean_code, structural_repairs, _candidate_acceptance_errors(claim_text, lean_code)
 
 
 def _inject_preamble_imports(lean_code: str, import_lines: list[str]) -> str:
@@ -483,19 +756,32 @@ def sorry_validate(lean_code: str) -> dict:
           - method (str): "lean_run_code" or "lake_env_lean".
     """
     # Fast path: lean_run_code via MCP (no file writes, ~2-5s)
-    fallback_reason = None
-    try:
-        from lean_runner import run_code
+    global _LEAN_RUN_CODE_DISABLED_REASON
 
-        result = run_code(lean_code)
-        return {
-            "valid": result["valid"],
-            "errors": result["errors"],
-            "warnings": result["warnings"],
-            "method": "lean_run_code",
-        }
-    except Exception as exc:
-        fallback_reason = str(exc)
+    fallback_reason = None
+    allowed, availability_reason = formalization_mcp_available()
+    if _LEAN_RUN_CODE_DISABLED_REASON and availability_reason is None:
+        allowed = False
+        availability_reason = _LEAN_RUN_CODE_DISABLED_REASON
+
+    if allowed:
+        try:
+            from lean_runner import run_code
+
+            result = run_code(lean_code)
+            _LEAN_RUN_CODE_DISABLED_REASON = None
+            return {
+                "valid": result["valid"],
+                "errors": result["errors"],
+                "warnings": result["warnings"],
+                "method": "lean_run_code",
+            }
+        except Exception as exc:
+            fallback_reason = _normalized_validation_fallback_reason(str(exc))
+            if fallback_reason and fallback_reason != LEAN_RUN_CODE_COOLDOWN:
+                _LEAN_RUN_CODE_DISABLED_REASON = fallback_reason
+    else:
+        fallback_reason = _normalized_validation_fallback_reason(availability_reason)
 
     # Slow path: write to Proof.lean + direct Lean check.
     lean_path = write_lean_file(lean_code)
@@ -598,9 +884,11 @@ def formalize(
         validation_calls += 1
         validation = sorry_validate(lean_code)
         validation_methods.append(validation.get("method", "unknown"))
-        fallback_reason = validation.get("fallback_reason")
+        fallback_reason = _normalized_validation_fallback_reason(validation.get("fallback_reason"))
         if fallback_reason:
-            validation_fallback_reasons.append(str(fallback_reason))
+            normalized = str(fallback_reason)
+            if not validation_fallback_reasons or validation_fallback_reasons[-1] != normalized:
+                validation_fallback_reasons.append(normalized)
         return validation
 
     _log("Starting formalization...", status="running")
@@ -701,8 +989,31 @@ def formalize(
                 formalization_cache.put(cache_key, result)
             return result
 
-        if context.preamble_imports:
-            lean_code = _inject_preamble_imports(lean_code, context.preamble_imports)
+        lean_code, structural_repairs, acceptance_errors = _prepare_candidate_for_validation(
+            claim_text=claim_text,
+            raw_output=raw,
+            context=context,
+        )
+        new_repairs = [
+            repair
+            for repair in structural_repairs
+            if repair not in deterministic_repairs_applied
+        ]
+        if new_repairs:
+            deterministic_repairs_applied.extend(new_repairs)
+            _log(
+                f"Attempt {attempt}: applied structural cleanup: {', '.join(new_repairs)}",
+                status="running",
+            )
+
+        if acceptance_errors:
+            last_errors = acceptance_errors
+            _log(
+                f"Attempt {attempt}: candidate rejected before validation",
+                data="\n".join(last_errors[:3]),
+                status="error",
+            )
+            continue
 
         _log(f"Attempt {attempt}: running sorry-validation...", data=lean_code, status="running")
         sv = _record_validation(lean_code)

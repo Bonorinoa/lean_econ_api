@@ -36,6 +36,16 @@ LEGACY_BUILD_FILE = LEAN_SOURCE_DIR / "Proof.lean"
 VERIFICATION_FILE_PREFIX = "AgenticProof"
 
 
+def _is_noncritical_axiom_check_error(exc: Exception) -> bool:
+    """Downgrade expected MCP availability issues during best-effort axiom checks."""
+    text = str(exc).lower()
+    return (
+        "failed to start lean-lsp-mcp" in text
+        or ("lean_verify" in text and "timed out" in text)
+        or "mistral runcontext is unavailable" in text
+    )
+
+
 def _ensure_dirs():
     """Create outputs/ directory if it doesn't exist."""
     OUTPUTS_DIR.mkdir(exist_ok=True)
@@ -205,7 +215,10 @@ def verify(
                         axiom_info["sound"],
                     )
             except Exception as exc:
-                logger.warning("Axiom check failed: %s", exc)
+                if _is_noncritical_axiom_check_error(exc):
+                    logger.info("Skipping axiom check: %s", exc)
+                else:
+                    logger.warning("Axiom check failed: %s", exc)
 
         _save_to_outputs(lean_code, lean_path, result)
         return result

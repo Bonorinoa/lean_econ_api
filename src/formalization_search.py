@@ -16,8 +16,8 @@ from mcp_runtime import (
 from preamble_library import (
     build_preamble_block,
     build_preamble_imports,
-    find_matching_preambles,
     get_preamble_entries,
+    rank_matching_preambles,
 )
 
 FORMALIZATION_MCP_SEARCH_ENABLED = (
@@ -28,6 +28,7 @@ FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS = float(
     os.environ.get("LEANECON_FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS", "5")
 )
 MAX_MCP_SEARCH_QUERIES = int(os.environ.get("LEANECON_FORMALIZATION_MCP_SEARCH_QUERIES", "2"))
+MAX_AUTO_PREAMBLES = int(os.environ.get("LEANECON_FORMALIZATION_AUTO_PREAMBLES", "2"))
 
 
 @dataclass(frozen=True)
@@ -271,11 +272,10 @@ def build_formalization_context(
 ) -> FormalizationContext:
     """Build bounded retrieval context for one formalization request."""
     explicit_names = _dedupe_preserve(list(explicit_preamble_names or []))
-    auto_names = (
-        []
-        if explicit_names
-        else [entry.name for entry in find_matching_preambles(claim_text)]
-    )
+    auto_names: list[str] = []
+    if not explicit_names:
+        ranked_auto_matches = rank_matching_preambles(claim_text, auto=True)
+        auto_names = [entry.name for entry, _score in ranked_auto_matches[:MAX_AUTO_PREAMBLES]]
     preamble_names = explicit_names or auto_names
     preamble_entries = get_preamble_entries(preamble_names)
 

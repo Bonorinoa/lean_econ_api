@@ -18,6 +18,16 @@ RULES:
 4. Include ALL necessary typebounds and hypotheses (e.g., non-zero denominators,
    differentiable functions, metric space instances).
 5. Output ONLY the .lean file content. No markdown fences.
+6. Preserve the claim's logical shape. Do NOT change a one-way implication into
+   an equivalence, do NOT drop uniqueness/existence qualifiers, and do NOT
+   replace the original statement with a tautology.
+7. Do NOT over-specialize the claim to a convenient functional form unless the
+   claim explicitly names that form. If the claim says "contraction mapping" or
+   "envelope theorem", do not silently rewrite it into CRRA, CARA, CES, or
+   Cobb-Douglas language.
+8. Do NOT add explanatory prose such as "Here is the Lean code". Return Lean only.
+9. End the theorem body in canonical stub form: put `:= by` on its own line and
+   then an indented standalone `sorry` line. Do NOT emit `:= by sorry` inline.
 
 IMPORT RULES (critical — violations cause compilation failure):
 - ALWAYS use full Mathlib paths: `import Mathlib.Topology.Basic`, never `import Topology`
@@ -65,6 +75,16 @@ define them inline in the theorem hypotheses rather than importing external
 definitions. This makes the formalization self-contained.
 Example: (u : ℝ → ℝ) (hu : ∀ c > 0, u c = c ^ (1 - γ) / (1 - γ))
 
+SEMANTIC SAFETY CHECKS:
+- Preserve the original direction of the claim.
+- Preserve explicit quantifiers such as "exists", "unique", and "for every".
+- Keep object types explicit when the claim names them (metric spaces,
+  complete spaces, derivatives, budget sets, etc.).
+- If you use `ContractingWith`, the contraction constant must be `NNReal` / `ℝ≥0`,
+  not a plain `ℝ`.
+- If the English claim is one-way ("if", "under", "with", "lies in"), use
+  hypotheses implying the conclusion. Do NOT rewrite it as `↔`.
+
 AVOID:
 - Real.rpow with variable exponents when possible. Use c⁻¹ instead of c ^ (-1).
 - Prefer algebraic identities that field_simp + ring can handle.
@@ -99,6 +119,23 @@ theorem contraction_has_fixed_point
     (T : α → α) (β : NNReal) (hβ : β < 1)
     (hT : ContractingWith β T)
     : ∃! x, T x = x := by
+  sorry
+```
+
+EXAMPLE — One-way budget-set membership:
+Input:
+"A two-good bundle with spending p1 * x1 + p2 * x2 less than or equal to
+income m lies in the budget set."
+CORRECT formalization:
+```lean
+import Mathlib
+import LeanEcon.Preamble.Consumer.BudgetSet
+
+/-- A bundle satisfying the budget inequality belongs to the budget set. -/
+theorem budget_set_membership
+    (p1 p2 m x1 x2 : ℝ)
+    (hbudget : p1 * x1 + p2 * x2 ≤ m) :
+    in_budget_set p1 p2 m x1 x2 := by
   sorry
 ```
 """
@@ -186,6 +223,12 @@ You will be given:
 Fix the Lean 4 file so it compiles with only a `sorry` warning.
 Apply the MINIMUM changes needed. Do not rewrite from scratch unless the
 errors indicate a fundamental approach problem.
+Preserve the original claim's semantics exactly: do not convert one-way claims
+into biconditionals, do not drop uniqueness or existence qualifiers, do not
+specialize to CRRA/CARA/CES/Cobb-Douglas unless the claim explicitly says so,
+and do not add explanatory prose or markdown fences.
+Return the proof stub in canonical form with `:= by` on its own line and an
+indented standalone `sorry` line.
 
 COMMON FIXES:
 - "unknown module prefix 'X'" → Use full path: `import Mathlib.X.Y.Z`,
@@ -222,7 +265,8 @@ def build_formalize_prompt(
 
         Use the retrieval context above as bounded hints. Prefer the listed imports,
         identifiers, and preambles when they fit the claim exactly. Do not invent
-        identifiers beyond them unless you are very sure they exist.
+        identifiers beyond them unless you are very sure they exist. Keep the
+        theorem semantically faithful to the original natural-language claim.
         """
 
     if preamble_block:
@@ -279,7 +323,8 @@ SEMANTIC MISMATCH FAILURE
 The previous Lean file parses, but the theorem statement or hypotheses do not
 match Lean's expected types or structures. Make the minimal semantic repair:
 add missing hypotheses, switch to the correct Mathlib structure, or restate the
-claim in a faithful first-principles form.
+claim in a faithful first-principles form. If the original claim is one-way,
+do not repair it into a biconditional.
 """,
 }
 
@@ -302,6 +347,8 @@ def build_repair_prompt(
         "Fix the Lean 4 file so it compiles with only a `sorry` warning.\n"
         "Apply the MINIMUM changes needed. Do not rewrite from scratch unless the "
         "errors indicate a fundamental approach problem.\n"
+        "Return the proof stub in canonical form with `:= by` on its own line "
+        "and an indented standalone `sorry` line.\n"
     )
     if context_block:
         prompt += f"\n{context_block}\n"

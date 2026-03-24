@@ -18,11 +18,13 @@ from unittest.mock import patch
 import pytest
 
 from formalizer import (
+    LEAN_RUN_CODE_NO_PROJECT_PATH,
     REPAIR_BUCKET_SEMANTIC_MISMATCH,
     REPAIR_BUCKET_SYNTAX_NOTATION,
     REPAIR_BUCKET_TYPECLASS_INSTANCE,
     REPAIR_BUCKET_UNKNOWN_IDENTIFIER,
     REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE,
+    UNIQUE_DECLARATION_MARKER,
     _inject_preamble_imports,
     classify_repair_bucket,
     formalize,
@@ -341,7 +343,9 @@ def test_diagnose_fenced_json() -> None:
     import formalizer
 
     mock_response = """```json
-{"diagnosis": "Preserve hypotheses", "suggested_fix": "Use the existing assumption", "fixable": true}
+{"diagnosis": "Preserve hypotheses",
+ "suggested_fix": "Use the existing assumption",
+ "fixable": true}
 ```"""
     with patch.object(formalizer, "call_leanstral", return_value=mock_response):
         result = formalizer._diagnose_formalization_failure(
@@ -476,6 +480,92 @@ def test_formalize_without_preamble_names() -> None:
     assert "LeanEcon.Preamble.Consumer.MarshallianDemand" in result["theorem_code"]
 
 
+def test_formalize_uniquifies_primary_declaration_before_validation() -> None:
+    import formalizer
+
+    captured: dict[str, str] = {}
+    lean_code = "import Mathlib\n\ntheorem one_add_one_eq_two : 1 + 1 = 2 := by\n  sorry\n"
+
+    def fake_validate(candidate: str) -> dict[str, object]:
+        captured["lean_code"] = candidate
+        return {
+            "valid": True,
+            "errors": [],
+            "warnings": ["declaration uses `sorry`"],
+            "method": "lake_env_lean",
+        }
+
+    with patch.object(formalizer, "call_leanstral", return_value=lean_code):
+        with patch.object(formalizer, "sorry_validate", side_effect=fake_validate):
+            result = formalizer.formalize("1 + 1 = 2", use_cache=False)
+
+    assert result["success"] is True
+    assert UNIQUE_DECLARATION_MARKER in captured["lean_code"]
+    assert result["theorem_code"] == captured["lean_code"]
+    assert "uniquify_declaration_name" in result["formalizer_telemetry"][
+        "deterministic_repairs_applied"
+    ]
+
+
+def test_formalize_strips_wrapper_text_without_extra_model_call() -> None:
+    import formalizer
+
+    raw_output = """Here is the Lean code:
+```lean
+import Mathlib
+
+theorem wrapped_truth : True := by
+  sorry
+```"""
+
+    with patch.object(formalizer, "call_leanstral", return_value=raw_output) as mock_call:
+        with patch.object(
+            formalizer,
+            "sorry_validate",
+            return_value={
+                "valid": True,
+                "errors": [],
+                "warnings": ["declaration uses `sorry`"],
+                "method": "lake_env_lean",
+            },
+        ):
+            result = formalizer.formalize("A trivial true claim.", use_cache=False)
+
+    assert result["success"] is True
+    assert mock_call.call_count == 1
+    assert "Here is the Lean code" not in result["theorem_code"]
+    assert "```" not in result["theorem_code"]
+    assert "strip_wrapper_text" in result["formalizer_telemetry"]["deterministic_repairs_applied"]
+
+
+def test_formalize_rejects_biconditional_rewrite_before_validation() -> None:
+    import formalizer
+
+    responses = [
+        "import Mathlib\n\ntheorem implication_bad (P Q : Prop) : P ↔ Q := by\n  sorry\n",
+        "import Mathlib\n\ntheorem implication_good (P Q : Prop) "
+        "(hPQ : P → Q) (hP : P) : Q := by\n  sorry\n",
+    ]
+
+    with patch.object(formalizer, "call_leanstral", side_effect=responses) as mock_call:
+        with patch.object(
+            formalizer,
+            "sorry_validate",
+            return_value={
+                "valid": True,
+                "errors": [],
+                "warnings": ["declaration uses `sorry`"],
+                "method": "lake_env_lean",
+            },
+        ) as mock_validate:
+            result = formalizer.formalize("If P then Q.", use_cache=False)
+
+    assert result["success"] is True
+    assert mock_call.call_count == 2
+    assert mock_validate.call_count == 1
+    assert result["formalizer_telemetry"]["repair_buckets"] == [REPAIR_BUCKET_SEMANTIC_MISMATCH]
+
+
 def test_classify_repair_bucket() -> None:
     assert classify_repair_bucket(["unknown module prefix 'Topology'"]) == (
         REPAIR_BUCKET_UNKNOWN_IMPORT_MODULE
@@ -521,11 +611,45 @@ def test_formalize_applies_deterministic_import_repair_before_second_model_call(
     assert result["attempts"] == 1
     assert mock_call.call_count == 1
     assert result["formalizer_telemetry"]["deterministic_repairs_applied"] == [
-        "normalize_imports"
+        "uniquify_declaration_name",
+        "normalize_imports",
     ]
     assert result["formalizer_telemetry"]["validation_methods"] == [
         "lean_run_code",
         "lake_env_lean",
+    ]
+
+
+def test_formalize_deduplicates_validation_fallback_reasons() -> None:
+    import formalizer
+
+    responses = [
+        "import Topology\n\ntheorem foo : True := by\n  sorry\n",
+    ]
+    validations = [
+        {
+            "valid": False,
+            "errors": ["unknown module prefix 'Topology'"],
+            "warnings": [],
+            "method": "lean_run_code",
+            "fallback_reason": "lean_run_code MCP error: No valid Lean project path found",
+        },
+        {
+            "valid": True,
+            "errors": [],
+            "warnings": ["declaration uses `sorry`"],
+            "method": "lake_env_lean",
+            "fallback_reason": "lean_run_code MCP error: No valid Lean project path found",
+        },
+    ]
+
+    with patch.object(formalizer, "call_leanstral", side_effect=responses):
+        with patch.object(formalizer, "sorry_validate", side_effect=validations):
+            result = formalizer.formalize("A trivial true claim.", use_cache=False)
+
+    assert result["success"] is True
+    assert result["formalizer_telemetry"]["validation_fallback_reasons"] == [
+        LEAN_RUN_CODE_NO_PROJECT_PATH
     ]
 
 

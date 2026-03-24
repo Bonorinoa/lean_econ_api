@@ -49,20 +49,35 @@ def strip_fences(text: str) -> str:
     before the first Lean-looking line.
     """
     text = text.strip()
-    text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-    text = re.sub(r"\n?```$", "", text)
-    text = text.strip()
+
+    fenced_match = re.search(r"```(?:[a-zA-Z0-9_+-]+)?\n(?P<body>.*?)```", text, flags=re.DOTALL)
+    if fenced_match:
+        text = fenced_match.group("body").strip()
+    else:
+        text = re.sub(r"^```[a-zA-Z0-9_+-]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text)
+        text = text.strip()
 
     lines = text.splitlines()
     lean_start = 0
+    lean_prefixes = (
+        "import",
+        "open",
+        "theorem",
+        "lemma",
+        "example",
+        "def",
+        "noncomputable",
+        "namespace",
+        "section",
+        "variable",
+        "--",
+        "/-",
+        "#",
+    )
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped and (
-            stripped.startswith(
-                ("import", "open", "theorem", "lemma", "def", "example", "--", "/-", "by", "·", "#")
-            )
-            or re.match(r"^[a-zA-Z_\u00C0-\u024F\u1E00-\u1EFF]", stripped)
-        ):
+        if stripped and stripped.startswith(lean_prefixes):
             lean_start = i
             break
     return "\n".join(lines[lean_start:]).strip()

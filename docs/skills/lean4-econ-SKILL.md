@@ -225,6 +225,10 @@ The formalizer system prompt should include:
 2. **Type class checklist** — before generating a formalization, verify that the types used have the required instances. Don't assume `MetricSpace` on products or function spaces without checking.
 3. **Identifier verification** — use `lean_local_search` to verify that identifiers exist before using them in the formalization.
 4. **Fallback strategy** — if the first formalization attempt uses an unknown identifier, bucket the compiler failure first, then run a targeted repair prompt rather than a generic retry.
+5. **Canonical stub shape** — prefer `:= by` on its own line followed by an
+   indented standalone `sorry` line. LeanEcon now normalizes inline
+   `:= by sorry` stubs at the prover boundary, but the prompt should still bias
+   toward the canonical multi-line shape.
 
 ### Search-assisted formalization pattern
 
@@ -244,6 +248,19 @@ For claims in uncharted territory, the formalizer should follow this workflow:
 
 This search-first approach would have caught the `StrictConcave`, `hessian`, and `Topology` errors before they became formalization failures.
 
+Current LeanEcon-specific guardrails on top of this workflow:
+
+- generated theorem names are deterministically uniquified before validation so
+  they do not collide with imported declarations
+- auto-preamble selection is ranked and capped, which helps avoid irrelevant
+  cross-domain imports such as pulling CES helpers into a CRRA or
+  Cobb-Douglas claim
+- acceptance checks reject wrapper prose, misplaced imports, tautologies,
+  accidental biconditionals, unrelated functional-form specialization, and
+  `ContractingWith` coefficients typed as plain `ℝ`
+- when MCP `lean_run_code` is unavailable, the reliable fallback is the direct
+  `lake env lean` sorry-validation path
+
 ### Current LeanEcon verification paths
 
 Keep these repo-specific details straight when debugging formalization vs build issues:
@@ -252,6 +269,27 @@ Keep these repo-specific details straight when debugging formalization vs build 
 - The default `LeanEcon` library target no longer imports `LeanEcon.Proof`.
 - `LeanEcon/Proof.lean` still exists only as a fixed fallback write target for sorry-validation when MCP-backed `lean_run_code` is unavailable.
 - A failing `lake build` now usually points to the checked-in library graph or preamble modules, not to one user's in-flight verification file.
+- The proof-file controller now accepts both canonical multi-line stubs and
+  inline `:= by sorry` stubs, so formatting-only drift at the formalizer/prover
+  boundary should not break a proving run.
+
+### Current measured formalizer picture
+
+As of 2026-03-23:
+
+- Tier 0 smoke formalizer-only is `3/3`
+- Tier 1 core formalizer-only is `6/6`
+- Tier 2 frontier formalizer-only is still `1/3`
+- Formalizer regressions are `6/7`
+- The post-fix uncharted formalization run is `2/5`
+
+Interpret that split carefully:
+
+- core economics formalization is now much healthier than it was a day earlier
+- frontier failures are no longer dominated by duplicate theorem names or
+  wrapper-text leakage
+- remaining misses are more substantive: Bellman operator setup, Hessian-to-matrix
+  formulation, Solow/Inada theorem shape, and some deeper Mathlib topology goals
 
 ## Preamble library expansion priorities
 

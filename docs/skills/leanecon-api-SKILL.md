@@ -45,6 +45,45 @@ Every frontend should implement this sequence:
 > now also includes additive observability metadata such as queue/start/finish
 > timestamps and the latest reported pipeline stage.
 
+## Current measured reality (2026-03-23)
+
+Use these numbers instead of older March 22 placeholders:
+
+- Local non-live pytest: `190 passed, 13 deselected`
+- Focused formalizer/prover regressions:
+  `tests/test_agentic_resilience.py`, `tests/test_formalizer.py`,
+  `tests/test_formalization_search.py`: `68 passed`
+- Selected live/local prover checks:
+  `test_one_plus_one_agentic`, `test_local_fast_path_solves_trivial_theorem`,
+  `test_crra_raw_agentic`, and `test_cobb_raw_agentic`: `4 passed`
+- `lake build` in `lean_workspace`: successful
+- Tier 0 formalizer-only:
+  `benchmarks/snapshots/tier0_smoke_formalizer_only_20260323T233445Z.json`
+  → `3/3`, `pass@1 = 1.0`
+- Tier 0 full:
+  `benchmarks/snapshots/tier0_smoke_full_20260323T234951Z.json`
+  → raw-claim full lane `3/3`, `pass@1 = 1.0`, semantic average `3.0`
+- Tier 1 core formalizer-only:
+  `benchmarks/snapshots/tier1_core_formalizer_only_20260323T231742Z.json`
+  → `6/6`, `pass@1 = 1.0`, semantic average `4.67`
+- Tier 2 frontier formalizer-only:
+  `benchmarks/snapshots/tier2_frontier_formalizer_only_20260324T000400Z.json`
+  → `1/3`
+- Formalizer regressions:
+  `benchmarks/snapshots/formalizer_regressions_formalizer_only_20260323T232552Z.json`
+  → `6/7`
+- Post-fix uncharted formalization run:
+  `/private/tmp/leanecon_uncharted_postfix/20260324T002730Z/results.json`
+  → `2/5`, semantic average `4.5`
+
+Interpretation:
+
+- Raw Lean remains the strongest path.
+- Natural-language formalization is now solid on Tier 0 and Tier 1 release
+  slices.
+- Frontier natural-language economics is still the main semantic bottleneck.
+- The live service may still lag local fixes until the next deploy.
+
 ## Endpoint reference
 
 ### POST /api/v1/classify
@@ -138,6 +177,10 @@ alongside `diagnosis`, `suggested_fix`, and `fixable`.
 Current implementation details:
 - The formalizer now builds bounded retrieval context before the first model call.
 - If `preamble_names` is omitted, it may auto-select matching preamble modules.
+- Auto-preamble selection is now keyword-ranked and capped, which reduces noisy
+  cross-domain imports on simple economics claims.
+- The theorem name is deterministically uniquified before validation so
+  generated stubs do not collide with imported declarations.
 - Repair is compiler-bucketed: import/module, identifier, typeclass, syntax, or
   semantic mismatch.
 - MCP-backed retrieval is opportunistic only. If MCP is unhealthy, the
@@ -184,8 +227,8 @@ eventSource.onmessage = (event) => {
   const data = JSON.parse(event.data);
   
   if (data.type === "progress") {
-    // Typical stages: "formalize", "agentic_init", "agentic_setup",
-    // "agentic_run", "agentic_verify", "explain"
+    // Typical stages: "cache", "formalize", "agentic_init",
+    // "agentic_fast_path", "agentic_setup", "agentic_run", "explain"
     // data.message: human-readable progress text
     // data.status: "running" | "done" | "error"
     return;
@@ -280,6 +323,8 @@ is set, the JSONL run log moves to `${LEANECON_STATE_DIR}/logs/runs.jsonl` and
 the verified-result cache moves to `${LEANECON_STATE_DIR}/data/verified_cache.json`.
 The benchmark status endpoint intentionally excludes per-claim details; read
 `benchmarks/snapshots/*.json` directly when you need case-level internals.
+If the deployment has no copied snapshot artifacts yet,
+`GET /api/v1/benchmarks/latest` can honestly return `404`.
 
 ## Critical integration patterns
 
@@ -398,9 +443,12 @@ Explicit frontier probe:
 ```
 
 Treat `uncharted_claims.jsonl` as a frontier-diagnostics harness, not the
-default CI benchmark. A partial rerun on March 22, 2026 across 7 frontier
-attempts on 2 hard claims produced a `0.978` tool-call waste ratio, repeated
-Lean LSP startup timeouts, and one Mistral `3051` input-too-large failure.
+default CI benchmark. The latest post-fix formalization-only run on
+2026-03-24 (`--profile core --stage-mode formalization`) produced `2/5`
+formalizations with semantic average `4.5`. The two successes were the
+Brouwer-style fixed-point phrasing and the envelope-theorem case; the misses
+were Bellman contraction, Hessian-to-matrix typing, and Solow/Inada theorem
+shape.
 
 **Profiles:**
 - `ci` — cheap default; `pass@1`, no semantic grading, dataset-driven staging
@@ -533,18 +581,24 @@ Claims the classifier should route to `REQUIRES_DEFINITIONS`.
 
 ### Known failure patterns from evaluation
 
-The failure picture is now split across layers. Earlier March 2026 runs exposed
-formalization problems first; the March 22, 2026 partial frontier rerun showed
-that on hard preformalized claims the prover loop and MCP reliability can become
-the dominant bottlenecks. Do not assume "formalization is always the problem."
+The failure picture is now split across layers. Core release slices improved
+substantially on 2026-03-23, but frontier natural-language cases still fail for
+both semantic and infrastructure-adjacent reasons. Do not assume either
+"formalization is always the problem" or "the prover is the main bottleneck";
+the answer depends heavily on the tier.
 
 1. **Hallucinated Mathlib paths and theorem names.** The formalizer or prover guesses identifiers such as `StrictConcaveOn.neg_deriv2` or `StrictConcaveOn.contDiff_iff_deriv2_nonpos` that do not exist. Fix: verify identifiers with search before committing to them, and add search-assisted import/name discovery during formalization.
 
-2. **MCP startup and workspace reliability on frontier claims.** The March 22, 2026 rerun surfaced repeated Lean LSP startup timeouts and occasional file/workspace path failures. Distinguish these from mathematical proving failures in dashboards and reports.
+2. **Frontier imports and definitions are still brittle.** The latest
+   uncharted Bellman contraction run still invented a nonexistent
+   `LeanEcon.Preamble.Consumer.Bellman` import. Distinguish "model invented the
+   wrong module or object" from true theorem difficulty.
 
 3. **Type class and calculus API mismatches.** Claims about derivatives, Hessians, normed spaces, or product spaces still trigger `failed to synthesize instance`, `Unknown constant`, or function-shape mismatches. The model often reaches for one-dimensional `deriv` lemmas on higher-dimensional `fderiv` goals.
 
-4. **Context blow-up on long hard attempts.** One March 22, 2026 frontier attempt failed with Mistral error `3051` (`Input too large: couldn't fit with truncation`). Large `tool_trace` and retry histories must be capped aggressively.
+4. **Context blow-up on long hard attempts.** Large `tool_trace` and retry
+   histories still need aggressive caps. That remains especially relevant for
+   frontier proving loops and search-heavy repair cycles.
 
 5. **Guardrails help, but do not solve frontier math.** Duplicate read-only query blocking, search budgets, and total tool budgets now stop some high-waste loops early. That saves cost, but it also means frontier eval failures often end as honest "stopped before burning more budget" results rather than full theorem attempts.
 
@@ -589,7 +643,11 @@ After formalize returns `theorem_code`, ALWAYS show it to the user before callin
 
 ### Partial results and timeouts
 
-If `partial: true` in the result, the prover timed out but returned its best effort. Show the partial proof with a "Timed out — retry?" option. The `stop_reason` field explains why.
+If `partial: true` in the result, the prover timed out but returned its best
+effort. Show the partial proof with a "Timed out — retry?" option. The
+`stop_reason` field explains why. Recent builds also normalize low-level anyio
+cancel-scope wording so product UIs see a stable interruption warning instead
+of a raw runtime-internals message.
 
 ## Dashboard patterns
 
@@ -630,7 +688,11 @@ For test suites, support batch submission:
 
 ## Limitations to communicate honestly
 
-- **Formalization is the bottleneck.** ~80% of advanced claims fail at formalization, not proving. The formalizer doesn't know all Mathlib paths for topology, measure theory, or advanced analysis.
+- **Raw Lean is still the best product path.** It is faster, more reliable, and
+  has the cleanest semantics today.
+- **Formalization is much better on release tiers than on frontier claims.**
+  Tier 0 and Tier 1 now measure well, but Bellman/fixed-point/Hessian/Solow
+  frontier claims still fail frequently.
 - **Formalization is now search-assisted but still bounded.** LeanEcon uses
   preamble matching, curated import/identifier hints, and compiler-bucketed
   repair before spending more model calls. This improves reliability, but it is

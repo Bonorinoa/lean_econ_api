@@ -50,6 +50,10 @@ STOP_PROOF_COMPLETE = "proof_complete"
 STOP_PROOF_INCOMPLETE = "proof_incomplete"
 STOP_RUN_ERROR = "run_error"
 STOP_TIMEOUT = "timeout"
+PARTIAL_TIMEOUT_CLEANUP_WARNING = (
+    "Agentic prover stopped during Lean/MCP cleanup after a timeout. "
+    "Returning the latest proof state."
+)
 RETRYABLE_STATUS_CODES = {429, 503}
 BACKOFF_DELAYS_SECONDS = (2, 4, 8, 16)
 MAX_CONSECUTIVE_APPLY_WITHOUT_DIAGNOSTICS = 5
@@ -674,6 +678,15 @@ def _is_cancel_scope_error(exc: BaseException) -> bool:
     if hasattr(exc, "exceptions"):
         return any(_is_cancel_scope_error(e) for e in exc.exceptions)
     return False
+
+
+def _normalized_interruption_warning(kind: str) -> str:
+    """Return a stable user-facing warning for partial-result interruptions."""
+    if kind == "cancel_scope":
+        return PARTIAL_TIMEOUT_CLEANUP_WARNING
+    if kind == "timeout":
+        return f"run_async timed out after {TIMEOUT_MS}ms"
+    raise ValueError(f"Unknown interruption warning kind: {kind}")
 
 
 async def _run_conversation_with_backoff(
@@ -1358,7 +1371,7 @@ async def _prove_theorem_agentic_async(
 
         except asyncio.TimeoutError:
             steps_used = getattr(run_ctx, "request_count", steps_used)
-            error_message = f"run_async timed out after {TIMEOUT_MS}ms"
+            error_message = _normalized_interruption_warning("timeout")
             trace_recorder.finalize_pending_attempt(tactic_call_log)
             return _build_interrupted_run_result(
                 controller=controller,
@@ -1449,11 +1462,7 @@ async def _prove_theorem_agentic_async(
                 # its cancel scopes during SDK timeout teardown (Python 3.12+). This
                 # is semantically a timeout, not a hard failure — route to the graceful
                 # partial-result path so any completed tactics are preserved.
-                interruption_message = (
-                    "Agentic run interrupted by an anyio cancel-scope task mismatch. "
-                    "This typically occurs when the Lean LSP times out during "
-                    "preamble compilation. Returning the latest proof state."
-                )
+                interruption_message = _normalized_interruption_warning("cancel_scope")
                 trace_recorder.finalize_pending_attempt(tactic_call_log)
                 return _build_interrupted_run_result(
                     controller=controller,
@@ -1465,8 +1474,9 @@ async def _prove_theorem_agentic_async(
                     interruption_message=interruption_message,
                     stop_reason=STOP_TIMEOUT,
                     agent_summary=(
-                        "Leanstral agentic prover was interrupted by an anyio "
-                        "cancel-scope error (likely Lean preamble compilation timeout). "
+                        "Leanstral agentic prover was interrupted during timeout "
+                        "cleanup (underlying anyio cancel-scope task mismatch, "
+                        "likely from Lean preamble compilation latency). "
                         "Returning the latest proof state."
                     ),
                     partial=True,

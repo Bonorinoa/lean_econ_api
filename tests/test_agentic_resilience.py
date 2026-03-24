@@ -29,6 +29,7 @@ from agentic_prover import (
     _is_retryable_run_error,
     _local_fast_path_tactics,
     _make_apply_tactic,
+    _normalized_interruption_warning,
     _parse_diagnostic_payload,
     _prune_agentic_tools,
     _try_local_tactic_fast_path,
@@ -78,6 +79,12 @@ def test_cancel_scope_error_detection() -> None:
     assert _is_cancel_scope_error(nested)
 
 
+def test_cancel_scope_warning_is_normalized() -> None:
+    warning = _normalized_interruption_warning("cancel_scope")
+    assert "cancel scope" not in warning.lower()
+    assert "latest proof state" in warning.lower()
+
+
 @pytest.mark.live
 def test_apply_tactic_returns_nonempty_message() -> None:
     tmp_path = LEAN_WORKSPACE / "LeanEcon" / "_AgenticResilienceTmp.lean"
@@ -119,6 +126,23 @@ def test_default_controller_paths_are_unique() -> None:
     assert first.working_file != second.working_file
     assert first.working_file.name.startswith("AgenticProof_")
     assert second.working_file.name.startswith("AgenticProof_")
+
+
+def test_controller_normalizes_inline_sorry_stub(tmp_path) -> None:
+    controller = ProofFileController(working_file=tmp_path / "InlineSorry.lean")
+
+    try:
+        lean_code = controller.initialize("theorem inline_demo : True := by sorry")
+        assert "theorem inline_demo : True := by\n" in lean_code
+        expected_region = (
+            "  -- LEANECON_AGENTIC_TACTICS_BEGIN\n"
+            "  sorry\n"
+            "  -- LEANECON_AGENTIC_TACTICS_END\n"
+        )
+        assert expected_region in lean_code
+        assert controller.current_tactic_block == "sorry"
+    finally:
+        controller.cleanup()
 
 
 def test_prune_agentic_tools_removes_low_roi_tools() -> None:

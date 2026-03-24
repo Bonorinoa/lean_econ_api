@@ -23,6 +23,7 @@ class PreambleEntry:
     lean_module: str
     description: str
     keywords: tuple[str, ...]
+    auto_keywords: tuple[str, ...] | None = None
     parameters: tuple[str, ...] = ()
 
     @property
@@ -54,6 +55,13 @@ _register(
             "factor share",
             "homogeneous of degree",
         ),
+        auto_keywords=(
+            "cobb-douglas",
+            "cobb douglas",
+            "cd production",
+            "output elasticity",
+            "factor share",
+        ),
         parameters=("A", "K", "L", "α"),
     )
 )
@@ -71,6 +79,12 @@ _register(
             "production function",
             "elasticity of substitution",
             "homogeneous of degree",
+        ),
+        auto_keywords=(
+            "ces production",
+            "ces function",
+            "constant elasticity of substitution",
+            "elasticity of substitution",
         ),
         parameters=("A", "K", "L", "σ", "α"),
     )
@@ -92,6 +106,13 @@ _register(
             "marginal utility",
             "derivative",
         ),
+        auto_keywords=(
+            "crra",
+            "isoelastic",
+            "crra utility",
+            "constant relative risk aversion",
+            "power utility",
+        ),
         parameters=("c", "γ"),
     )
 )
@@ -110,6 +131,12 @@ _register(
             "absolute risk",
             "marginal utility",
             "derivative",
+        ),
+        auto_keywords=(
+            "cara",
+            "cara utility",
+            "constant absolute risk aversion",
+            "exponential utility",
         ),
         parameters=("c", "α"),
     )
@@ -155,6 +182,13 @@ _register(
             "risk aversion coefficient",
             "concavity of utility",
         ),
+        auto_keywords=(
+            "relative risk aversion",
+            "rra",
+            "arrow-pratt",
+            "arrow pratt",
+            "risk aversion coefficient",
+        ),
         parameters=("c", "u'", "u''"),
     )
 )
@@ -169,6 +203,11 @@ _register(
             "risk premium",
             "absolute risk",
             "concavity of utility",
+        ),
+        auto_keywords=(
+            "absolute risk aversion",
+            "ara",
+            "absolute risk",
         ),
         parameters=("u'", "u''"),
     )
@@ -265,6 +304,13 @@ _register(
             "utility maximization demand",
             "budget constraint",
             "tangency condition",
+        ),
+        auto_keywords=(
+            "marshallian demand",
+            "ordinary demand",
+            "demand function",
+            "optimal consumption",
+            "utility maximization demand",
         ),
         parameters=("α", "m", "p₁", "p₂"),
     )
@@ -425,14 +471,35 @@ def read_preamble_source(entry: PreambleEntry, *, strip_header: bool = True) -> 
     return _strip_lean_header(source) if strip_header else source
 
 
+def _keyword_weight(keyword: str) -> int:
+    cleaned = keyword.replace("-", " ").strip()
+    if " " in cleaned:
+        return 3
+    return 1
+
+
+def rank_matching_preambles(
+    claim_text: str,
+    *,
+    auto: bool = False,
+) -> list[tuple[PreambleEntry, int]]:
+    """Return preamble matches ordered by weighted keyword relevance."""
+    normalized = claim_text.lower()
+    ranked: list[tuple[PreambleEntry, int]] = []
+    for entry in PREAMBLE_LIBRARY.values():
+        keywords = entry.auto_keywords if auto and entry.auto_keywords else entry.keywords
+        score = sum(_keyword_weight(keyword) for keyword in keywords if keyword in normalized)
+        if score > 0:
+            ranked.append((entry, score))
+    return sorted(
+        ranked,
+        key=lambda item: (-item[1], item[0].name),
+    )
+
+
 def find_matching_preambles(claim_text: str) -> list[PreambleEntry]:
     """Return all preamble entries whose keywords match the claim text."""
-    normalized = claim_text.lower()
-    return [
-        entry
-        for entry in PREAMBLE_LIBRARY.values()
-        if any(keyword in normalized for keyword in entry.keywords)
-    ]
+    return [entry for entry, _score in rank_matching_preambles(claim_text)]
 
 
 def build_preamble_block(entries: list[PreambleEntry]) -> str:

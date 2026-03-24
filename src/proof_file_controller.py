@@ -19,6 +19,7 @@ DEFAULT_HEADER = "import Mathlib\nopen Real\n\n"
 TACTIC_REGION_BEGIN = "-- LEANECON_AGENTIC_TACTICS_BEGIN"
 TACTIC_REGION_END = "-- LEANECON_AGENTIC_TACTICS_END"
 _SORRY_LINE_RE = re.compile(r"(?m)^([ \t]*)sorry\b[^\n]*$")
+_INLINE_SORRY_LINE_RE = re.compile(r"(?m)^([ \t]*)(.*?:=\s*by)\s+sorry\b([^\n]*)$")
 
 
 def _default_working_file() -> Path:
@@ -179,6 +180,14 @@ class ProofFileController:
         code = theorem_with_sorry.strip()
         if not code.startswith("import"):
             code = DEFAULT_HEADER + code
+        code = _INLINE_SORRY_LINE_RE.sub(
+            lambda match: (
+                f"{match.group(1)}{match.group(2)}\n"
+                f"{match.group(1)}  sorry{match.group(3)}"
+            ),
+            code,
+            count=1,
+        )
         return code.rstrip() + "\n"
 
     def _normalize_tactic_block(self, tactic_block: str) -> str:
