@@ -358,10 +358,12 @@ and local Docker validation before trusting any Railway response.
 ## Latest benchmark summary
 
 `GET /api/v1/benchmarks/latest` returns the summary-only view of the newest
-offline benchmark snapshot under `benchmarks/snapshots/`.
+offline benchmark snapshot. When `LEANECON_STATE_DIR` is configured, the API
+first checks `${LEANECON_STATE_DIR}/benchmarks/snapshots/`; it also falls back
+to the bundled `benchmarks/snapshots/` copied into the container image.
 
-If the deployed service has not been given any local snapshot artifacts yet,
-this endpoint can legitimately return `404` with
+If neither the state directory nor the bundled image contains any snapshot
+artifacts yet, this endpoint can legitimately return `404` with
 `{"detail":"No benchmark snapshot found."}`. That is a deployment/content gap,
 not necessarily an API bug.
 

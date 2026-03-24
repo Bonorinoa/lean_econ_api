@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -335,7 +336,50 @@ def test_formalizer_only_mode_skips_verify_lanes(tmp_path: Path) -> None:
     assert payload["summary"]["lanes"]["formalizer_only"]["validation_method_counts"] == {
         "lean_run_code": 3
     }
-    assert payload["summary"]["lanes"]["formalizer_only"]["semantic_alignment"]["graded_attempts"] == 3
+    assert (
+        payload["summary"]["lanes"]["formalizer_only"]["semantic_alignment"][
+            "graded_attempts"
+        ]
+        == 3
+    )
     assert payload["summary"]["lanes"]["formalizer_only"]["repair_bucket_counts"] == {
         "unknown_identifier": 3
     }
+
+
+def test_benchmark_output_root_respects_state_dir(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("LEANECON_STATE_DIR", str(tmp_path))
+
+    assert benchmark_harness.benchmark_output_root() == tmp_path / "benchmarks"
+
+
+def test_load_latest_snapshot_uses_state_dir_and_bundled_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    state_dir = tmp_path / "state"
+    bundled_root = tmp_path / "bundled"
+    state_snapshots = state_dir / "benchmarks" / "snapshots"
+    bundled_snapshots = bundled_root / "snapshots"
+    state_snapshots.mkdir(parents=True)
+    bundled_snapshots.mkdir(parents=True)
+
+    bundled_snapshot = bundled_snapshots / "bundled.json"
+    bundled_snapshot.write_text(
+        json.dumps({"generated_at": "2026-03-23T00:00:00+00:00", "summary": {"total_cases": 1}}),
+        encoding="utf-8",
+    )
+    time.sleep(0.01)
+    state_snapshot = state_snapshots / "state.json"
+    state_snapshot.write_text(
+        json.dumps({"generated_at": "2026-03-24T00:00:00+00:00", "summary": {"total_cases": 2}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("LEANECON_STATE_DIR", str(state_dir))
+    monkeypatch.setattr(benchmark_harness, "DEFAULT_OUTPUT_ROOT", bundled_root)
+
+    latest = benchmark_harness.load_latest_snapshot()
+
+    assert latest is not None
+    assert latest["generated_at"] == "2026-03-24T00:00:00+00:00"
+    assert latest["summary"]["total_cases"] == 2

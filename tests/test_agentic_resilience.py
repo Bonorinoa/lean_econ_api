@@ -337,6 +337,60 @@ theorem trivial_truth : True := by
     assert controller.current_tactic_block == "sorry"
 
 
+def test_interrupted_run_logs_terminal_verify_stage_for_partial_success(monkeypatch) -> None:
+    class StubController:
+        current_tactic_block = "exact trivial"
+        current_lean_code = "import Mathlib\n\ntheorem interrupted_demo : True := by\n  trivial\n"
+
+    log_entries: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        agentic_prover,
+        "verify",
+        lambda lean_code: {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "output_lean": lean_code,
+            "axiom_info": None,
+        },
+    )
+
+    result = agentic_prover._build_interrupted_run_result(
+        controller=StubController(),
+        model_text="partial proof",
+        tool_trace_entries=[],
+        tactic_call_log=[],
+        steps_used=2,
+        start_time=time.time() - 0.1,
+        agentic_run_started_at=time.time() - 0.05,
+        interruption_message="Leanstral timed out before finishing the loop.",
+        stop_reason=agentic_prover.STOP_TIMEOUT,
+        agent_summary="Interrupted run",
+        partial=True,
+        on_log=log_entries.append,
+    )
+
+    assert result["success"] is True
+    assert result["partial"] is True
+    assert result["stop_reason"] == agentic_prover.STOP_PROOF_COMPLETE
+    assert [
+        (entry["stage"], entry["status"])
+        for entry in log_entries
+        if entry["stage"] in {"agentic_run", "agentic_verify"}
+    ] == [
+        ("agentic_run", "error"),
+        ("agentic_verify", "running"),
+        ("agentic_verify", "done"),
+    ]
+    terminal_entries = [
+        entry
+        for entry in log_entries
+        if entry["stage"] in {"agentic_run", "agentic_verify"} and entry["status"] != "running"
+    ]
+    assert all(isinstance(entry["elapsed_ms"], float) for entry in terminal_entries)
+
+
 @pytest.mark.asyncio
 async def test_circuit_breaker() -> None:
     run_ctx = RunContext(model="dummy")

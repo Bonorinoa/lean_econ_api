@@ -49,6 +49,11 @@ available at `http://localhost:8000/health`.
 - Verification still happens locally inside the container with the Lean toolchain.
 - Mount `/app/state` if you want the verified-result cache and JSONL run log to
   persist across container restarts.
+- Benchmark snapshots are bundled into `/app/benchmarks/snapshots` at build
+  time, and runtime reads prefer `/app/state/benchmarks/snapshots` when
+  `LEANECON_STATE_DIR` is set. That means `/api/v1/benchmarks/latest` can work
+  immediately after deploy while still allowing fresher mounted-state snapshots
+  to override the baked-in copy.
 - The image build still runs `lake build` to warm the workspace and precompile
   the default `LeanEcon` library target.
 - The first image build can take a while because Lean and Mathlib artifacts must

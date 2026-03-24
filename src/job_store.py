@@ -112,6 +112,8 @@ class JobStore:
                 if self._jobs[job_id]["started_at"] is None:
                     self._jobs[job_id]["started_at"] = _utc_now()
                 self._jobs[job_id]["finished_at"] = _utc_now()
+                if self._jobs[job_id]["last_progress_at"] is None:
+                    self._jobs[job_id]["last_progress_at"] = self._jobs[job_id]["finished_at"]
         self.publish(
             job_id,
             {
@@ -128,6 +130,8 @@ class JobStore:
                 if self._jobs[job_id]["started_at"] is None:
                     self._jobs[job_id]["started_at"] = _utc_now()
                 self._jobs[job_id]["finished_at"] = _utc_now()
+                if self._jobs[job_id]["last_progress_at"] is None:
+                    self._jobs[job_id]["last_progress_at"] = self._jobs[job_id]["finished_at"]
         self.publish(
             job_id,
             {

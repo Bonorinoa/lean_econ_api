@@ -1009,7 +1009,9 @@ def metrics() -> MetricsResponse:
     summary="Latest benchmark snapshot summary",
     description=(
         "Return the summary-only view of the newest offline benchmark snapshot "
-        "under `benchmarks/snapshots/`, without exposing per-claim internals."
+        "under `${LEANECON_STATE_DIR}/benchmarks/snapshots/` when configured, "
+        "or the bundled `benchmarks/snapshots/` fallback, without exposing "
+        "per-claim internals."
     ),
     responses={
         404: {"description": "No benchmark snapshot has been generated yet."},

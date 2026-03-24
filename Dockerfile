@@ -31,10 +31,11 @@ RUN cd lean_workspace && lake exe cache get && lake build
 
 COPY scripts ./scripts
 COPY src ./src
+COPY benchmarks ./benchmarks
 COPY docs ./docs
 COPY README.md ./README.md
 RUN chmod +x /app/scripts/run_lean_lsp_mcp.sh
-RUN mkdir -p outputs logs /app/state
+RUN mkdir -p outputs logs /app/state /app/state/benchmarks/snapshots /app/state/benchmarks/reports
 
 EXPOSE 8000
 

@@ -7,7 +7,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from result_cache import FormalizationCache, MAX_CACHE_SIZE, ResultCache
+from result_cache import MAX_CACHE_SIZE, FormalizationCache, ResultCache
 
 
 def _make_cache(tmpdir: str) -> ResultCache:

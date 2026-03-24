@@ -321,10 +321,13 @@ Generates natural language explanation of any pipeline result. Can accept verifi
 Runtime state lives in repo-local paths by default. When `LEANECON_STATE_DIR`
 is set, the JSONL run log moves to `${LEANECON_STATE_DIR}/logs/runs.jsonl` and
 the verified-result cache moves to `${LEANECON_STATE_DIR}/data/verified_cache.json`.
-The benchmark status endpoint intentionally excludes per-claim details; read
-`benchmarks/snapshots/*.json` directly when you need case-level internals.
-If the deployment has no copied snapshot artifacts yet,
-`GET /api/v1/benchmarks/latest` can honestly return `404`.
+Benchmark snapshots now follow the same runtime pattern: the API prefers
+`${LEANECON_STATE_DIR}/benchmarks/snapshots/*.json` when present, then falls
+back to the bundled `benchmarks/snapshots/*.json` copied into the image.
+The benchmark status endpoint intentionally excludes per-claim details; read the
+snapshot JSON files directly when you need case-level internals. If neither
+location has any snapshot artifacts yet, `GET /api/v1/benchmarks/latest` can
+honestly return `404`.
 
 ## Critical integration patterns
 

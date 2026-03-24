@@ -802,21 +802,67 @@ def _build_interrupted_run_result(
     tactic_call_log: list[dict[str, Any]],
     steps_used: int,
     start_time: float,
+    agentic_run_started_at: float,
     interruption_message: str,
     stop_reason: str,
     agent_summary: str,
     partial: bool,
+    on_log: callable | None = None,
 ) -> dict[str, Any]:
     """Build a graceful partial result after a timeout or external API interruption."""
     current_tactics = controller.current_tactic_block
     current_code = controller.current_lean_code
     partial_verification = None
+    partial_verification_error: Exception | None = None
+
+    _log(
+        on_log,
+        "agentic_run",
+        interruption_message,
+        status="error",
+        elapsed_ms=(time.time() - agentic_run_started_at) * 1000,
+    )
 
     if current_tactics != "sorry":
+        _log(
+            on_log,
+            "agentic_verify",
+            "Running final Lean verification on interrupted proof state...",
+            status="running",
+        )
+        t_partial_verify = time.time()
         try:
             partial_verification = verify(current_code)
-        except Exception:
+        except Exception as exc:
+            partial_verification_error = exc
             partial_verification = None
+        partial_verify_elapsed_ms = (time.time() - t_partial_verify) * 1000
+
+        if partial_verification and partial_verification["success"]:
+            _log(
+                on_log,
+                "agentic_verify",
+                "Verified — Lean check passed on interrupted run",
+                status="done",
+                elapsed_ms=partial_verify_elapsed_ms,
+            )
+        elif partial_verification:
+            error_preview = str(partial_verification.get("errors", [])[:2])
+            _log(
+                on_log,
+                "agentic_verify",
+                f"Verification failed on interrupted run: {error_preview}",
+                status="error",
+                elapsed_ms=partial_verify_elapsed_ms,
+            )
+        elif partial_verification_error is not None:
+            _log(
+                on_log,
+                "agentic_verify",
+                f"Verification failed on interrupted run: {partial_verification_error}",
+                status="error",
+                elapsed_ms=partial_verify_elapsed_ms,
+            )
 
     elapsed = time.time() - start_time
     success = bool(partial_verification and partial_verification["success"])
@@ -1380,6 +1426,7 @@ async def _prove_theorem_agentic_async(
                 tactic_call_log=tactic_call_log,
                 steps_used=steps_used,
                 start_time=start_time,
+                agentic_run_started_at=t_agentic_run,
                 interruption_message=error_message,
                 stop_reason=STOP_TIMEOUT,
                 agent_summary=(
@@ -1387,6 +1434,7 @@ async def _prove_theorem_agentic_async(
                     "Returning the latest proof state for inspection."
                 ),
                 partial=True,
+                on_log=on_log,
             )
         except Exception as exc:
             _log(on_log, "agentic_run", f"run_async error: {exc}", status="error")
@@ -1401,6 +1449,7 @@ async def _prove_theorem_agentic_async(
                     tactic_call_log=tactic_call_log,
                     steps_used=steps_used,
                     start_time=start_time,
+                    agentic_run_started_at=t_agentic_run,
                     interruption_message=str(exc),
                     stop_reason=STOP_PROOF_INCOMPLETE,
                     agent_summary=(
@@ -1409,6 +1458,7 @@ async def _prove_theorem_agentic_async(
                         "the latest proof state instead."
                     ),
                     partial=True,
+                    on_log=on_log,
                 )
 
             if _is_retryable_run_error(exc):
@@ -1424,6 +1474,7 @@ async def _prove_theorem_agentic_async(
                     tactic_call_log=tactic_call_log,
                     steps_used=steps_used,
                     start_time=start_time,
+                    agentic_run_started_at=t_agentic_run,
                     interruption_message=interruption_message,
                     stop_reason=STOP_PROOF_INCOMPLETE,
                     agent_summary=(
@@ -1431,6 +1482,7 @@ async def _prove_theorem_agentic_async(
                         "for a transient API error and returned the latest proof state."
                     ),
                     partial=True,
+                    on_log=on_log,
                 )
 
             if _is_code_3001_error(exc):
@@ -1447,6 +1499,7 @@ async def _prove_theorem_agentic_async(
                     tactic_call_log=tactic_call_log,
                     steps_used=steps_used,
                     start_time=start_time,
+                    agentic_run_started_at=t_agentic_run,
                     interruption_message=interruption_message,
                     stop_reason=STOP_PROOF_INCOMPLETE,
                     agent_summary=(
@@ -1455,6 +1508,7 @@ async def _prove_theorem_agentic_async(
                         "surfacing a raw API 3001 failure."
                     ),
                     partial=True,
+                    on_log=on_log,
                 )
 
             if _is_cancel_scope_error(exc):
@@ -1471,6 +1525,7 @@ async def _prove_theorem_agentic_async(
                     tactic_call_log=tactic_call_log,
                     steps_used=steps_used,
                     start_time=start_time,
+                    agentic_run_started_at=t_agentic_run,
                     interruption_message=interruption_message,
                     stop_reason=STOP_TIMEOUT,
                     agent_summary=(
@@ -1480,6 +1535,7 @@ async def _prove_theorem_agentic_async(
                         "Returning the latest proof state."
                     ),
                     partial=True,
+                    on_log=on_log,
                 )
 
             stop_reason = STOP_RUN_ERROR

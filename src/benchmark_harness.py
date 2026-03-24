@@ -54,6 +54,41 @@ STANDARD_BENCHMARK_FIELDS = {
 }
 
 
+def _state_dir() -> Path | None:
+    configured = os.environ.get("LEANECON_STATE_DIR")
+    if not configured:
+        return None
+    return Path(configured).expanduser()
+
+
+def benchmark_output_root() -> Path:
+    state_dir = _state_dir()
+    if state_dir is not None:
+        return state_dir / "benchmarks"
+    return DEFAULT_OUTPUT_ROOT
+
+
+def _candidate_snapshot_dirs(snapshot_dir: Path | None = None) -> list[Path]:
+    if snapshot_dir is not None:
+        return [snapshot_dir]
+
+    directories: list[Path] = []
+    state_dir = _state_dir()
+    if state_dir is not None:
+        directories.append(state_dir / "benchmarks" / "snapshots")
+    directories.append(DEFAULT_OUTPUT_ROOT / "snapshots")
+
+    unique_directories: list[Path] = []
+    seen: set[Path] = set()
+    for directory in directories:
+        resolved = directory.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique_directories.append(directory)
+    return unique_directories
+
+
 @dataclass(frozen=True)
 class BenchmarkCase:
     """One benchmark record loaded from JSONL."""
@@ -100,7 +135,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-root",
-        default=str(DEFAULT_OUTPUT_ROOT),
+        default=str(benchmark_output_root()),
         help="Root directory for `snapshots/` and `reports/` outputs.",
     )
     parser.set_defaults(use_cache=False)
@@ -919,7 +954,8 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"- Error codes: {lane_summary['error_code_counts'] or '(none)'}",
                 f"- Stop reasons: {lane_summary['stop_reason_counts'] or '(none)'}",
                 f"- Validation methods: {lane_summary['validation_method_counts'] or '(none)'}",
-                f"- Validation fallback reasons: {lane_summary['validation_fallback_reason_counts'] or '(none)'}",
+                "- Validation fallback reasons: "
+                f"{lane_summary['validation_fallback_reason_counts'] or '(none)'}",
                 f"- Repair buckets: {lane_summary['repair_bucket_counts'] or '(none)'}",
                 f"- Retrieval sources: {lane_summary['retrieval_source_counts'] or '(none)'}",
                 f"- Semantic alignment: {lane_summary['semantic_alignment'] or '(none)'}",
@@ -959,7 +995,8 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"error_codes={lane_summary['error_code_counts'] or '(none)'}, "
                 f"stop_reasons={lane_summary['stop_reason_counts'] or '(none)'}, "
                 f"validation_methods={lane_summary['validation_method_counts'] or '(none)'}, "
-                f"validation_fallbacks={lane_summary['validation_fallback_reason_counts'] or '(none)'}, "
+                "validation_fallbacks="
+                f"{lane_summary['validation_fallback_reason_counts'] or '(none)'}, "
                 f"repair_buckets={lane_summary['repair_bucket_counts'] or '(none)'}, "
                 f"semantic_alignment={lane_summary['semantic_alignment'] or '(none)'}"
             )
@@ -970,11 +1007,14 @@ def render_report(snapshot: dict[str, Any]) -> str:
 
 def load_latest_snapshot(snapshot_dir: Path | None = None) -> dict[str, Any] | None:
     """Return the newest benchmark snapshot, if one exists."""
-    directory = snapshot_dir or (DEFAULT_OUTPUT_ROOT / "snapshots")
-    candidates = sorted(directory.glob("*.json"), key=lambda path: path.stat().st_mtime)
+    candidates: list[Path] = []
+    for directory in _candidate_snapshot_dirs(snapshot_dir):
+        if not directory.is_dir():
+            continue
+        candidates.extend(directory.glob("*.json"))
     if not candidates:
         return None
-    latest = candidates[-1]
+    latest = max(candidates, key=lambda path: (path.stat().st_mtime, str(path)))
     return json.loads(latest.read_text(encoding="utf-8"))
 
 
