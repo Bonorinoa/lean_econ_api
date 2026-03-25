@@ -20,7 +20,7 @@ LeanEcon has a three-layer trust model that frontends should communicate to user
 2. **Human-in-the-loop** — The user reviews the formalized theorem before proving. This is where frontends add value.
 3. **Deterministic layer** — Lean 4's kernel verifies the proof from axioms. If it passes, it's mathematically certified. Not LLM confidence — formal certainty.
 
-## Core workflow (6 steps)
+## Core workflow (6 steps + optional compile check)
 
 Every frontend should implement this sequence:
 
@@ -28,10 +28,11 @@ Every frontend should implement this sequence:
 1. POST /api/v1/classify    → (OPTIONAL) Advisory scope check + preamble suggestions
 2. POST /api/v1/formalize   → Get a Lean theorem stub (with sorry). Pass preamble_names if needed.
 3. [User reviews/edits]     → Frontend presents theorem for review
-4. POST /api/v1/verify      → Returns 202 + job_id (async)
-5. GET /api/v1/jobs/{id}/stream  → SSE progress events
+4. OPTIONAL: POST /api/v1/lean_compile → Direct local Lean compile/debug check for complete Lean files
+5. POST /api/v1/verify      → Returns 202 + job_id (async)
+6. GET /api/v1/jobs/{id}/stream  → SSE progress events
    GET /api/v1/jobs/{id}         → Final result when complete
-6. POST /api/v1/explain     → Natural language explanation (optional)
+7. POST /api/v1/explain     → Natural language explanation (optional)
 ```
 
 > **Important:** Classification is no longer an internal gate for formalization.
@@ -39,49 +40,48 @@ Every frontend should implement this sequence:
 > (scope hints, preamble suggestions) but you can skip it and go straight to
 > `/formalize`. Preamble injection is opt-in via explicit `preamble_names`.
 >
+> **Optional debug path:** If you already have complete Lean code and want a
+> direct kernel/compiler check without proving, use `/api/v1/lean_compile`.
+> That endpoint is synchronous, local-only, and best treated as a debugging or
+> preflight primitive rather than the default product path.
+>
 > **Also important:** `/verify` is queue-based and concurrency-safe. LeanEcon no
 > longer routes verification through a shared `LeanEcon/Proof.lean`; proving and
 > final verification use isolated per-run temp files. The job-status response
 > now also includes additive observability metadata such as queue/start/finish
 > timestamps and the latest reported pipeline stage.
 
-## Current measured reality (2026-03-23)
+## Current measured reality (2026-03-25)
 
-Use these numbers instead of older March 22 placeholders:
+Use these numbers instead of older March 22-24 placeholders:
 
-- Local non-live pytest: `190 passed, 13 deselected`
-- Focused formalizer/prover regressions:
-  `tests/test_agentic_resilience.py`, `tests/test_formalizer.py`,
-  `tests/test_formalization_search.py`: `68 passed`
-- Selected live/local prover checks:
-  `test_one_plus_one_agentic`, `test_local_fast_path_solves_trivial_theorem`,
-  `test_crra_raw_agentic`, and `test_cobb_raw_agentic`: `4 passed`
+- Local non-live pytest: `214 passed, 13 deselected`
 - `lake build` in `lean_workspace`: successful
-- Tier 0 formalizer-only:
-  `benchmarks/snapshots/tier0_smoke_formalizer_only_20260323T233445Z.json`
-  → `3/3`, `pass@1 = 1.0`
-- Tier 0 full:
-  `benchmarks/snapshots/tier0_smoke_full_20260323T234951Z.json`
-  → raw-claim full lane `3/3`, `pass@1 = 1.0`, semantic average `3.0`
-- Tier 1 core formalizer-only:
-  `benchmarks/snapshots/tier1_core_formalizer_only_20260323T231742Z.json`
-  → `6/6`, `pass@1 = 1.0`, semantic average `4.67`
-- Tier 2 frontier formalizer-only:
-  `benchmarks/snapshots/tier2_frontier_formalizer_only_20260324T000400Z.json`
-  → `1/3`
-- Formalizer regressions:
-  `benchmarks/snapshots/formalizer_regressions_formalizer_only_20260323T232552Z.json`
-  → `6/7`
-- Post-fix uncharted formalization run:
-  `/private/tmp/leanecon_uncharted_postfix/20260324T002730Z/results.json`
-  → `2/5`, semantic average `4.5`
+- Tier 1 selected full benchmark:
+  `benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`
+  shows:
+  - `raw_claim -> full API`: `pass@1 = 0.333`
+  - `theorem_stub -> verify`: `pass@1 = 1.000`
+  - `raw_lean -> verify`: `pass@1 = 1.000`
+- Tier 1 core formalizer-only benchmark:
+  `benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md`
+  shows:
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 1.000`
+  - semantic `>=4` rate: `0.833`
+- Tier 2 frontier formalizer-only benchmark:
+  `benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md`
+  shows:
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.667`
+  - contraction mapping and monotone-sequence convergence now compile
+  - the extreme-value repair case still fails
 
 Interpretation:
 
 - Raw Lean remains the strongest path.
-- Natural-language formalization is now solid on Tier 0 and Tier 1 release
-  slices.
-- Frontier natural-language economics is still the main semantic bottleneck.
+- Theorem-stub verification is also a strong release path.
+- Natural-language formalization is strong on the bounded Tier 1 core slice.
+- Full raw-claim end-to-end verification is still the weakest public lane.
+- Frontier natural-language formalization is improving, but still mixed.
 - The live service may still lag local fixes until the next deploy.
 
 ## Endpoint reference
@@ -185,6 +185,50 @@ Current implementation details:
   semantic mismatch.
 - MCP-backed retrieval is opportunistic only. If MCP is unhealthy, the
   formalizer skips it and relies on curated hints plus local compilation.
+
+### POST /api/v1/lean_compile
+
+Compiles a complete Lean file directly with the local Lean toolchain. This
+bypasses both formalization and the agentic prover.
+
+**Request:**
+```json
+{
+  "lean_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  norm_num\n",
+  "filename": "one_plus_one.lean",
+  "check_axioms": false
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "errors": [],
+  "warnings": [],
+  "stdout": "",
+  "stderr": "",
+  "verification_method": "lake_env_lean",
+  "elapsed_ms": 421.7,
+  "axiom_info": null,
+  "telemetry": {
+    "endpoint": "lean_compile",
+    "model": "local_lean_compiler",
+    "usage_present": false,
+    "local_only": true,
+    "estimated_cost_base_usd": null,
+    "estimated_cost_stress_usd": null
+  }
+}
+```
+
+Use this when:
+- the user already has complete Lean code
+- you want fast compiler/kernel diagnostics
+- you want to debug a formalized theorem before spending time on `/verify`
+
+Do not use this as a replacement for `/verify`. It does not generate proofs, it
+does not queue a job, and Lean files containing `sorry` will fail.
 
 ### POST /api/v1/verify
 
@@ -313,6 +357,7 @@ Generates natural language explanation of any pipeline result. Can accept verifi
 ### Operational endpoints
 
 - `GET /health` → `{"status": "ok"}`
+- `POST /api/v1/lean_compile` → Synchronous local Lean compile/debug check
 - `GET /api/v1/metrics` → Aggregate verification stats from the JSONL eval log
 - `GET /api/v1/benchmarks/latest` → Latest summary-only offline benchmark snapshot
 - `GET /api/v1/cache/stats` → `{"size": N}`
@@ -392,9 +437,18 @@ Every verification run appends a structured JSON line to `logs/runs.jsonl` by
 default, or to `${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR`
 is set. This is the source of truth for metrics and offline evaluation. Each
 entry includes: claim text, classification result, formalization result,
-verification result, tool call counts, timing, errors, and axiom info.
+verification result, tool call counts, timing, errors, axiom info, and
+provider telemetry with conservative cost estimates when real usage payloads
+exist.
 
 The `/api/v1/metrics` endpoint aggregates this log into summary statistics. For deeper analysis, process `runs.jsonl` directly.
+
+Important telemetry caveats:
+
+- provider telemetry is observability metadata, not billing output
+- estimated cost fields stay `null` when provider usage is incomplete
+- `/api/v1/lean_compile` is tagged as local-only and excluded from LLM spend
+- benchmark and product copy should not imply Leanstral is stably free
 
 Cache hits are intentionally logged too so `/api/v1/metrics` reflects real
 operational traffic. When you analyze proof quality or tool efficiency, exclude
@@ -409,7 +463,7 @@ The data flywheel works like this:
 2. **Collect traces** in `runs.jsonl` (automatic)
 3. **Analyze failures** — which layer failed? Classification? Formalization? Proving?
 4. **Improve prompts** — the classifier and formalizer system prompts in `formalizer.py`
-5. **Re-run and compare** — track metrics across iterations
+5. **Re-run and compare** — track metrics across iterations, especially by lane
 
 For dashboards: fetch `/api/v1/metrics` for aggregate stats, parse the
 configured JSONL run log for per-claim drill-down, and use the additive job
@@ -446,12 +500,11 @@ Explicit frontier probe:
 ```
 
 Treat `uncharted_claims.jsonl` as a frontier-diagnostics harness, not the
-default CI benchmark. The latest post-fix formalization-only run on
-2026-03-24 (`--profile core --stage-mode formalization`) produced `2/5`
-formalizations with semantic average `4.5`. The two successes were the
-Brouwer-style fixed-point phrasing and the envelope-theorem case; the misses
-were Bellman contraction, Hessian-to-matrix typing, and Solow/Inada theorem
-shape.
+default CI benchmark. For current public-facing frontier claims, prefer the
+tracked `tier2_frontier` benchmark artifacts. The latest completed
+formalizer-only report on 2026-03-25 shows `pass@1 = 0.667`, with contraction
+mapping and monotone-sequence convergence compiling while the
+extreme-value/strict-concavity repair case still fails.
 
 **Profiles:**
 - `ci` — cheap default; `pass@1`, no semantic grading, dataset-driven staging
@@ -584,18 +637,17 @@ Claims the classifier should route to `REQUIRES_DEFINITIONS`.
 
 ### Known failure patterns from evaluation
 
-The failure picture is now split across layers. Core release slices improved
-substantially on 2026-03-23, but frontier natural-language cases still fail for
-both semantic and infrastructure-adjacent reasons. Do not assume either
-"formalization is always the problem" or "the prover is the main bottleneck";
-the answer depends heavily on the tier.
+The failure picture is split across layers. Tier 1 core release slices are now
+meaningfully stronger than frontier natural-language cases. Do not assume
+either "formalization is always the problem" or "the prover is the main
+bottleneck"; the answer depends heavily on the lane and tier.
 
 1. **Hallucinated Mathlib paths and theorem names.** The formalizer or prover guesses identifiers such as `StrictConcaveOn.neg_deriv2` or `StrictConcaveOn.contDiff_iff_deriv2_nonpos` that do not exist. Fix: verify identifiers with search before committing to them, and add search-assisted import/name discovery during formalization.
 
-2. **Frontier imports and definitions are still brittle.** The latest
-   uncharted Bellman contraction run still invented a nonexistent
-   `LeanEcon.Preamble.Consumer.Bellman` import. Distinguish "model invented the
-   wrong module or object" from true theorem difficulty.
+2. **Frontier imports and definitions are still brittle.** Distinguish "model
+   invented the wrong module or object" from true theorem difficulty. Search
+   and retrieval help, but identifier/module invention still shows up in harder
+   claims.
 
 3. **Type class and calculus API mismatches.** Claims about derivatives, Hessians, normed spaces, or product spaces still trigger `failed to synthesize instance`, `Unknown constant`, or function-shape mismatches. The model often reaches for one-dimensional `deriv` lemmas on higher-dimensional `fderiv` goals.
 
@@ -636,9 +688,13 @@ Map SSE `stage` values to user-friendly labels:
 Support three input modes:
 1. **Natural language** — "Under CRRA utility, relative risk aversion equals gamma"
 2. **LaTeX** — "$-c \cdot u''(c)/u'(c) = \gamma$"
-3. **Raw Lean 4** — Full `.lean` file content with `import Mathlib` and `:= by sorry`
+3. **Raw Lean 4 theorem stub** — Full `.lean` file content with `import Mathlib` and `:= by sorry`
+4. **Complete Lean 4 file** — Ready-to-compile Lean code for `/api/v1/lean_compile`
 
-Raw Lean input is detected automatically by classify (returns `RAW_LEAN`) and bypasses formalization.
+Raw Lean input is detected automatically by classify (returns `RAW_LEAN`) and
+bypasses formalization. If the file still contains `sorry`, route it to
+`/verify`; if it is already complete Lean code, `/lean_compile` is the faster
+debug path.
 
 ### The review step matters
 
@@ -667,7 +723,7 @@ Each endpoint should have its own panel or tab with:
 
 Allow users to chain endpoints in sequence:
 ```
-classify → formalize → [review] → verify → explain
+classify → formalize → [review] → lean_compile (optional) → verify → explain
 ```
 
 Or in an agentic loop:
@@ -693,16 +749,20 @@ For test suites, support batch submission:
 
 - **Raw Lean is still the best product path.** It is faster, more reliable, and
   has the cleanest semantics today.
-- **Formalization is much better on release tiers than on frontier claims.**
-  Tier 0 and Tier 1 now measure well, but Bellman/fixed-point/Hessian/Solow
-  frontier claims still fail frequently.
+- **Theorem-stub verification is also strong.** If you can get a clean theorem
+  stub from a human or another tool, `/verify` is currently a strong lane.
+- **Formalization is much better on bounded release tiers than on frontier claims.**
+  Tier 1 core now measures well, but frontier natural-language cases are still
+  mixed.
 - **Formalization is now search-assisted but still bounded.** LeanEcon uses
   preamble matching, curated import/identifier hints, and compiler-bucketed
   repair before spending more model calls. This improves reliability, but it is
   still not an open-ended proving loop.
 - **Verification is stochastic.** The same claim may pass on one run and fail on the next. Offer retry buttons.
 - **Currently strongest on algebraic identities** (field arithmetic, ring algebra) and preamble-backed claims. Claims involving `Real.rpow` with variable exponents are brittle.
-- **Fixed-point and measure-theoretic claims** are stretch goals, not impossible in principle. Expect many of them to land in `MATHLIB_NATIVE` or fail during formalization.
+- **Frontier outcomes are uneven.** Recent formalizer-only runs now clear
+  contraction-mapping and monotone-sequence cases, but strict-concavity /
+  extreme-value formalization is still brittle.
 - **General-equilibrium and richer game-theory claims** still tend to need definitions beyond the current preamble library.
 - **Axiom info is best-effort.** Product UIs should treat missing `axiom_info` as "not available" rather than as a proof failure.
 - **The Leanstral model is a labs endpoint** — not a permanent production API. Plan for prover backend swaps.
