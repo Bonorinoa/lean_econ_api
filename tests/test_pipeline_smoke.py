@@ -44,6 +44,9 @@ def test_raw_lean_bypass() -> None:
     assert result["attempts"] == 0
     assert result["formalization_failed"] is False
     assert result["theorem_code"] == RAW_LEAN_THEOREM.strip()
+    assert result["formalizer_telemetry"]["model"] == "raw_lean_bypass"
+    assert result["formalizer_telemetry"]["model_calls"] == 0
+    assert result["formalizer_telemetry"]["retrieval"] == {}
 
 
 def test_cache_hit_calls_log_run_with_from_cache_true() -> None:
@@ -99,3 +102,5 @@ theorem utility_budget_feasible : True := by
     assert logged["formalization"]["attempts"] == 2
     assert logged["formalization"]["model"] == "cache_replay"
     assert logged["proving"]["proof_tactics"] == "trivial"
+    assert logged["provider_telemetry"]["local_only"] is True
+    assert logged["estimated_cost_base_usd"] is None

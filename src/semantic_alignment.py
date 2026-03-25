@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from leanstral_utils import call_leanstral, get_client
+from provider_telemetry import summarize_provider_calls
 
 SEMANTIC_GRADE_SYSTEM_PROMPT = """\
 You are a rigorous mathematical referee evaluating whether Lean theorem code is
@@ -66,6 +67,7 @@ def _normalize_grade(payload: dict[str, Any]) -> dict[str, Any]:
 def grade_semantic_alignment(
     original_raw_claim: str,
     generated_theorem_code: str,
+    telemetry_out: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Grade how faithfully Lean theorem code captures the original claim."""
     user_prompt = f"""\
@@ -86,11 +88,16 @@ Generated Lean theorem code:
             "semantic_grade",
             temperature=0.0,
             max_tokens=700,
+            telemetry_out=telemetry_out,
         )
         payload = json.loads(_strip_json_fences(raw))
         if not isinstance(payload, dict):
             raise ValueError("Semantic grader did not return a JSON object")
-        return _normalize_grade(payload)
+        result = _normalize_grade(payload)
+        result["provider_telemetry"] = (
+            summarize_provider_calls(telemetry_out) if telemetry_out is not None else None
+        )
+        return result
     except Exception as exc:
         return {
             "score": None,
@@ -99,4 +106,7 @@ Generated Lean theorem code:
             "trivialization_flags": [],
             "generated": False,
             "error": str(exc),
+            "provider_telemetry": (
+                summarize_provider_calls(telemetry_out) if telemetry_out is not None else None
+            ),
         }

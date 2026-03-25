@@ -1,38 +1,72 @@
 # LeanEcon API Guide
 
 LeanEcon exposes a versioned REST API for claim classification, formalization,
-proof generation, verification, explanation, cache inspection, and lightweight
-run metrics.
+direct Lean compilation, proof generation, final verification, explanation,
+cache inspection, and benchmark snapshots.
 
-Verify jobs are asynchronous and concurrency-safe: each run uses isolated
-temporary Lean files for proving and final verification, so multiple jobs can
-execute without clobbering a shared `Proof.lean`.
+Some endpoints now include optional provider telemetry and conservative cost
+estimates when real usage data exists. These fields are for observability, not
+billing, do not imply stable provider pricing or a stably free Leanstral tier,
+and `/api/v1/lean_compile` remains local-only.
 
-Base docs:
+This guide is the operational source of truth. For the architecture and trust
+model, see [`docs/TECHNICAL_WHITEPAPER.md`](./TECHNICAL_WHITEPAPER.md). For the
+project landing page, see [`README.md`](../README.md).
 
-- OpenAPI schema: `/openapi.json`
-- Interactive docs: `/docs`
+OpenAPI schema: `/openapi.json`
 
-## Recommended v1 workflow
+Interactive docs: `/docs`
 
-1. `POST /api/v1/classify` *(optional — advisory only, not required before formalize)*
-2. `POST /api/v1/formalize` *(with optional `preamble_names`)*
-3. Optionally edit the returned `theorem_code`
-4. `POST /api/v1/verify`
-5. Track the job with either:
-   - `GET /api/v1/jobs/{job_id}`
-   - `GET /api/v1/jobs/{job_id}/stream`
-6. Optionally call `POST /api/v1/explain`
+## Recommended Workflow
 
-> **Note:** Classification is no longer a required gate before formalization.
-> The formalizer attempts all claims directly. Use `/classify` for frontend UX
-> (showing scope hints, suggesting preamble modules) but not as a prerequisite.
+1. `POST /api/v1/classify` if you want scope hints or preamble suggestions.
+2. `POST /api/v1/formalize` to turn the claim into a Lean theorem stub.
+3. Review or edit the theorem text.
+4. `POST /api/v1/verify` to queue proof generation and final Lean checking.
+5. Poll `GET /api/v1/jobs/{job_id}` or stream `GET /api/v1/jobs/{job_id}/stream`.
+6. Call `POST /api/v1/explain` after the job finishes if you want a summary.
 
-## 1. Classify (optional)
+If you already have Lean theorem code with `:= by sorry`, skip formalization
+and go straight to `/api/v1/verify`.
 
-Use `POST /api/v1/classify` to get advisory information about a claim's scope
-and relevant preamble modules. This is useful for frontend UX but is **not**
-required before calling `/formalize`.
+If you already have complete Lean code and want a direct compiler check, use
+`POST /api/v1/lean_compile`. It is an optional compile/debug primitive, not the
+default workflow.
+
+In product terms:
+
+- `/api/v1/formalize` is the claim-shaping step
+- `/api/v1/lean_compile` is the thin synchronous compile/debug primitive
+- `/api/v1/verify` is the async agentic proving path
+
+## Compatibility Notes
+
+- Legacy unversioned routes `/api/classify`, `/api/formalize`, and
+  `/api/verify` remain as deprecated wrappers for backward compatibility.
+- `/health` stays unversioned.
+- The exhaustive request/response schema is always the live OpenAPI document.
+
+## Endpoint Summary
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/classify` | Advisory claim classification and preamble hints |
+| `POST` | `/api/v1/formalize` | Claim-to-theorem shaping with `:= by sorry` |
+| `POST` | `/api/v1/lean_compile` | Direct Lean compilation without the prover |
+| `POST` | `/api/v1/verify` | Async proof generation plus final Lean verification |
+| `GET` | `/api/v1/jobs/{job_id}` | Poll async verify job status and final result |
+| `GET` | `/api/v1/jobs/{job_id}/stream` | Stream verify progress as SSE |
+| `POST` | `/api/v1/explain` | Natural-language explanation of a pipeline outcome |
+| `GET` | `/api/v1/metrics` | Aggregate metrics from the JSONL run log |
+| `GET` | `/api/v1/benchmarks/latest` | Summary-only view of the newest benchmark snapshot |
+| `GET` | `/api/v1/cache/stats` | Inspect verified-result cache size |
+| `DELETE` | `/api/v1/cache` | Clear the verified-result cache |
+| `GET` | `/health` | Liveness check |
+
+## POST /api/v1/classify
+
+Use this endpoint for optional scope hints. It is advisory only and is not a
+prerequisite for formalization.
 
 Request:
 
@@ -45,32 +79,38 @@ Request:
 Important response fields:
 
 - `cleaned_claim`: normalized claim text after lightweight cleaning
-- `category`: `RAW_LEAN`, `ALGEBRAIC`, `MATHLIB_NATIVE`, `DEFINABLE`, or `REQUIRES_DEFINITIONS`
-- `formalizable`: quick yes/no signal for whether to continue
-- `reason`: rejection explanation for out-of-scope claims
-- `definitions_needed`: supporting detail for `DEFINABLE` claims
-- `preamble_matches`: reusable LeanEcon modules that may help formalization
-- `suggested_reformulation`: optional reformulation hint
+- `category`: one of `RAW_LEAN`, `ALGEBRAIC`, `MATHLIB_NATIVE`, `DEFINABLE`,
+  or `REQUIRES_DEFINITIONS`
+- `formalizable`: whether the claim should continue to formalization
+- `reason`: rejection explanation when the claim needs missing definitions
+- `is_raw_lean`: whether the input already looked like Lean code
 - `error_code`: machine-readable classifier outcome
+- `definitions_needed`: supporting detail for `DEFINABLE` claims
+- `preamble_matches`: reusable LeanEcon preamble modules
+- `suggested_reformulation`: optional rewrite hint
 
-Classifier note:
+Behavior notes:
 
-- the LLM-facing prompt still uses `ALGEBRAIC_OR_CALCULUS` and `REQUIRES_CUSTOM_THEORY`
-- `classify_claim()` maps those to the API-facing categories `ALGEBRAIC` and `REQUIRES_DEFINITIONS`
-- `MATHLIB_NATIVE` is an API-facing formalizable category for claims that likely need direct Mathlib imports rather than LeanEcon preamble modules
+- raw Lean input returns `RAW_LEAN` immediately
+- `REQUIRES_DEFINITIONS` is the only category that should stop the workflow
+- `ALGEBRAIC`, `MATHLIB_NATIVE`, and `DEFINABLE` are all formalizable
+- `provider_telemetry`, when present, is observability metadata for the
+  classifier call rather than a pricing commitment
 
 Interpretation:
 
-- `RAW_LEAN`: skip directly to `POST /api/v1/verify`
-- `ALGEBRAIC`: continue to `POST /api/v1/formalize`
-- `MATHLIB_NATIVE`: continue to `POST /api/v1/formalize`; the formalizer will use an internal Mathlib navigation hint from classification
-- `DEFINABLE`: continue to `POST /api/v1/formalize`, optionally using `preamble_matches`
-- `REQUIRES_DEFINITIONS`: stop or ask for a reformulation
+| Category | Recommended next step |
+| --- | --- |
+| `RAW_LEAN` | Skip formalize and go straight to `verify` if the theorem still contains `:= by sorry` |
+| `ALGEBRAIC` | Continue to `formalize` |
+| `MATHLIB_NATIVE` | Continue to `formalize`; expect direct Mathlib imports rather than LeanEcon preambles |
+| `DEFINABLE` | Continue to `formalize`, optionally using `preamble_matches` |
+| `REQUIRES_DEFINITIONS` | Stop or ask for a reformulation |
 
-## 2. Formalize
+## POST /api/v1/formalize
 
-Use `POST /api/v1/formalize` to turn natural language or LaTeX into a Lean
-theorem file containing `:= by sorry`.
+Use this endpoint to turn natural language or LaTeX into a Lean theorem file
+containing `:= by sorry`.
 
 Request:
 
@@ -83,41 +123,80 @@ Request:
 
 Important request fields:
 
-- `raw_claim`: plain text, LaTeX, or raw Lean input
-- `preamble_names`: optional explicit preamble module names to inject; when
-  omitted, the formalizer may auto-select matching preambles using bounded
-  retrieval
-
-Use [`PREAMBLE_CATALOG.md`](./PREAMBLE_CATALOG.md) to choose valid
-`preamble_names`.
+- `raw_claim`: plain text, LaTeX, or raw Lean 4 input
+- `preamble_names`: optional explicit preamble module names
 
 Important response fields:
 
 - `success`: whether the theorem compiled with `sorry`
-- `theorem_code`: full Lean file content to review or edit
+- `theorem_code`: full Lean file content returned by the formalizer
 - `attempts`: number of formalization or repair attempts used
+- `errors`: Lean errors from the last failed formalization attempt
 - `formalization_failed`: whether the claim was rejected as out of scope
-- `failure_reason`: explanation for a formalization rejection
-- `preamble_used`: names of injected preamble definitions
-- `diagnosis`, `suggested_fix`, `fixable`: repair guidance when formalization fails
+- `failure_reason`: model-provided reason for rejection
 - `error_code`: machine-readable formalization outcome
+- `preamble_used`: names of injected preamble definitions
+- `diagnosis`: failure analysis when repair attempts are exhausted
+- `suggested_fix`: concrete suggestion for fixing the formalization
+- `fixable`: whether a human edit is likely to help
 
-If `raw_claim` already looks like Lean and contains a proof stub, this endpoint
-passes it through unchanged with `attempts = 0`.
+Behavior notes:
 
-Formalization notes:
-
-- the formalizer now builds bounded retrieval context before generation
-- it can auto-select matching LeanEcon preambles when `preamble_names` is empty
+- if the input already looks like Lean and contains a proof stub, the endpoint
+  passes it through unchanged with `attempts = 0`
+- if `preamble_names` is empty, the formalizer may auto-select matching
+  preambles using bounded retrieval
 - compile failures are bucketed into import/module, identifier, typeclass,
   syntax, or semantic classes before targeted repair
 - MCP-backed search is opportunistic only; when unavailable, the formalizer
   falls back to curated hints plus local Lean compilation
+- `provider_telemetry`, when present, is observability metadata for the
+  formalizer call set rather than a public pricing commitment
 
-## 3. Verify
+## POST /api/v1/lean_compile
 
-Use `POST /api/v1/verify` to queue proof generation plus final Lean
-verification.
+Use this endpoint to compile a complete Lean file directly with the local Lean
+toolchain. It bypasses both formalization and the agentic prover.
+
+Request:
+
+```json
+{
+  "lean_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  norm_num\n",
+  "filename": "one_plus_one.lean",
+  "check_axioms": false
+}
+```
+
+Important request fields:
+
+- `lean_code`: complete Lean file content to compile as-is
+- `filename`: optional label used to derive the temporary Lean filename
+- `check_axioms`: optional best-effort axiom check after a successful compile
+
+Important response fields:
+
+- `success`: whether Lean accepted the file
+- `errors` / `warnings`: compiler diagnostics
+- `stdout` / `stderr`: captured compiler output
+- `verification_method`: compiler path used for the check
+- `elapsed_ms`: wall-clock compile time in milliseconds
+- `axiom_info`: optional axiom usage payload when `check_axioms=true`
+- `telemetry`: optional local-only usage telemetry with `estimated_cost_*`
+  left null because direct compile work is not LLM spend
+
+Behavior notes:
+
+- this endpoint does not queue a job
+- this endpoint does not invoke the prover
+- it is useful for kernel-truth checks and debugging pre-written Lean code
+- it is tagged as local-only telemetry and excluded from LLM cost totals
+- a file that still contains `sorry` will fail this endpoint
+
+## POST /api/v1/verify
+
+Use this endpoint to queue proof generation plus final Lean verification.
+It returns HTTP `202` immediately.
 
 Request:
 
@@ -133,16 +212,8 @@ Important request rules:
 - `theorem_code` must look like a Lean theorem, lemma, or example
 - it must still contain `:= by sorry`
 - `explain=true` asks LeanEcon to include an explanation in the final job result
-- for the fastest user-facing verify path, prefer `explain=false` and call `POST /api/v1/explain` after the job completes
-- the endpoint responds immediately with HTTP `202`
-
-Verification notes:
-
-- the proving job edits a per-run working file such as `AgenticProof_<id>.lean`
-- final Lean acceptance is checked by compiling an isolated per-run temp file
-  with `lake env lean`
-- concurrent verify jobs are supported because the API no longer routes all
-  verification through a shared `LeanEcon/Proof.lean`
+- for the fastest user-facing flow, keep `explain=false` and call
+  `/api/v1/explain` after the job completes
 
 Queue response:
 
@@ -153,12 +224,20 @@ Queue response:
 }
 ```
 
-### Polling jobs
+Behavior notes:
 
-Use `GET /api/v1/jobs/{job_id}` to read job status and final output. Poll until
-`status` becomes `completed` or `failed`.
+- the proving job edits a per-run working file such as `AgenticProof_<id>.lean`
+- final Lean acceptance is checked by compiling an isolated per-run temp file
+  with `lake env lean`
+- concurrent verify jobs are supported because the API no longer routes all
+  verification through a shared `LeanEcon/Proof.lean`
 
-Response fields:
+## GET /api/v1/jobs/{job_id}
+
+Use this endpoint to poll the status of a queued or completed verify job.
+Poll until `status` becomes `completed` or `failed`.
+
+Important response fields:
 
 - `job_id`: the same identifier returned by verify
 - `status`: `queued`, `running`, `completed`, or `failed`
@@ -168,8 +247,8 @@ Response fields:
 - `started_at`: UTC timestamp when the background worker started it
 - `finished_at`: UTC timestamp when the job completed or failed
 - `last_progress_at`: UTC timestamp of the latest progress event observed
-- `current_stage`: the most specific stage the job most recently entered
-- `stage_timings`: per-stage elapsed milliseconds recorded when a stage finishes
+- `current_stage`: the most recent pipeline stage reported for the job
+- `stage_timings`: per-stage elapsed milliseconds keyed by stage name
 
 Important fields inside `result`:
 
@@ -177,19 +256,28 @@ Important fields inside `result`:
 - `phase`: `verified`, `proved`, or `failed`
 - `lean_code`: final Lean file produced by the proving run
 - `proof_strategy`: high-level proof plan
-- `proof_tactics`: tactic script or tactics summary
-- `errors` / `warnings`: Lean diagnostics
+- `proof_tactics`: tactic script or tactic summary
+- `theorem_statement`: theorem text that entered the proving stage
+- `formalization_attempts`: number of formalization attempts before proving
+- `formalization_failed`: whether the pipeline failed during formalization
+- `failure_reason`: reason for an early formalization failure, when present
+- `output_lean`: optional output artifact path
+- `proof_generated`: whether the prover produced a proof attempt
 - `elapsed_seconds`: total pipeline runtime
-- `from_cache`: whether the response came from the verified-result cache
+- `from_cache`: whether the result came from the verified-result cache
 - `partial`: whether the prover timed out and returned partial output
 - `stop_reason`: prover stop reason when reported
 - `tool_trace`: ordered deep-trace events from the proving run
-- `tactic_calls`: tactic-application attempts with triggering Lean errors when available
-- `trace_schema_version`: schema marker for `tool_trace` / `tactic_calls`
+- `tactic_calls`: tactic attempts with triggering Lean errors when available
+- `trace_schema_version`: schema marker for `tool_trace` and `tactic_calls`
 - `axiom_info`: optional axiom-usage metadata from final verification
 - `explanation`: optional natural-language explanation when `explain=true`
 - `explanation_generated`: whether the explanation was model-generated
 - `error_code`: machine-readable verification outcome
+- `provider_telemetry`: aggregate observability metadata for formalization and
+  proving calls when usage payloads were available
+- `explanation_telemetry`: separate observability metadata for the optional
+  explanation call
 
 `axiom_info` is best-effort. Cache hits, local fast-path successes, or timed-out
 MCP axiom checks may leave it as `null` even when verification succeeds. When
@@ -204,42 +292,15 @@ present, its shape is:
 }
 ```
 
-Phase meanings:
+## GET /api/v1/jobs/{job_id}/stream
 
-- `verified`: Lean accepted the proof
-- `proved`: a proof was generated, but Lean rejected it
-- `failed`: the pipeline did not reach a valid proof
-
-Observability notes:
-
-- `tool_trace` keeps the existing field name for backward compatibility, but new
-  runs include ordered tool-call records with tool kind, arguments, normalized
-  result text, status, and parsed diagnostic payloads for
-  `lean_diagnostic_messages`
-- `tactic_calls` now record retry-triggering Lean kernel errors and whether the
-  following diagnostic check succeeded
-- the job envelope now includes additive timestamps plus `current_stage`, which
-  makes a long-lived `running` job debuggable without changing the existing
-  verify payload shape
-- wrapper stages such as `prover_dispatch` may still appear in
-  `stage_timings`, but `current_stage` prefers the most specific active stage
-  instead of being overwritten by a later wrapper-stage `done` event
-- low-level cancellation noise is normalized in user-facing warnings; for
-  example, partial runs should no longer expose raw anyio cancel-scope mismatch
-  wording in `warnings`, though the detailed cause may still appear in
-  `agent_summary` or traces
-- the JSONL run log lives at `logs/runs.jsonl` by default, or at
-  `${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR` is set
-
-## SSE job streaming
-
-`GET /api/v1/jobs/{job_id}/stream` returns a Server-Sent Events stream with
-`Content-Type: text/event-stream`.
+Use this endpoint to stream verify job progress as Server-Sent Events.
+The stream closes automatically after the job completes or fails.
 
 Each event is a single JSON object on a `data:` line:
 
 ```text
-data: {"type":"progress","stage":"formalize","message":"Calling Leanstral...","status":"running"}
+data: {"type":"progress","stage":"formalize","message":"Calling Leanstral to formalize claim...","status":"running"}
 
 data: {"type":"progress","stage":"agentic_run","message":"Leanstral proving loop started...","status":"running"}
 
@@ -251,7 +312,8 @@ Event fields:
 - `type`: `progress` or `complete`
 - `stage`: pipeline stage name for progress events
 - `message`: human-readable progress text for progress events
-- `status`: stage or job status such as `running`, `done`, `error`, `completed`, `failed`
+- `status`: stage or job status such as `running`, `done`, `error`,
+  `completed`, or `failed`
 - `error`: present on failed `complete` events
 
 Notes:
@@ -259,36 +321,14 @@ Notes:
 - completed jobs return a single `complete` event and then close
 - failed jobs return `{"type":"complete","status":"failed","error":"..."}` and then close
 - keepalive comments may appear as `: keepalive`
-- typical progress stages include `parse`, `formalize`, `prover_dispatch`,
-  `agentic_init`, `agentic_fast_path`, `agentic_setup`, `agentic_run`,
-  `agentic_check`, `agentic_verify`, `cache`, and `explain`
-- the stream does not include the final verify payload; fetch `GET /api/v1/jobs/{job_id}` for that
+- the stream does not include the final verify payload; fetch
+  `GET /api/v1/jobs/{job_id}` for that
 
-Frontend example:
+## POST /api/v1/explain
 
-```javascript
-const eventSource = new EventSource(`/api/v1/jobs/${jobId}/stream`);
-
-eventSource.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-
-  if (data.type === "progress") {
-    updateProgressUI(data.stage, data.message, data.status);
-    return;
-  }
-
-  if (data.type === "complete") {
-    eventSource.close();
-    fetchJobResult(jobId);
-  }
-};
-```
-
-## Explain
-
-Use `POST /api/v1/explain` to get a natural-language explanation of a pipeline
-outcome. This endpoint is useful when you already have intermediate artifacts
-and do not want to rerun verification.
+Use this endpoint to get a natural-language explanation of a pipeline result.
+It is useful when you already have intermediate artifacts and do not want to
+rerun verification.
 
 Request:
 
@@ -321,11 +361,11 @@ Response:
 }
 ```
 
-## Metrics
+## GET /api/v1/metrics
 
-`GET /api/v1/metrics` aggregates metrics from the append-only evaluation log at
-`logs/runs.jsonl` by default, or `${LEANECON_STATE_DIR}/logs/runs.jsonl` when
-`LEANECON_STATE_DIR` is configured.
+Use this endpoint to aggregate metrics from the append-only evaluation log.
+The default location is `logs/runs.jsonl`, or
+`${LEANECON_STATE_DIR}/logs/runs.jsonl` when `LEANECON_STATE_DIR` is set.
 
 Example response:
 
@@ -344,245 +384,29 @@ Example response:
 ```
 
 This endpoint is meant for lightweight development-time visibility, not a full
-metrics stack.
+metrics stack. If the log file is missing or empty, it returns a zeroed payload.
 
-Cache hits are logged into the same append-only run log so `/api/v1/metrics`
-can count them. Offline proof-quality analysis should still treat those cache
-replays separately; the trace-analysis helpers skip `from_cache` entries so
-repeated cached successes do not distort tactic-depth or tool-efficiency
-metrics.
+## GET /api/v1/benchmarks/latest
 
-For release gating, prefer local lint, non-live pytest, Lean/MCP smoke checks,
-and local Docker validation before trusting any Railway response.
+Use this endpoint to read the newest offline benchmark snapshot summary.
+The API first checks `${LEANECON_STATE_DIR}/benchmarks/snapshots/` when a state
+directory is configured, then falls back to the bundled
+`benchmarks/snapshots/` directory.
 
-## Latest benchmark summary
-
-`GET /api/v1/benchmarks/latest` returns the summary-only view of the newest
-offline benchmark snapshot. When `LEANECON_STATE_DIR` is configured, the API
-first checks `${LEANECON_STATE_DIR}/benchmarks/snapshots/`; it also falls back
-to the bundled `benchmarks/snapshots/` copied into the container image.
-
-If neither the state directory nor the bundled image contains any snapshot
-artifacts yet, this endpoint can legitimately return `404` with
-`{"detail":"No benchmark snapshot found."}`. That is a deployment/content gap,
-not necessarily an API bug.
-
-Example response:
+If no snapshot exists yet, the endpoint can legitimately return `404` with:
 
 ```json
-{
-  "generated_at": "2026-03-22T20:00:00+00:00",
-  "benchmark_file": "benchmarks/tier0_smoke.jsonl",
-  "config": {
-    "mode": "full",
-    "repetitions": 3,
-    "use_cache": false,
-    "lane_order": [
-      "raw_claim_full_api",
-      "theorem_stub_verify",
-      "raw_lean_verify"
-    ]
-  },
-  "summary": {
-    "total_cases": 3,
-    "lanes": {
-      "raw_claim_full_api": {
-        "pass_at_1": 1.0,
-        "pass_at_3": 1.0
-      }
-    },
-    "by_tier": {
-      "tier0_smoke": {
-        "total_cases": 3
-      }
-    }
-  }
-}
+{"detail":"No benchmark snapshot found."}
 ```
 
-This endpoint intentionally excludes per-claim internals. Use the on-disk
-snapshot and report artifacts for benchmark debugging.
+The response is summary-only. It intentionally excludes per-claim internals.
+Use the on-disk snapshot and report artifacts for benchmark debugging.
 
-## Current measured status (2026-03-23)
+## GET /api/v1/cache/stats
 
-Local repo status after the current formalizer/runtime cleanup:
+Use this endpoint to inspect the verified-result cache.
 
-- `pytest -m "not live and not slow"`: `190 passed, 13 deselected`
-- focused formalizer/prover regressions:
-  `tests/test_agentic_resilience.py`, `tests/test_formalizer.py`,
-  `tests/test_formalization_search.py`: `68 passed`
-- selected live/local prover checks:
-  `test_one_plus_one_agentic`, `test_local_fast_path_solves_trivial_theorem`,
-  `test_crra_raw_agentic`, and `test_cobb_raw_agentic`: `4 passed`
-- `lake build` in `lean_workspace`: successful
-
-Measured benchmark snapshots:
-
-- Tier 0 formalizer-only:
-  `benchmarks/snapshots/tier0_smoke_formalizer_only_20260323T233445Z.json`
-  → `3/3`, `pass@1 = 1.0`, semantic average `3.33`
-- Tier 0 full:
-  `benchmarks/snapshots/tier0_smoke_full_20260323T234951Z.json`
-  → `raw_claim_full_api pass@1 = 1.0` with semantic average `3.0`;
-  `theorem_stub_verify pass@1 = 1.0`; `raw_lean_verify pass@1 = 1.0`
-- Tier 1 core formalizer-only:
-  `benchmarks/snapshots/tier1_core_formalizer_only_20260323T231742Z.json`
-  → `6/6`, `pass@1 = 1.0`, semantic average `4.67`
-- Tier 2 frontier formalizer-only:
-  `benchmarks/snapshots/tier2_frontier_formalizer_only_20260324T000400Z.json`
-  → `1/3`, `pass@1 = 0.333`
-- Formalizer regressions:
-  `benchmarks/snapshots/formalizer_regressions_formalizer_only_20260323T232552Z.json`
-  → `6/7`, `pass@1 = 0.857`, semantic average `4.17`
-
-Additional full-lane confirmation beyond Tier 0:
-
-- the Marshallian-demand Tier 1 claim now verifies end-to-end locally in
-  `150.1s` after the inline-`sorry` normalization fix
-- the selected CRRA and Cobb-Douglas raw-theorem prover regressions still pass
-
-Live service smoke on 2026-03-23:
-
-- `GET /health` returned `{"status":"ok"}`
-- `GET /openapi.json` matched the async v1 job API
-- `GET /api/v1/metrics` returned
-  `total_runs=18`, `verified=17`, `proof_failures=1`, `cache_hits=3`,
-  `partial_runs=3`, `avg_elapsed_seconds=33.0`
-- `GET /api/v1/benchmarks/latest` still returned `404`
-- a raw-Lean live verify probe succeeded in `13.2s` with `partial=false`
-
-Important caveat:
-
-- the live natural-language budget-set probe still produced a biconditional on
-  2026-03-23, which means the deployed app/API pair has not yet picked up the
-  local formalizer prompt/acceptance fixes described here
-
-## Offline evaluation scripts
-
-LeanEcon also includes script-level evaluation tooling that operates on the
-append-only log and pipeline outputs.
-
-### Benchmark harness
-
-```bash
-./leanEconAPI_venv/bin/python scripts/run_benchmark.py benchmarks/tier0_smoke.jsonl --repetitions 3 --no-cache
-```
-
-This harness measures three separate lanes when inputs are available:
-
-- `raw_claim -> full API`
-- `theorem_stub -> verify`
-- `raw_lean -> verify`
-
-It also supports a faster formalizer-only gate:
-
-```bash
-./leanEconAPI_venv/bin/python scripts/run_benchmark.py benchmarks/tier1_core.jsonl --mode formalizer-only
-```
-
-Focused formalizer regression gate:
-
-```bash
-./leanEconAPI_venv/bin/python scripts/run_benchmark.py benchmarks/formalizer_regressions.jsonl --mode formalizer-only
-```
-
-Recommended three-tier benchmark layout:
-
-- `benchmarks/tier0_smoke.jsonl` — arithmetic, exact-hypothesis reuse, and one-step preamble basics
-- `benchmarks/tier1_core.jsonl` — preamble-backed economics identities used for release gating
-- `benchmarks/tier2_frontier.jsonl` — Mathlib-native or search-heavy acceptance tracking
-- `benchmarks/formalizer_regressions.jsonl` — focused regression slice with real `tier` values plus regression tags
-
-Artifacts land in:
-
-- `benchmarks/snapshots/*.json` — machine-readable benchmark snapshots
-- `benchmarks/reports/*.md` — human-readable reports
-
-Per-claim and aggregate outputs include pass@k, p50/p95 latency, failure stage,
-error code, stop reason, semantic-alignment grading for raw-claim lanes, and
-formalizer telemetry such as validation method, validation fallback reasons,
-repair buckets, and retrieval-source counts. The snapshot summary now also
-includes additive `by_tier` aggregates. Cache is disabled by default so warm
-cache hits do not flatter benchmark numbers.
-
-### Deep trace analysis
-
-```bash
-./leanEconAPI_venv/bin/python scripts/analyze_traces.py --runs-file logs/runs.jsonl --format both
-```
-
-This script computes:
-
-- Tool Call Efficiency: successful tactic applications divided by total tool calls
-- Tactic Depth: average number of distinct tactic heads in successful proofs
-- Error Frequency: most common Lean kernel errors seen in failed proof attempts
-
-### Semantic grading
-
-```bash
-./leanEconAPI_venv/bin/python scripts/semantic_grader.py \
-  --claim "Under CRRA utility, relative risk aversion is constant." \
-  --theorem-file docs/legacy_examples/crra_pass.lean
-```
-
-This script uses Leanstral as a mathematical referee and returns structured
-JSON with `score`, `verdict`, `rationale`, and `trivialization_flags`.
-
-### Uncharted evaluations
-
-```bash
-./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
-  tests/fixtures/claims/test_claims.jsonl \
-  --profile ci
-```
-
-Input JSONL records should include:
-
-- `id`: stable case identifier
-- `raw_claim`: natural-language claim
-- optional `expect`: `verify`, `formalize`, or `fail_gracefully`
-- optional `eval_stage`: `formalization`, `prove`, or `e2e`
-- optional `theorem_code` / `preformalized_theorem` for prover-only cases
-- optional `preamble_names`, `tags`, and `notes`
-
-The runner is stage-aware:
-
-- `expect: verify` runs formalization plus proving
-- `expect: formalize` and `expect: fail_gracefully` stop after formalization
-- `theorem_code` / `preformalized_theorem` runs prover-only evaluation
-- unlabeled raw-claim cases still default to full end-to-end evaluation
-
-It writes `case_records.jsonl`, `results.json`, and `report.md` under
-`outputs/uncharted_evals/`.
-
-This harness is currently a frontier-diagnostics tool, not the main release or
-CI benchmark. A post-fix formalization-only rerun on 2026-03-24 over
-`tests/fixtures/claims/uncharted_claims.jsonl` with
-`--profile core --stage-mode formalization` produced:
-
-- `2/5` formalizations (`formalization_robustness = 0.4`)
-- semantic average `4.5` on the two successful formalizations
-- successes: Brouwer-style fixed-point phrasing and the envelope-theorem case
-- failures: Bellman contraction (invented/missing LeanEcon module), Hessian to
-  matrix typing, and Solow/Inada formulation shape
-
-Use explicit profiles:
-
-- `--profile ci` for cheap day-to-day regression tracking
-- `--profile core` when you also want semantic grading
-- `--profile frontier` for expensive research probes on hard claims
-
-The summary metrics are now stage-aware too:
-
-- `Formalization Robustness` only counts cases that actually ran formalization
-- `Agentic Proving Power` only counts proof-stage cases
-- `Expectation Benchmark Score` reports how often labeled benchmark targets were met
-
-## Cache endpoints
-
-Use these operational endpoints to inspect or clear the verified-result cache:
-
-- `GET /api/v1/cache/stats` returns:
+Example response:
 
 ```json
 {
@@ -590,7 +414,15 @@ Use these operational endpoints to inspect or clear the verified-result cache:
 }
 ```
 
-- `DELETE /api/v1/cache` returns:
+The verified-result cache lives at `data/verified_cache.json` by default, or at
+`${LEANECON_STATE_DIR}/data/verified_cache.json` when `LEANECON_STATE_DIR` is
+set.
+
+## DELETE /api/v1/cache
+
+Use this endpoint to clear the verified-result cache.
+
+Example response:
 
 ```json
 {
@@ -598,26 +430,11 @@ Use these operational endpoints to inspect or clear the verified-result cache:
 }
 ```
 
-The verified-result cache lives at `data/verified_cache.json` by default, or at
-`${LEANECON_STATE_DIR}/data/verified_cache.json` when `LEANECON_STATE_DIR` is
-set.
+## GET /health
 
-## Validation Workflow
+Use this endpoint for liveness checks.
 
-Use local checks as the release gate before considering a Railway rebuild:
-
-- `ruff check src/ tests/ scripts/`
-- `pytest -m "not live and not slow"`
-- local Lean/MCP smoke checks such as `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`
-- `docker build .`
-- local container `curl` checks against `/health`, `/api/v1/metrics`, and `/api/v1/cache/stats`
-
-Railway `curl` checks are useful only after a deliberate deploy, because the
-currently deployed instance may still be serving an older build.
-
-## Health
-
-`GET /health` returns:
+Example response:
 
 ```json
 {
@@ -625,9 +442,38 @@ currently deployed instance may still be serving an older build.
 }
 ```
 
-## Error handling
+## Current Measured Status
 
-- `422` means the request payload was blank or structurally invalid
-- `404` means a job was not found or expired
-- `500` means an unexpected internal failure occurred in classification,
-  formalization, verification, explanation, or metrics aggregation
+As of the 2026-03-25 local release sweep:
+
+- `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
+- `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
+  `214 passed, 13 deselected`
+- latest completed full tier-1 lane report:
+  [`benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md)
+  shows:
+  - `raw_claim -> full API`: `pass@1 = 0.333`
+  - `theorem_stub -> verify`: `pass@1 = 1.000`
+  - `raw_lean -> verify`: `pass@1 = 1.000`
+- latest completed tier-1 formalizer-only report:
+  [`benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md)
+  shows:
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 1.000`
+  - semantic `>=4` rate: `0.833`
+
+The practical takeaway is unchanged: raw Lean and theorem-stub verification are
+the strongest lanes; raw-claim full-API evaluation is still the weakest lane,
+even though the bounded formalizer-only gate is strong on the tier-1 core slice.
+
+## Validation Workflow
+
+Use local checks as the release gate before considering a deploy:
+
+```bash
+ruff check src tests scripts
+pytest -m "not live and not slow" --tb=short -q
+./leanEconAPI_venv/bin/python src/mcp_smoke_test.py
+docker build .
+```
+
+For API changes, also sanity-check `tests/test_api_smoke.py`.

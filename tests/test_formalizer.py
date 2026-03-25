@@ -49,6 +49,7 @@ def _stub_formalizer_client():
     with patch.object(formalizer, "get_client", return_value=object()):
         yield
 
+
 # ---------------------------------------------------------------------------
 # Live smoke tests (require MISTRAL_API_KEY + local Lean toolchain)
 # ---------------------------------------------------------------------------
@@ -502,9 +503,10 @@ def test_formalize_uniquifies_primary_declaration_before_validation() -> None:
     assert result["success"] is True
     assert UNIQUE_DECLARATION_MARKER in captured["lean_code"]
     assert result["theorem_code"] == captured["lean_code"]
-    assert "uniquify_declaration_name" in result["formalizer_telemetry"][
-        "deterministic_repairs_applied"
-    ]
+    assert (
+        "uniquify_declaration_name"
+        in result["formalizer_telemetry"]["deterministic_repairs_applied"]
+    )
 
 
 def test_formalize_strips_wrapper_text_without_extra_model_call() -> None:
@@ -559,6 +561,73 @@ def test_formalize_rejects_biconditional_rewrite_before_validation() -> None:
             },
         ) as mock_validate:
             result = formalizer.formalize("If P then Q.", use_cache=False)
+
+    assert result["success"] is True
+    assert mock_call.call_count == 2
+    assert mock_validate.call_count == 1
+    assert result["formalizer_telemetry"]["repair_buckets"] == [REPAIR_BUCKET_SEMANTIC_MISMATCH]
+
+
+def test_formalize_rejects_missing_extreme_value_existence_shape_before_validation() -> None:
+    import formalizer
+
+    responses = [
+        "import Mathlib\n\n"
+        "theorem max_bad {α : Type*} [TopologicalSpace α] {s : Set α} {f : α → ℝ} : "
+        "IsCompact s := by\n  sorry\n",
+        "import Mathlib\n\n"
+        "theorem max_good {α : Type*} [TopologicalSpace α] {s : Set α} {f : α → ℝ} : "
+        "∃ x ∈ s, IsMaxOn f s x := by\n  sorry\n",
+    ]
+
+    with patch.object(formalizer, "call_leanstral", side_effect=responses) as mock_call:
+        with patch.object(
+            formalizer,
+            "sorry_validate",
+            return_value={
+                "valid": True,
+                "errors": [],
+                "warnings": ["declaration uses `sorry`"],
+                "method": "lake_env_lean",
+            },
+        ) as mock_validate:
+            result = formalizer.formalize(
+                "A continuous function on a compact set attains a maximum.",
+                use_cache=False,
+            )
+
+    assert result["success"] is True
+    assert mock_call.call_count == 2
+    assert mock_validate.call_count == 1
+    assert result["formalizer_telemetry"]["repair_buckets"] == [REPAIR_BUCKET_SEMANTIC_MISMATCH]
+
+
+def test_formalize_rejects_missing_convergence_shape_before_validation() -> None:
+    import formalizer
+
+    responses = [
+        "import Mathlib\n\n"
+        "theorem converges_bad (u : ℕ → ℝ) : Monotone u := by\n  sorry\n",
+        "import Mathlib\n\n"
+        "theorem converges_good (u : ℕ → ℝ) : "
+        "∃ l : ℝ, Filter.Tendsto u Filter.atTop (nhds l) := by\n  sorry\n",
+    ]
+
+    with patch.object(formalizer, "call_leanstral", side_effect=responses) as mock_call:
+        with patch.object(
+            formalizer,
+            "sorry_validate",
+            return_value={
+                "valid": True,
+                "errors": [],
+                "warnings": ["declaration uses `sorry`"],
+                "method": "lake_env_lean",
+            },
+        ) as mock_validate:
+            result = formalizer.formalize(
+                "A monotone sequence bounded above converges.",
+                use_cache=False,
+            )
 
     assert result["success"] is True
     assert mock_call.call_count == 2
@@ -720,9 +789,7 @@ def test_formalize_uses_bucket_specific_repair_prompt() -> None:
     assert result["success"] is True
     assert len(prompts) == 2
     assert "UNKNOWN IDENTIFIER" in prompts[1]
-    assert result["formalizer_telemetry"]["repair_buckets"] == [
-        REPAIR_BUCKET_UNKNOWN_IDENTIFIER
-    ]
+    assert result["formalizer_telemetry"]["repair_buckets"] == [REPAIR_BUCKET_UNKNOWN_IDENTIFIER]
 
 
 def test_expanded_keyword_strictly_concave() -> None:

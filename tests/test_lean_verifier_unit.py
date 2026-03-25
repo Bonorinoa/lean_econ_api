@@ -105,3 +105,34 @@ def test_verify_cleans_up_temp_file(monkeypatch, tmp_path) -> None:
 
     assert result["success"] is True
     assert not temp_file.exists()
+
+
+def test_compile_lean_code_cleans_up_temp_file(monkeypatch, tmp_path) -> None:
+    temp_file = tmp_path / "AgenticProof_compile_test.lean"
+    temp_file.write_text("import Mathlib\n", encoding="utf-8")
+
+    monkeypatch.setattr(lean_verifier, "write_verification_file", lambda *args, **kwargs: temp_file)
+    monkeypatch.setattr(
+        lean_verifier,
+        "run_direct_lean_check",
+        lambda path: {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+            "lean_file": str(path),
+            "verification_method": "lake_env_lean",
+        },
+    )
+
+    result = lean_verifier.compile_lean_code(
+        "import Mathlib\n\ntheorem demo : True := by trivial\n",
+        check_axioms=False,
+    )
+
+    assert result["success"] is True
+    assert result["verification_method"] == "lake_env_lean"
+    assert result["elapsed_ms"] >= 0.0
+    assert not temp_file.exists()

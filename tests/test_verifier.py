@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+import lean_verifier
 from lean_verifier import LEAN_WORKSPACE, verify
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "docs" / "legacy_examples"
@@ -33,6 +35,42 @@ open Real
 theorem unproven : 1 + 1 = 2 := by
   sorry
 """
+
+
+def test_compile_lean_code_attaches_local_only_telemetry(tmp_path: Path) -> None:
+    lean_code = """\
+import Mathlib
+
+theorem demo : True := by
+  trivial
+"""
+    lean_path = tmp_path / "demo.lean"
+    lean_path.write_text(lean_code, encoding="utf-8")
+
+    with (
+        patch.object(lean_verifier, "write_verification_file", return_value=lean_path),
+        patch.object(
+            lean_verifier,
+            "run_direct_lean_check",
+            return_value={
+                "success": True,
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+                "errors": [],
+                "warnings": [],
+                "lean_file": str(lean_path),
+                "verification_method": "lake_env_lean",
+            },
+        ),
+    ):
+        result = lean_verifier.compile_lean_code(lean_code, filename="demo", check_axioms=False)
+
+    assert result["success"] is True
+    assert result["telemetry"]["endpoint"] == "lean_compile"
+    assert result["telemetry"]["local_only"] is True
+    assert result["telemetry"]["estimated_cost_base_usd"] is None
+
 
 LEAN_WITH_PREAMBLE_IMPORT = """\
 import Mathlib

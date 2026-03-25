@@ -152,9 +152,7 @@ def _load_claims(path: Path) -> list[dict[str, Any]]:
         if expectation is not None:
             normalized = str(expectation).strip().lower()
             if normalized not in EXPECTATION_VALUES:
-                raise ValueError(
-                    f"Line {line_number} has unsupported `expect={expectation!r}`."
-                )
+                raise ValueError(f"Line {line_number} has unsupported `expect={expectation!r}`.")
         stage = payload.get("eval_stage")
         if stage is not None and _normalize_stage(stage) is None:
             raise ValueError(f"Line {line_number} has unsupported `eval_stage={stage!r}`.")
@@ -427,9 +425,7 @@ def _expectation_summary(case_records: list[dict[str, Any]]) -> dict[str, Any]:
 
     for expectation in sorted(EXPECTATION_VALUES):
         relevant = [
-            record
-            for record in case_records
-            if record.get("expected_outcome") == expectation
+            record for record in case_records if record.get("expected_outcome") == expectation
         ]
         if not relevant:
             continue
@@ -555,10 +551,7 @@ def _render_report(
             f"({aggregate_trace_metrics_result['successful_tactic_applications']}/"
             f"{aggregate_trace_metrics_result['total_tool_calls']})"
         ),
-        (
-            "- Tool Call Waste Ratio: "
-            f"{aggregate_trace_metrics_result['tool_call_waste_ratio']:.3f}"
-        ),
+        (f"- Tool Call Waste Ratio: {aggregate_trace_metrics_result['tool_call_waste_ratio']:.3f}"),
         (f"- Average Tactic Depth: {aggregate_trace_metrics_result['tactic_depth_average']:.3f}"),
         f"- Unexpected runner failures: {overall_summary['unexpected_runner_failures']}",
         (

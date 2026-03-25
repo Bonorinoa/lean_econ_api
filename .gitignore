@@ -10,6 +10,7 @@ data/
 lean_workspace/.lake/
 lean_workspace/LeanEcon/AgenticProof.lean
 lean_workspace/LeanEcon/AgenticProof_*.lean
+lean_workspace/_mcp_snippet_*.lean
 .claude/
 .vscode/
 .DS_Store

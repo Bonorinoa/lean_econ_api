@@ -36,6 +36,7 @@ from mcp_runtime import PROJECT_ROOT, open_mistral_run_context
 from model_config import LEANSTRAL_MODEL
 from proof_file_controller import ProofFileController
 from prover_backend import register_prover
+from provider_telemetry import build_provider_call_telemetry, summarize_provider_calls
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -150,8 +151,15 @@ def _log(
 ):
     """Emit a pipeline log entry."""
     if on_log:
-        on_log({"stage": stage, "message": message, "data": data,
-                "status": status, "elapsed_ms": elapsed_ms})
+        on_log(
+            {
+                "stage": stage,
+                "message": message,
+                "data": data,
+                "status": status,
+                "elapsed_ms": elapsed_ms,
+            }
+        )
     else:
         print(f"[agentic] {stage}: {message}")
 
@@ -619,6 +627,7 @@ def _try_local_tactic_fast_path(
                 "axiom_info": verification.get("axiom_info"),
                 "elapsed_seconds": elapsed,
                 "partial": False,
+                "provider_telemetry": summarize_provider_calls([]),
             }
 
     controller.restore_last_good_checkpoint()
@@ -698,6 +707,7 @@ async def _run_conversation_with_backoff(
     completion_args,
     timeout_ms: int,
     on_log: callable | None = None,
+    provider_calls_out: list[dict[str, Any]] | None = None,
 ):
     """
     Run the Conversations API loop with exponential backoff on transient 429/503 failures.
@@ -709,16 +719,43 @@ async def _run_conversation_with_backoff(
     from mistralai.extra.run.context import _validate_run
     from mistralai.extra.run.tools import get_function_calls
 
-    async def request_with_backoff(request_factory, request_label: str):
+    async def request_with_backoff(
+        request_factory,
+        request_label: str,
+        *,
+        endpoint: str,
+    ):
         total_attempts = len(BACKOFF_DELAYS_SECONDS) + 1
         last_exc: Exception | None = None
+        retry_count = 0
+        started_at = time.perf_counter()
+
+        def _record_telemetry(
+            *, response: Any | None = None, error: Exception | None = None
+        ) -> None:
+            if provider_calls_out is None:
+                return
+            provider_calls_out.append(
+                build_provider_call_telemetry(
+                    endpoint=endpoint,
+                    model=LEANSTRAL_MODEL,
+                    usage=getattr(response, "usage", None) if response is not None else None,
+                    latency_ms=(time.perf_counter() - started_at) * 1000,
+                    retry_count=retry_count,
+                    local_only=False,
+                    error=str(error) if error is not None else None,
+                )
+            )
 
         for attempt in range(1, total_attempts + 1):
             try:
-                return await request_factory()
+                response = await request_factory()
+                _record_telemetry(response=response)
+                return response
             except Exception as exc:
                 last_exc = exc
                 if not _is_retryable_run_error(exc) or attempt == total_attempts:
+                    _record_telemetry(error=exc)
                     raise
 
                 delay = BACKOFF_DELAYS_SECONDS[attempt - 1]
@@ -734,9 +771,11 @@ async def _run_conversation_with_backoff(
                     data=str(exc),
                     status="running",
                 )
+                retry_count += 1
                 await asyncio.sleep(delay)
 
         assert last_exc is not None
+        _record_telemetry(error=last_exc)
         raise last_exc
 
     req, run_result, input_entries = await _validate_run(
@@ -756,6 +795,7 @@ async def _run_conversation_with_backoff(
                     **req,
                 ),
                 "start",
+                endpoint="conversations.start_async",
             )
             run_result.conversation_id = res.conversation_id
             run_ctx.conversation_id = res.conversation_id
@@ -767,6 +807,7 @@ async def _run_conversation_with_backoff(
                     timeout_ms=timeout_ms,
                 ),
                 "append",
+                endpoint="conversations.append_async",
             )
 
         run_ctx.request_count += 1
@@ -800,6 +841,7 @@ def _build_interrupted_run_result(
     model_text: str,
     tool_trace_entries: list[dict[str, Any]],
     tactic_call_log: list[dict[str, Any]],
+    provider_calls: list[dict[str, Any]] | None = None,
     steps_used: int,
     start_time: float,
     agentic_run_started_at: float,
@@ -879,6 +921,7 @@ def _build_interrupted_run_result(
         warnings = []
         output_lean = None
 
+    provider_telemetry = summarize_provider_calls(provider_calls or [])
     return {
         "success": success,
         "strategy": model_text,
@@ -896,6 +939,7 @@ def _build_interrupted_run_result(
         "output_lean": output_lean,
         "elapsed_seconds": elapsed,
         "partial": partial,
+        "provider_telemetry": provider_telemetry,
     }
 
 
@@ -1359,6 +1403,7 @@ async def _prove_theorem_agentic_async(
         stop_reason = STOP_PROOF_INCOMPLETE
         model_text = ""
         tool_trace_entries: list[dict[str, Any]] = trace_recorder.entries
+        provider_calls: list[dict[str, Any]] = []
 
         steps_used = 0
         run_ctx = None
@@ -1398,6 +1443,7 @@ async def _prove_theorem_agentic_async(
                     ),
                     timeout_ms=TIMEOUT_MS,
                     on_log=on_log,
+                    provider_calls_out=provider_calls,
                 )
 
                 # Extract results
@@ -1424,6 +1470,7 @@ async def _prove_theorem_agentic_async(
                 model_text=model_text,
                 tool_trace_entries=tool_trace_entries,
                 tactic_call_log=tactic_call_log,
+                provider_calls=provider_calls,
                 steps_used=steps_used,
                 start_time=start_time,
                 agentic_run_started_at=t_agentic_run,
@@ -1447,6 +1494,7 @@ async def _prove_theorem_agentic_async(
                     model_text=model_text,
                     tool_trace_entries=tool_trace_entries,
                     tactic_call_log=tactic_call_log,
+                    provider_calls=provider_calls,
                     steps_used=steps_used,
                     start_time=start_time,
                     agentic_run_started_at=t_agentic_run,
@@ -1472,6 +1520,7 @@ async def _prove_theorem_agentic_async(
                     model_text=model_text,
                     tool_trace_entries=tool_trace_entries,
                     tactic_call_log=tactic_call_log,
+                    provider_calls=provider_calls,
                     steps_used=steps_used,
                     start_time=start_time,
                     agentic_run_started_at=t_agentic_run,
@@ -1523,6 +1572,7 @@ async def _prove_theorem_agentic_async(
                     model_text=model_text,
                     tool_trace_entries=tool_trace_entries,
                     tactic_call_log=tactic_call_log,
+                    provider_calls=provider_calls,
                     steps_used=steps_used,
                     start_time=start_time,
                     agentic_run_started_at=t_agentic_run,
@@ -1541,6 +1591,7 @@ async def _prove_theorem_agentic_async(
             stop_reason = STOP_RUN_ERROR
             elapsed = time.time() - start_time
             trace_recorder.finalize_pending_attempt(tactic_call_log)
+            provider_telemetry = summarize_provider_calls(provider_calls)
             return {
                 "success": False,
                 "strategy": model_text,
@@ -1558,6 +1609,7 @@ async def _prove_theorem_agentic_async(
                 "output_lean": None,
                 "elapsed_seconds": elapsed,
                 "partial": False,
+                "provider_telemetry": provider_telemetry,
             }
 
         _log(
@@ -1587,8 +1639,13 @@ async def _prove_theorem_agentic_async(
 
         if verification["success"]:
             stop_reason = STOP_PROOF_COMPLETE
-            _log(on_log, "agentic_verify", "Verified — Lean check passed", status="done",
-                 elapsed_ms=verify_elapsed_ms)
+            _log(
+                on_log,
+                "agentic_verify",
+                "Verified — Lean check passed",
+                status="done",
+                elapsed_ms=verify_elapsed_ms,
+            )
         else:
             if stop_reason == STOP_PROOF_COMPLETE:
                 stop_reason = (
@@ -1606,6 +1663,7 @@ async def _prove_theorem_agentic_async(
 
         elapsed = time.time() - start_time
         success = verification["success"]
+        provider_telemetry = summarize_provider_calls(provider_calls)
 
         summary_parts = [
             f"Leanstral agentic prover: {steps_used} API round-trips, "
@@ -1656,6 +1714,7 @@ async def _prove_theorem_agentic_async(
             "axiom_info": verification.get("axiom_info"),
             "elapsed_seconds": elapsed,
             "partial": False,
+            "provider_telemetry": provider_telemetry,
         }
     finally:
         controller.cleanup()

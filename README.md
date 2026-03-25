@@ -1,77 +1,97 @@
 # LeanEcon
 
-**Formal verification of mathematical claims in economics papers.**
+LeanEcon is a single-repo, Apache-2.0 Lean-backed verification service for
+mathematical claims in economics and adjacent mathematics. It turns plain
+language, LaTeX, or Lean 4 inputs into Lean-checked results using Lean 4,
+Mathlib, and the current Leanstral-backed proving loop.
 
-LeanEcon takes a claim in plain text, LaTeX, or raw Lean 4 and turns it into a
-Lean-checked proof using [Leanstral](https://mistral.ai/news/leanstral),
-[Lean 4](https://lean-lang.org/), and
-[Mathlib](https://leanprover-community.github.io/mathlib4_docs/).
+The public workflow is intentionally explicit:
 
-LeanEcon currently defaults to one proving backend behind a swappable prover
-interface:
+1. `POST /api/v1/classify` for optional scope hints and preamble suggestions
+2. `POST /api/v1/formalize` to shape a claim into a Lean theorem stub
+3. Review or edit the theorem text
+4. `POST /api/v1/verify` to queue proof generation and final Lean checking
+5. Poll `GET /api/v1/jobs/{job_id}` or stream `GET /api/v1/jobs/{job_id}/stream`
+6. Call `POST /api/v1/explain` after the job finishes if you want a summary
 
-- `leanstral`: Leanstral + `lean-lsp-mcp` with live tool use during proving
+If you already have Lean theorem code with `:= by sorry`, skip formalization and
+go straight to `/verify`. If you already have complete Lean code and want a
+direct compiler check, use `/api/v1/lean_compile` as an optional
+compile/debug primitive. It is not the default workflow.
 
-> Working prototype. Built March 2026.
+## What LeanEcon Is
 
-## What it does
+- a Lean-backed API for classifying, formalizing, proving, and explaining claims
+- a human-in-the-loop workflow for editing theorem statements before proving
+- a deterministic Lean-kernel check at the end of every successful verification
+- a benchmarked system that tries to stay honest about where the hard lanes are
 
-1. **Formalize**: Leanstral turns the claim into a Lean theorem with
-   `:= by sorry`, then Lean checks that the statement itself compiles.
-   Optionally pass `preamble_names` to inject bundled economic definitions.
-2. **Review**: an API client can inspect or edit the theorem before proving.
-3. **Prove**: the agentic prover lets Leanstral call Lean MCP tools and iteratively edit a working proof file.
-4. **Verify**: LeanEcon writes an isolated per-run Lean file and checks it with
-   `lake env lean`. If Lean accepts the proof without `sorry`, the claim is
-   certified.
+## Current Lane Reality
 
-## Current examples
+The current benchmark story is clear:
 
-| Claim | Domain | Result |
-|-------|--------|--------|
-| CRRA utility has constant relative risk aversion | Microeconomics | Verified |
-| Indirect utility gap is constant in income (Stone-Geary + log utility) | Macro / Cultural economics | Verified |
-| Budget equality under a spending-all-income hypothesis | Microeconomics | Verified |
-| Every even natural number has the form `2n` | General mathematics | Verified |
-| The sum of two even natural numbers is even | General mathematics | Verified |
-| Doubling a natural number yields an even number | General mathematics | Verified |
-| Cobb-Douglas output elasticity with respect to capital | Production theory | Improved in agentic mode, but still stochastic |
+- strongest lanes: `theorem_stub -> verify` and `raw_lean -> verify`
+- weakest lane: `raw_claim -> full API`
+- natural-language formalization is improving, but it is still the least stable stage
 
-See `docs/legacy_examples/` for the committed Lean files and verification
-reports. Those artifacts are intentionally conservative: the saved
-Cobb-Douglas example still documents the earlier limitation, even though the
-new agentic path now succeeds on some runs.
+From the latest completed tier-1 full benchmark report
+[`benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md`](benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md):
 
-The optional `/classify` endpoint categorizes claims into four paths for
-frontend UX (but is **not** required before formalization):
+- `raw_claim -> full API`: `pass@1 = 0.333`
+- `theorem_stub -> verify`: `pass@1 = 1.000`
+- `raw_lean -> verify`: `pass@1 = 1.000`
 
-- `ALGEBRAIC`: direct algebraic or calculus claims
-- `DEFINABLE`: claims that match bundled LeanEcon preamble definitions
-- `MATHLIB_NATIVE`: claims formalizable using direct Mathlib infrastructure
-- `REQUIRES_DEFINITIONS`: claims that need custom theory beyond current coverage
+The latest completed tier-1 formalizer-only report
+[`benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md`](benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md)
+still shows the claim-shaping gate compiling on its bounded core slice at
+`pass@1 = 1.000`, with semantic `>=4` on `0.833` of those cases.
 
-Classification is advisory only — the formalizer attempts all claims directly.
+That means LeanEcon is already strongest when the statement is well formed. The
+main work is still claim shaping and full end-to-end raw-claim reliability, not
+final Lean kernel acceptance once the statement is in good Lean form.
 
-## Quick start
+## Pricing And Status
+
+Leanstral is an external dependency, not a promise of stable pricing, quota, or
+permanent availability. LeanEcon itself does not guarantee a stably free model
+tier. Treat any cost or model-status claim as provisional unless the repo says
+otherwise.
+
+Provider usage telemetry and estimated cost bounds are observability fields
+only. They are conservative planning signals, not billing output or a public
+pricing promise.
+
+## Canonical Docs
+
+- [`docs/API.md`](docs/API.md): operational canonical API guide
+- [`docs/TECHNICAL_WHITEPAPER.md`](docs/TECHNICAL_WHITEPAPER.md): architecture and trust model
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): local Docker and deployment notes
+- [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): archived background note
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): lightweight contributor guidance
+- [`NOTICE`](NOTICE): Apache-2.0 notice file
+- [`TRADEMARK.md`](TRADEMARK.md): short brand and trademark guidance
+
+Security and hardening fixes currently route through the normal contribution
+flow in [`CONTRIBUTING.md`](CONTRIBUTING.md); there is no separate monitored
+security inbox for the API right now.
+
+## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- [Lean 4](https://leanprover-community.github.io/get_started.html) via elan
-- A Mistral API key
+- Lean 4 via `elan`
+- a Mistral API key
 
 ### Setup
 
 ```bash
-git clone https://github.com/Bonorinoa/lean_econ_api.git
-cd lean_econ_api
-
 python3 -m venv leanEconAPI_venv
 source leanEconAPI_venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env and add your MISTRAL_API_KEY
+# Add your MISTRAL_API_KEY
 
 cd lean_workspace
 lake exe cache get
@@ -87,248 +107,24 @@ uvicorn src.api:app --host 0.0.0.0 --port 8000
 
 Open `http://localhost:8000/docs` for the generated Swagger UI.
 
-For a workflow-oriented reference aimed at frontend agents, see
-[`docs/API.md`](docs/API.md).
+## Validation
 
-### API workflow
-
-The first API cut is intentionally multi-step so frontend clients can preserve
-the review/edit step:
-
-1. `POST /api/v1/classify` *(optional — for frontend UX only)*
-2. `POST /api/v1/formalize` *(with optional `preamble_names`)*
-3. Optional client-side theorem review/edit
-4. `POST /api/v1/verify`
-5. `GET /api/v1/jobs/{job_id}` or `GET /api/v1/jobs/{job_id}/stream`
-
-`POST /api/v1/verify` is asynchronous and returns HTTP `202` with a `job_id`.
-Use polling or SSE to track the job to completion.
-
-If the claim depends on a bundled economic definition, use
-[`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md) to choose
-`preamble_names` for formalization.
-
-## Evaluation toolkit
-
-LeanEcon now ships a small offline evaluation stack on top of the append-only
-log at `logs/runs.jsonl`.
-
-- `scripts/analyze_traces.py` computes deep-trace metrics such as Tool Call Efficiency,
-  Tool Call Waste Ratio, average Tactic Depth, and error-frequency summaries from
-  persisted prover traces.
-- `scripts/semantic_grader.py` uses Leanstral as a semantic referee to score whether
-  generated Lean code is a faithful, non-trivial translation of the original claim.
-- `scripts/run_uncharted_evals.py` is now stage-aware: it can run
-  formalization-only, prover-only, or full end-to-end cases from a single JSONL
-  benchmark, and writes `case_records.jsonl`, `results.json`, and `report.md`
-  under `outputs/uncharted_evals/`.
-
-Use profiles intentionally:
-
-- `--profile ci` is the cheap default for day-to-day quality tracking.
-- `--profile core` adds semantic grading for a richer but costlier regression view.
-- `--profile frontier` restores the older high-cost behavior for research probes.
-
-In `dataset` stage mode, the runner respects per-case hints:
-
-- `expect: verify` runs full end-to-end evaluation.
-- `expect: formalize` and `expect: fail_gracefully` stop after formalization.
-- `theorem_code` or `preformalized_theorem` triggers prover-only evaluation.
-- unlabeled raw-claim cases still default to full end-to-end evaluation.
-
-This keeps routine benchmark runs honest without forcing every difficult claim
-through an expensive proving loop. `uncharted_claims.jsonl` is still best
-treated as a frontier probe, not as the primary CI benchmark. A partial rerun on
-March 22, 2026 across 7 frontier attempts on 2 hard claims produced a `0.978`
-tool-call waste ratio, multiple Lean LSP startup timeouts, and one Mistral
-`3051` input-too-large failure.
-
-Example commands:
+The lightweight local checks are:
 
 ```bash
-./leanEconAPI_venv/bin/python scripts/analyze_traces.py --runs-file logs/runs.jsonl --format both
-
-./leanEconAPI_venv/bin/python scripts/semantic_grader.py \
-  --claim "Under CRRA utility, relative risk aversion is constant." \
-  --theorem-file docs/legacy_examples/crra_pass.lean
-
-./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
-  tests/fixtures/claims/test_claims.jsonl \
-  --profile ci
-
-./leanEconAPI_venv/bin/python scripts/run_uncharted_evals.py \
-  tests/fixtures/claims/uncharted_claims.jsonl \
-  --profile frontier \
-  --pass-k 1 \
-  --limit 2
+./leanEconAPI_venv/bin/ruff check src tests scripts
+./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q
 ```
 
-Example calls:
+Latest local release sweep on 2026-03-25:
 
-```bash
-curl -X POST http://localhost:8000/api/v1/classify \
-  -H "Content-Type: application/json" \
-  -d '{"raw_claim":"Under CRRA utility, relative risk aversion is constant and equal to gamma."}'
-```
+- `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
+- `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
+  `214 passed, 13 deselected`
 
-```bash
-curl -X POST http://localhost:8000/api/v1/formalize \
-  -H "Content-Type: application/json" \
-  -d '{"raw_claim":"Under CRRA utility, relative risk aversion is constant and equal to gamma.","preamble_names":["crra_utility"]}'
-```
+For API-specific smoke checks, see `tests/test_api_smoke.py`.
 
-```bash
-curl -i -X POST http://localhost:8000/api/v1/verify \
-  -H "Content-Type: application/json" \
-  -d '{"theorem_code":"import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry","explain":true}'
-```
+## License
 
-The response body is:
-
-```json
-{"job_id":"<JOB_ID>","status":"queued"}
-```
-
-```bash
-curl -N http://localhost:8000/api/v1/jobs/<JOB_ID>/stream
-```
-
-```bash
-curl http://localhost:8000/api/v1/jobs/<JOB_ID>
-```
-
-```bash
-curl -X POST http://localhost:8000/api/v1/explain \
-  -H "Content-Type: application/json" \
-  -d '{"original_claim":"1 + 1 = 2","verification_result":{"success":true,"proof_generated":true,"formalization_failed":false}}'
-```
-
-```bash
-curl http://localhost:8000/api/v1/metrics
-```
-
-```bash
-curl http://localhost:8000/api/v1/cache/stats
-```
-
-## Deployment
-
-LeanEcon requires Lean 4, Mathlib, and a local Lean workspace. The Docker image
-still performs a build-time `lake build` to warm the workspace and caches, but
-runtime verification uses isolated per-run files compiled with `lake env lean`.
-This means it cannot run on serverless platforms such as Vercel or static
-frontend hosts.
-
-Use local Docker and CI as the validation gate before considering a Railway
-rebuild. Railway is best treated as post-deploy confirmation, not the inner-loop
-feedback mechanism.
-
-For local validation and deployment, use Docker:
-
-```bash
-docker build -t leanecon .
-docker run -p 8000:8000 \
-  -e MISTRAL_API_KEY=your_key_here \
-  -v "$(pwd)/.state:/app/state" \
-  leanecon
-```
-
-A Dockerfile is provided at the project root. See
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for details.
-
-Runtime state defaults to repo-local paths in development. Set
-`LEANECON_STATE_DIR` to move the verified-result cache and JSONL run log under
-another directory. The Docker image now sets `LEANECON_STATE_DIR=/app/state`,
-so mounting `/app/state` preserves cache/log state across container restarts.
-
-## Architecture
-
-```text
-User Input (LaTeX / text / raw Lean)
-    -> [FastAPI] classify / formalize / verify endpoints
-    -> [formalizer.py] formalize + sorry-validate (classify is optional)
-    -> [API client] optional theorem review/edit
-    -> [pipeline.py] agentic proof orchestration
-        -> [prover_backend.py] swappable prover dispatch
-        -> [agentic_prover.py] Leanstral + MCP + working proof file
-    -> [lean_verifier.py] isolated temp-file verification via `lake env lean`
-    -> [eval_logger.py] JSONL run log with deep traces
-    -> [evaluation scripts] trace analysis + semantic grading + uncharted evals
-    -> [FastAPI / CLI] results + metrics
-```
-
-```text
-src/
-├── api.py                   FastAPI service entry point
-├── pipeline.py              Shared orchestration and agentic prover dispatch
-├── prover_backend.py        Prover protocol and registry
-├── formalizer.py            Leanstral formalization (classify is separate/optional)
-├── leanstral_utils.py       Shared Leanstral API helpers
-├── agentic_prover.py        Leanstral Conversations API + MCP loop
-├── mcp_runtime.py           Lean MCP session helpers and query utilities
-├── preamble_library.py      File-backed preamble metadata and lookup helpers
-├── proof_file_controller.py Working-file management for agentic proving
-├── lean_verifier.py         Final isolated-file Lean verification
-├── eval_logger.py           Append-only JSONL structured logging
-├── eval_metrics.py          Shared evaluation-metric helpers
-├── semantic_alignment.py    Semantic grading helpers
-└── mcp_smoke_test.py        Lean MCP smoke test
-```
-
-```text
-scripts/
-├── analyze_traces.py        Offline deep-trace analyzer for runs.jsonl
-├── semantic_grader.py       CLI semantic-alignment grader
-├── run_uncharted_evals.py   pass@k advanced-claim evaluation harness
-└── run_phase1_stress_tests.py
-```
-
-## How verification works
-
-Lean 4 is a dependently typed programming language where proofs are programs.
-LeanEcon's verifier writes each candidate proof to its own temporary Lean file
-and runs `lake env lean` on that file. When that check succeeds with no errors
-and no `sorry`, the Lean kernel has checked every logical step from axioms.
-This is not LLM confidence; it is a machine-checked proof.
-
-Because verification no longer routes through a shared `LeanEcon/Proof.lean`,
-multiple verify jobs can run concurrently without overwriting each other's
-proof files.
-
-Leanstral generates candidate proofs. Lean verifies them.
-
-The persisted log now records rich `tool_trace` and `tactic_calls` data with a
-`trace_schema_version`, plus the full `original_raw_claim`, so offline
-evaluation scripts can analyze proving behavior without re-running old jobs.
-
-## Limitations
-
-- Verified examples are still mostly algebraic identities over the reals.
-- Proof generation is stochastic. A claim may pass in one run and fail in another.
-- `Real.rpow`-heavy claims remain more brittle than simple algebraic equalities.
-- The current Leanstral endpoint is a labs model, not a permanent production API.
-
-## Docs
-
-- [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): current MCP-first prover design and status
-- [`docs/API.md`](docs/API.md): endpoint contract and agent-oriented usage guide
-- [`docs/PREAMBLE_CATALOG.md`](docs/PREAMBLE_CATALOG.md): generated catalog of reusable preamble modules
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): Docker-based local deployment notes
-- [`docs/ROADMAP.md`](docs/ROADMAP.md): current sprint and post-sprint priorities
-- [`docs/skills/leanecon-api-SKILL.md`](docs/skills/leanecon-api-SKILL.md): agent integration skill for LeanEcon API clients
-- [`docs/skills/lean4-econ-SKILL.md`](docs/skills/lean4-econ-SKILL.md): economics-specific Lean formalization guidance
-- [`docs/skills/SKILL_LEAN.md`](docs/skills/SKILL_LEAN.md): general Lean 4 workflow skill
-- [`docs/leanstral_architecture.html`](docs/leanstral_architecture.html): visual architecture artifact
-
-## Roadmap
-
-See [`docs/ROADMAP.md`](docs/ROADMAP.md).
-
-## Built with
-
-- Python 3.11+
-- [Lean 4](https://lean-lang.org/) v4.28.0
-- [Mathlib](https://leanprover-community.github.io/mathlib4_docs/) v4.28.0
-- [Leanstral](https://mistral.ai/news/leanstral) (`labs-leanstral-2603`)
-- [FastAPI](https://fastapi.tiangolo.com/)
-- Uvicorn
+This repository is licensed under Apache-2.0. See
+[`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

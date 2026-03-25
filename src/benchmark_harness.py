@@ -14,6 +14,7 @@ from typing import Any, Sequence
 
 from outcome_codes import formalize_error_code, verify_error_code
 from pipeline import formalize_claim, run_pipeline
+from provider_telemetry import collect_provider_calls, summarize_provider_calls
 from semantic_alignment import grade_semantic_alignment
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -207,9 +208,7 @@ def load_benchmark_cases(path: Path) -> list[BenchmarkCase]:
             raise ValueError(f"Line {line_number} has invalid `provenance`.")
 
         metadata = {
-            key: value
-            for key, value in payload.items()
-            if key not in STANDARD_BENCHMARK_FIELDS
+            key: value for key, value in payload.items() if key not in STANDARD_BENCHMARK_FIELDS
         }
 
         cases.append(
@@ -308,6 +307,7 @@ def _lane_attempt_summary(
     formalization_failed: bool = False,
     formalizer_telemetry: dict[str, Any] | None = None,
     semantic_alignment: dict[str, Any] | None = None,
+    provider_telemetry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "success": success,
@@ -327,6 +327,7 @@ def _lane_attempt_summary(
         "warnings": warnings,
         "formalizer_telemetry": dict(formalizer_telemetry or {}),
         "semantic_alignment": dict(semantic_alignment or {}),
+        "provider_telemetry": dict(provider_telemetry or {}),
     }
 
 
@@ -334,10 +335,22 @@ def _grade_formalization_semantics(
     case: BenchmarkCase,
     *,
     theorem_code: str | None,
+    provider_calls_out: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     if not case.raw_claim or not theorem_code:
         return None
-    return grade_semantic_alignment(case.raw_claim, theorem_code)
+    return grade_semantic_alignment(
+        case.raw_claim,
+        theorem_code,
+        telemetry_out=provider_calls_out,
+    )
+
+
+def _summarize_provider_telemetry(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    provider_calls = collect_provider_calls(
+        *[attempt.get("provider_telemetry") for attempt in attempts]
+    )
+    return summarize_provider_calls(provider_calls)
 
 
 def _run_formalizer_only_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[str, Any]:
@@ -358,10 +371,29 @@ def _run_formalizer_only_attempt(case: BenchmarkCase, *, use_cache: bool) -> dic
     )
     latency_ms = (time.perf_counter() - start) * 1000
     success = bool(result.get("success"))
+    semantic_calls: list[dict[str, Any]] = []
     semantic_alignment = (
-        _grade_formalization_semantics(case, theorem_code=result.get("theorem_code"))
+        _grade_formalization_semantics(
+            case,
+            theorem_code=result.get("theorem_code"),
+            provider_calls_out=semantic_calls,
+        )
         if success
         else None
+    )
+    provider_telemetry = _summarize_provider_telemetry(
+        [
+            {
+                "provider_telemetry": result.get("formalizer_telemetry", {}).get(
+                    "provider_telemetry"
+                ),
+            },
+            {
+                "provider_telemetry": (
+                    semantic_alignment.get("provider_telemetry") if semantic_alignment else None
+                ),
+            },
+        ]
     )
     return _lane_attempt_summary(
         success=success,
@@ -385,6 +417,7 @@ def _run_formalizer_only_attempt(case: BenchmarkCase, *, use_cache: bool) -> dic
         formalization_failed=bool(result.get("formalization_failed")),
         formalizer_telemetry=result.get("formalizer_telemetry"),
         semantic_alignment=semantic_alignment,
+        provider_telemetry=provider_telemetry,
     )
 
 
@@ -407,6 +440,15 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
     formalization_success = bool(formalization.get("success"))
     if not formalization_success:
         latency_ms = (time.perf_counter() - start) * 1000
+        provider_telemetry = _summarize_provider_telemetry(
+            [
+                {
+                    "provider_telemetry": formalization.get("formalizer_telemetry", {}).get(
+                        "provider_telemetry"
+                    ),
+                }
+            ]
+        )
         return _lane_attempt_summary(
             success=False,
             latency_ms=latency_ms,
@@ -429,11 +471,14 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
             formalization_failed=bool(formalization.get("formalization_failed")),
             formalizer_telemetry=formalization.get("formalizer_telemetry"),
             semantic_alignment=None,
+            provider_telemetry=provider_telemetry,
         )
 
+    semantic_calls: list[dict[str, Any]] = []
     semantic_alignment = _grade_formalization_semantics(
         case,
         theorem_code=formalization.get("theorem_code"),
+        provider_calls_out=semantic_calls,
     )
     verify_result = run_pipeline(
         raw_input=case.raw_claim,
@@ -443,6 +488,23 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
     )
     latency_ms = (time.perf_counter() - start) * 1000
     success = bool(verify_result.get("success"))
+    provider_telemetry = _summarize_provider_telemetry(
+        [
+            {
+                "provider_telemetry": formalization.get("formalizer_telemetry", {}).get(
+                    "provider_telemetry"
+                ),
+            },
+            {
+                "provider_telemetry": verify_result.get("provider_telemetry"),
+            },
+            {
+                "provider_telemetry": (
+                    semantic_alignment.get("provider_telemetry") if semantic_alignment else None
+                ),
+            },
+        ]
+    )
     return _lane_attempt_summary(
         success=success,
         latency_ms=latency_ms,
@@ -463,6 +525,7 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
         warnings=_normalize_messages(verify_result.get("warnings")),
         formalizer_telemetry=formalization.get("formalizer_telemetry"),
         semantic_alignment=semantic_alignment,
+        provider_telemetry=provider_telemetry,
     )
 
 
@@ -484,6 +547,9 @@ def _run_theorem_stub_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[s
     )
     latency_ms = (time.perf_counter() - start) * 1000
     success = bool(result.get("success"))
+    provider_telemetry = _summarize_provider_telemetry(
+        [{"provider_telemetry": result.get("provider_telemetry")}]
+    )
     return _lane_attempt_summary(
         success=success,
         latency_ms=latency_ms,
@@ -500,6 +566,7 @@ def _run_theorem_stub_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[s
         warnings=_normalize_messages(result.get("warnings")),
         formalizer_telemetry=None,
         semantic_alignment=None,
+        provider_telemetry=provider_telemetry,
     )
 
 
@@ -521,6 +588,9 @@ def _run_raw_lean_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[str, 
     latency_ms = (time.perf_counter() - start) * 1000
     success = bool(result.get("success"))
     formalization_attempts = int(result.get("formalization_attempts", 0))
+    provider_telemetry = _summarize_provider_telemetry(
+        [{"provider_telemetry": result.get("provider_telemetry")}]
+    )
     return _lane_attempt_summary(
         success=success,
         latency_ms=latency_ms,
@@ -541,6 +611,7 @@ def _run_raw_lean_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[str, 
         warnings=_normalize_messages(result.get("warnings")),
         formalizer_telemetry=None,
         semantic_alignment=None,
+        provider_telemetry=provider_telemetry,
     )
 
 
@@ -568,9 +639,7 @@ def _semantic_alignment_summary(attempts: list[dict[str, Any]]) -> dict[str, Any
         if isinstance(payload.get("score"), int)
     ]
     verdict_counts = Counter(
-        str(payload.get("verdict"))
-        for payload in semantic_payloads
-        if payload.get("verdict")
+        str(payload.get("verdict")) for payload in semantic_payloads if payload.get("verdict")
     )
     flag_counts = Counter(
         str(flag)
@@ -594,19 +663,13 @@ def _semantic_alignment_summary(attempts: list[dict[str, Any]]) -> dict[str, Any
 def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     latencies = [float(attempt["latency_ms"]) for attempt in attempts]
     failure_stage_counts = Counter(
-        str(attempt["failure_stage"])
-        for attempt in attempts
-        if attempt.get("failure_stage")
+        str(attempt["failure_stage"]) for attempt in attempts if attempt.get("failure_stage")
     )
     error_code_counts = Counter(
-        str(attempt["error_code"])
-        for attempt in attempts
-        if attempt.get("error_code")
+        str(attempt["error_code"]) for attempt in attempts if attempt.get("error_code")
     )
     stop_reason_counts = Counter(
-        str(attempt["stop_reason"])
-        for attempt in attempts
-        if attempt.get("stop_reason")
+        str(attempt["stop_reason"]) for attempt in attempts if attempt.get("stop_reason")
     )
     validation_method_counts = Counter(
         str(telemetry.get("validation_method"))
@@ -635,6 +698,7 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         for source, count in source_counts.items():
             if count:
                 retrieval_source_counts[str(source)] += int(count)
+    provider_telemetry = _summarize_provider_telemetry(attempts)
     return {
         "attempts_run": len(attempts),
         "successful_attempts": sum(1 for attempt in attempts if attempt.get("success")),
@@ -654,10 +718,26 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         "retrieval_source_counts": _ordered_counter(retrieval_source_counts),
         "cache_hits": sum(1 for attempt in attempts if attempt.get("from_cache")),
         "semantic_alignment": _semantic_alignment_summary(attempts),
+        "provider_telemetry": provider_telemetry,
+        "provider_call_count": provider_telemetry["provider_call_count"],
+        "llm_call_count": provider_telemetry["llm_call_count"],
+        "local_only_call_count": provider_telemetry["local_only_call_count"],
+        "usage_present_count": provider_telemetry["usage_present_count"],
+        "usage_present_rate": provider_telemetry["usage_present_rate"],
+        "usage_present": provider_telemetry["usage_present"],
+        "retry_count_total": provider_telemetry["retry_count_total"],
+        "retry_count_max": provider_telemetry["retry_count_max"],
+        "latency_ms_total": provider_telemetry["latency_ms_total"],
+        "endpoint_counts": provider_telemetry["endpoint_counts"],
+        "model_counts": provider_telemetry["model_counts"],
+        "estimated_cost_base_usd": provider_telemetry["estimated_cost_base_usd"],
+        "estimated_cost_stress_usd": provider_telemetry["estimated_cost_stress_usd"],
+        "local_only": provider_telemetry["local_only"],
     }
 
 
 def _skipped_lane_record(reason: str) -> dict[str, Any]:
+    provider_telemetry = summarize_provider_calls([])
     return {
         "label": None,
         "applicable": False,
@@ -679,6 +759,21 @@ def _skipped_lane_record(reason: str) -> dict[str, Any]:
             "retrieval_source_counts": {},
             "cache_hits": 0,
             "semantic_alignment": _semantic_alignment_summary([]),
+            "provider_telemetry": provider_telemetry,
+            "provider_call_count": provider_telemetry["provider_call_count"],
+            "llm_call_count": provider_telemetry["llm_call_count"],
+            "local_only_call_count": provider_telemetry["local_only_call_count"],
+            "usage_present_count": provider_telemetry["usage_present_count"],
+            "usage_present_rate": provider_telemetry["usage_present_rate"],
+            "usage_present": provider_telemetry["usage_present"],
+            "retry_count_total": provider_telemetry["retry_count_total"],
+            "retry_count_max": provider_telemetry["retry_count_max"],
+            "latency_ms_total": provider_telemetry["latency_ms_total"],
+            "endpoint_counts": provider_telemetry["endpoint_counts"],
+            "model_counts": provider_telemetry["model_counts"],
+            "estimated_cost_base_usd": provider_telemetry["estimated_cost_base_usd"],
+            "estimated_cost_stress_usd": provider_telemetry["estimated_cost_stress_usd"],
+            "local_only": provider_telemetry["local_only"],
         },
     }
 
@@ -704,29 +799,17 @@ def _average_optional_booleans(values: list[bool | None]) -> float | None:
 
 def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, Any]:
     applicable_records = [
-        record["lanes"][lane]
-        for record in case_records
-        if record["lanes"][lane]["applicable"]
+        record["lanes"][lane] for record in case_records if record["lanes"][lane]["applicable"]
     ]
-    all_attempts = [
-        attempt
-        for record in applicable_records
-        for attempt in record["attempts"]
-    ]
+    all_attempts = [attempt for record in applicable_records for attempt in record["attempts"]]
     failure_stage_counts = Counter(
-        str(attempt["failure_stage"])
-        for attempt in all_attempts
-        if attempt.get("failure_stage")
+        str(attempt["failure_stage"]) for attempt in all_attempts if attempt.get("failure_stage")
     )
     error_code_counts = Counter(
-        str(attempt["error_code"])
-        for attempt in all_attempts
-        if attempt.get("error_code")
+        str(attempt["error_code"]) for attempt in all_attempts if attempt.get("error_code")
     )
     stop_reason_counts = Counter(
-        str(attempt["stop_reason"])
-        for attempt in all_attempts
-        if attempt.get("stop_reason")
+        str(attempt["stop_reason"]) for attempt in all_attempts if attempt.get("stop_reason")
     )
     validation_method_counts = Counter(
         str(telemetry.get("validation_method"))
@@ -759,6 +842,7 @@ def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, 
     pass_at_1_values = [record["summary"]["pass_at_1"] for record in applicable_records]
     pass_at_3_values = [record["summary"]["pass_at_3"] for record in applicable_records]
     pass_at_5_values = [record["summary"]["pass_at_5"] for record in applicable_records]
+    provider_telemetry = _summarize_provider_telemetry(all_attempts)
 
     return {
         "label": LANE_LABELS[lane],
@@ -781,6 +865,21 @@ def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, 
         "retrieval_source_counts": _ordered_counter(retrieval_source_counts),
         "cache_hits": sum(1 for attempt in all_attempts if attempt.get("from_cache")),
         "semantic_alignment": _semantic_alignment_summary(all_attempts),
+        "provider_telemetry": provider_telemetry,
+        "provider_call_count": provider_telemetry["provider_call_count"],
+        "llm_call_count": provider_telemetry["llm_call_count"],
+        "local_only_call_count": provider_telemetry["local_only_call_count"],
+        "usage_present_count": provider_telemetry["usage_present_count"],
+        "usage_present_rate": provider_telemetry["usage_present_rate"],
+        "usage_present": provider_telemetry["usage_present"],
+        "retry_count_total": provider_telemetry["retry_count_total"],
+        "retry_count_max": provider_telemetry["retry_count_max"],
+        "latency_ms_total": provider_telemetry["latency_ms_total"],
+        "endpoint_counts": provider_telemetry["endpoint_counts"],
+        "model_counts": provider_telemetry["model_counts"],
+        "estimated_cost_base_usd": provider_telemetry["estimated_cost_base_usd"],
+        "estimated_cost_stress_usd": provider_telemetry["estimated_cost_stress_usd"],
+        "local_only": provider_telemetry["local_only"],
     }
 
 
@@ -852,10 +951,7 @@ def build_snapshot(
 
     summary = {
         "total_cases": len(case_records),
-        "lanes": {
-            lane: _aggregate_lane(case_records, lane)
-            for lane in selected_lanes
-        },
+        "lanes": {lane: _aggregate_lane(case_records, lane) for lane in selected_lanes},
         "by_tier": _aggregate_by_tier(case_records, selected_lanes=selected_lanes),
     }
 
@@ -979,9 +1075,7 @@ def render_report(snapshot: dict[str, Any]) -> str:
         for lane in config["lane_order"]:
             lane_record = case["lanes"][lane]
             if not lane_record["applicable"]:
-                lines.append(
-                    f"- {LANE_LABELS[lane]}: skipped ({lane_record['skipped_reason']})"
-                )
+                lines.append(f"- {LANE_LABELS[lane]}: skipped ({lane_record['skipped_reason']})")
                 continue
             lane_summary = lane_record["summary"]
             lines.append(

@@ -12,13 +12,22 @@ import lean_runner
 import mcp_runtime
 
 
+@pytest.fixture(autouse=True)
+def _reset_mcp_status():
+    mcp_runtime.reset_formalization_mcp_status()
+    yield
+    mcp_runtime.reset_formalization_mcp_status()
+
+
 class _FakeSession:
     def __init__(self, result):
         self._result = result
 
     async def call_tool(self, name: str, arguments: dict):
-        assert name in {"lean_run_code", "lean_verify"}
+        assert name in {"lean_file_outline", "lean_run_code", "lean_verify"}
         assert isinstance(arguments, dict)
+        if name == "lean_file_outline":
+            return SimpleNamespace(isError=False, content=[{"text": "{}"}])
         return self._result
 
 
@@ -145,15 +154,59 @@ def test_extract_theorem_name() -> None:
     assert lean_runner.extract_theorem_name("theorem demo : True := by trivial") == "demo"
 
 
+def test_run_code_primes_session_before_run_code(monkeypatch) -> None:
+    events: list[str] = []
+    payload = {
+        "success": True,
+        "diagnostics": [
+            {"severity": "warning", "message": "declaration uses `sorry`"},
+        ],
+    }
+
+    class _RunCodeSession:
+        async def call_tool(self, name: str, arguments: dict):
+            events.append(name)
+            assert isinstance(arguments, dict)
+            if name == "lean_run_code":
+                return SimpleNamespace(isError=False, content=[{"text": json.dumps(payload)}])
+            return SimpleNamespace(isError=False, content=[{"text": "{}"}])
+
+    class _RunCodeContext:
+        async def __aenter__(self):
+            return _RunCodeSession()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _prime(session) -> None:
+        events.append("prime_start")
+        await session.call_tool(
+            "lean_file_outline",
+            {"file_path": "LeanEcon/McpSmoke.lean", "max_declarations": "1"},
+        )
+        events.append("prime_done")
+
+    monkeypatch.setattr(lean_runner, "open_lean_mcp_session", lambda: _RunCodeContext())
+    monkeypatch.setattr(lean_runner, "prime_lean_mcp_session", _prime)
+
+    output = asyncio.run(lean_runner._run_code_async("import Mathlib"))
+
+    assert output["valid"] is True
+    assert events == ["prime_start", "lean_file_outline", "prime_done", "lean_run_code"]
+
+
 def test_run_code_circuit_breaker_skips_repeated_failures(monkeypatch) -> None:
     mcp_runtime.reset_formalization_mcp_status()
-    calls = {"count": 0}
+    calls = {"primer": 0, "lean_run_code": 0}
 
     class _ProjectPathSession:
         async def call_tool(self, name: str, arguments: dict):
-            calls["count"] += 1
-            assert name == "lean_run_code"
             assert isinstance(arguments, dict)
+            if name == "lean_file_outline":
+                calls["primer"] += 1
+                return SimpleNamespace(isError=False, content=[{"text": "{}"}])
+            calls["lean_run_code"] += 1
+            assert name == "lean_run_code"
             return SimpleNamespace(
                 isError=True,
                 content=[
@@ -178,10 +231,16 @@ def test_run_code_circuit_breaker_skips_repeated_failures(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="No valid Lean project path found"):
         asyncio.run(lean_runner._run_code_async("import Mathlib"))
 
-    assert calls["count"] == 1
+    assert calls["primer"] == 1
+    assert calls["lean_run_code"] == 1
 
     with pytest.raises(RuntimeError, match="temporarily disabled"):
         asyncio.run(lean_runner._run_code_async("import Mathlib"))
 
-    assert calls["count"] == 1
+    assert calls["lean_run_code"] == 1
+    retrieval_allowed, retrieval_reason = mcp_runtime.formalization_mcp_available(
+        capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_RETRIEVAL
+    )
+    assert retrieval_allowed is True
+    assert retrieval_reason is None
     mcp_runtime.reset_formalization_mcp_status()

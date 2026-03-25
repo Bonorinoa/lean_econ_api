@@ -35,6 +35,7 @@ from prompts import (
     build_formalize_prompt,
     build_repair_prompt,
 )
+from provider_telemetry import summarize_provider_calls
 from result_cache import formalization_cache
 
 # Load .env from project root (one level up from src/)
@@ -220,6 +221,14 @@ def _normalized_prop(prop: str) -> str:
     return " ".join(prop.split())
 
 
+def _conclusion_text(prop: str) -> str:
+    normalized = _normalized_prop(prop)
+    if not normalized:
+        return ""
+    parts = re.split(r"\s*→\s*", normalized)
+    return parts[-1].strip() if parts else normalized
+
+
 def _claim_mentions(claim_text: str, *phrases: str) -> bool:
     lowered = claim_text.lower()
     return any(phrase in lowered for phrase in phrases)
@@ -259,9 +268,7 @@ def _has_misplaced_import(lean_code: str) -> bool:
 def _has_unrelated_specialization(claim_text: str, lean_code: str) -> bool:
     lowered_claim = claim_text.lower()
     imports = {
-        line.strip()
-        for line in lean_code.splitlines()
-        if line.strip().startswith("import ")
+        line.strip() for line in lean_code.splitlines() if line.strip().startswith("import ")
     }
     for import_line, hints in SPECIALIZED_FORM_IMPORT_HINTS:
         if f"import {import_line}" not in imports:
@@ -290,6 +297,35 @@ def _has_contractingwith_scalar_mismatch(lean_code: str) -> bool:
     return any(f"ContractingWith {name}" in header for name in real_scalars)
 
 
+def _has_extreme_value_shape(claim_text: str, prop: str) -> bool:
+    conclusion = _conclusion_text(prop)
+    if not conclusion:
+        return False
+    lowered_claim = claim_text.lower()
+    mentions_maximum = _claim_mentions(
+        lowered_claim,
+        "attains a maximum",
+        "attains maximum",
+        "attains its maximum",
+    )
+    mentions_minimum = _claim_mentions(
+        lowered_claim,
+        "attains a minimum",
+        "attains minimum",
+        "attains its minimum",
+    )
+    if mentions_maximum and ("∃" not in conclusion or "IsMaxOn" not in conclusion):
+        return False
+    if mentions_minimum and ("∃" not in conclusion or "IsMinOn" not in conclusion):
+        return False
+    return mentions_maximum or mentions_minimum
+
+
+def _has_convergence_shape(prop: str) -> bool:
+    conclusion = _conclusion_text(prop)
+    return "Tendsto" in conclusion or "Convergent" in conclusion
+
+
 def _candidate_acceptance_errors(
     claim_text: str,
     lean_code: str,
@@ -302,16 +338,30 @@ def _candidate_acceptance_errors(
 
     prop = _proposition_text(lean_code)
     lowered_claim = claim_text.lower()
-    if prop and "↔" in prop and not _claim_mentions(
-        lowered_claim,
-        "if and only if",
-        "iff",
-        "equivalent",
-        "equivalence",
+    if (
+        prop
+        and "↔" in prop
+        and not _claim_mentions(
+            lowered_claim,
+            "if and only if",
+            "iff",
+            "equivalent",
+            "equivalence",
+        )
     ):
         errors.append(BICONDITIONAL_REWRITE_ERROR)
     if prop and _is_reflexive_statement(prop):
         errors.append(TAUTOLOGY_ERROR)
+    if _has_extreme_value_shape(claim_text, prop) is False and _claim_mentions(
+        lowered_claim,
+        "attains a maximum",
+        "attains maximum",
+        "attains its maximum",
+        "attains a minimum",
+        "attains minimum",
+        "attains its minimum",
+    ):
+        errors.append("formalizer output dropped existence-shaped extreme-value conclusion")
     if (
         _claim_mentions(lowered_claim, "has a fixed point", "there exists a fixed point")
         and "∃" not in prop
@@ -319,6 +369,10 @@ def _candidate_acceptance_errors(
         errors.append("formalizer output dropped existence from a fixed-point claim")
     if _claim_mentions(lowered_claim, "unique fixed point") and "∃!" not in prop:
         errors.append("formalizer output dropped uniqueness from a fixed-point claim")
+    if _claim_mentions(lowered_claim, "converges", "convergent", "convergence") and not (
+        prop and _has_convergence_shape(prop)
+    ):
+        errors.append("formalizer output dropped convergence-shaped conclusion")
     if _has_unrelated_specialization(claim_text, lean_code):
         errors.append(SPECIALIZATION_ERROR)
     if _has_contractingwith_scalar_mismatch(lean_code):
@@ -489,8 +543,10 @@ def _build_formalizer_telemetry(
     repair_buckets: list[str],
     deterministic_repairs_applied: list[str],
     cache_hit: bool,
+    provider_calls: list[dict[str, Any]],
 ) -> dict[str, Any]:
     context_telemetry = context.telemetry()
+    provider_telemetry = summarize_provider_calls(provider_calls)
     return {
         "model": LEANSTRAL_MODEL,
         "cache_hit": cache_hit,
@@ -507,6 +563,7 @@ def _build_formalizer_telemetry(
         "auto_preambles": context_telemetry["auto_preambles"],
         "retrieval": context_telemetry["retrieval"],
         "mcp": context_telemetry["mcp"],
+        "provider_telemetry": provider_telemetry,
     }
 
 
@@ -554,6 +611,7 @@ def _diagnose_formalization_failure(
     claim_text: str,
     lean_code: str,
     errors: list[str],
+    provider_calls: list[dict[str, Any]] | None = None,
 ) -> dict:
     """
     Analyze why formalization failed and produce actionable guidance.
@@ -577,6 +635,7 @@ def _diagnose_formalization_failure(
             "diagnose",
             temperature=0.0,
             max_tokens=512,
+            telemetry_out=provider_calls,
         )
         result = extract_json_object(raw)
         if result is None:
@@ -600,7 +659,10 @@ def _diagnose_formalization_failure(
 # ---------------------------------------------------------------------------
 
 
-def classify_claim(claim_text: str) -> dict:
+def classify_claim(
+    claim_text: str,
+    telemetry_out: list[dict[str, Any]] | None = None,
+) -> dict:
     """
     Classify a claim into stable API-facing categories.
 
@@ -620,6 +682,9 @@ def classify_claim(claim_text: str) -> dict:
           - mathlib_hint (str | None): Mathlib navigation hint for MATHLIB_NATIVE
     """
     client = get_client()
+    provider_telemetry = (
+        summarize_provider_calls(telemetry_out) if telemetry_out is not None else None
+    )
     messages = [
         {"role": "system", "content": build_classify_prompt()},
         {"role": "user", "content": claim_text},
@@ -649,6 +714,7 @@ def classify_claim(claim_text: str) -> dict:
             "preamble_matches": preamble_matches or [],
             "suggested_reformulation": suggested_reformulation,
             "mathlib_hint": mathlib_hint,
+            "provider_telemetry": provider_telemetry,
         }
 
     if line.startswith("REQUIRES_DEFINITIONS") or line.startswith("REQUIRES_CUSTOM_THEORY"):
@@ -850,6 +916,7 @@ def formalize(
             repair_buckets=repair_buckets,
             deterministic_repairs_applied=deterministic_repairs_applied,
             cache_hit=cache_hit,
+            provider_calls=provider_calls,
         )
 
     def _result(
@@ -905,8 +972,14 @@ def formalize(
         if cached is not None:
             _log("Formalization cache hit", status="done")
             cached_result = dict(cached)
+            cached_telemetry = dict(cached.get("formalizer_telemetry", {}))
+            if "provider_telemetry" in cached_telemetry:
+                cached_telemetry["cached_provider_telemetry"] = cached_telemetry[
+                    "provider_telemetry"
+                ]
+            cached_telemetry["provider_telemetry"] = summarize_provider_calls([])
             cached_result["formalizer_telemetry"] = {
-                **dict(cached.get("formalizer_telemetry", {})),
+                **cached_telemetry,
                 "cache_hit": True,
             }
             return cached_result
@@ -918,6 +991,7 @@ def formalize(
     validation_fallback_reasons: list[str] = []
     repair_buckets: list[str] = []
     deterministic_repairs_applied: list[str] = []
+    provider_calls: list[dict[str, Any]] = []
     model_calls = 0
     validation_calls = 0
     system_prompt = build_formalize_prompt(
@@ -968,6 +1042,7 @@ def formalize(
             f"formalize_{attempt}",
             temperature=FORMALIZE_TEMPERATURE,
             max_tokens=FORMALIZE_MAX_TOKENS,
+            telemetry_out=provider_calls,
         )
         lean_code = strip_fences(raw)
 
@@ -995,9 +1070,7 @@ def formalize(
             context=context,
         )
         new_repairs = [
-            repair
-            for repair in structural_repairs
-            if repair not in deterministic_repairs_applied
+            repair for repair in structural_repairs if repair not in deterministic_repairs_applied
         ]
         if new_repairs:
             deterministic_repairs_applied.extend(new_repairs)
@@ -1085,7 +1158,12 @@ def formalize(
     # All attempts exhausted — run failure diagnosis
     _log("Running failure diagnosis...", status="running")
     try:
-        diag = _diagnose_formalization_failure(claim_text, lean_code, last_errors)
+        diag = _diagnose_formalization_failure(
+            claim_text,
+            lean_code,
+            last_errors,
+            provider_calls=provider_calls,
+        )
     except Exception:
         diag = {"diagnosis": None, "suggested_fix": None, "fixable": None}
     _log(f"Diagnosis: {diag.get('diagnosis', 'unavailable')}", status="done")

@@ -13,7 +13,10 @@ __pycache__/
 *.pyc
 outputs/
 logs/
+.state/
 lean_workspace/.lake/
 lean_workspace/LeanEcon/AgenticProof.lean
+lean_workspace/_mcp_snippet_*.lean
+docs/*.docx
 tests/
 test_cases/

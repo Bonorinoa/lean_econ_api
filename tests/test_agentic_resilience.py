@@ -135,9 +135,7 @@ def test_controller_normalizes_inline_sorry_stub(tmp_path) -> None:
         lean_code = controller.initialize("theorem inline_demo : True := by sorry")
         assert "theorem inline_demo : True := by\n" in lean_code
         expected_region = (
-            "  -- LEANECON_AGENTIC_TACTICS_BEGIN\n"
-            "  sorry\n"
-            "  -- LEANECON_AGENTIC_TACTICS_END\n"
+            "  -- LEANECON_AGENTIC_TACTICS_BEGIN\n  sorry\n  -- LEANECON_AGENTIC_TACTICS_END\n"
         )
         assert expected_region in lean_code
         assert controller.current_tactic_block == "sorry"

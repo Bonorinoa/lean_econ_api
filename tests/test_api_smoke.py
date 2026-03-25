@@ -68,6 +68,7 @@ def test_app_imports_and_routes() -> None:
     route_paths = {route.path for route in api.app.routes}
     assert "/api/v1/classify" in route_paths
     assert "/api/v1/formalize" in route_paths
+    assert "/api/v1/lean_compile" in route_paths
     assert "/api/v1/verify" in route_paths
     assert "/api/v1/jobs/{job_id}" in route_paths
     assert "/api/v1/jobs/{job_id}/stream" in route_paths
@@ -202,6 +203,106 @@ def test_formalize_response_hides_internal_formalizer_telemetry() -> None:
     assert "formalizer_telemetry" not in body
 
 
+def test_lean_compile_success() -> None:
+    client = TestClient(api.app)
+    with patch.object(
+        api,
+        "compile_lean_code",
+        return_value={
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "stdout": "",
+            "stderr": "",
+            "verification_method": "lake_env_lean",
+            "elapsed_ms": 17.5,
+            "axiom_info": None,
+            "telemetry": {
+                "endpoint": "lean_compile",
+                "model": "local_lean_compiler",
+                "raw_usage": None,
+                "usage_present": False,
+                "latency_ms": 17.5,
+                "retry_count": 0,
+                "local_only": True,
+                "estimated_cost_base_usd": None,
+                "estimated_cost_stress_usd": None,
+            },
+        },
+    ) as mocked_compile:
+        response = client.post(
+            "/api/v1/lean_compile",
+            json={"lean_code": "import Mathlib\n\ntheorem demo : True := by\n  trivial\n"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["verification_method"] == "lake_env_lean"
+    assert body["elapsed_ms"] == 17.5
+    assert body["telemetry"]["local_only"] is True
+    assert body["telemetry"]["estimated_cost_base_usd"] is None
+    mocked_compile.assert_called_once_with(
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial",
+        filename=None,
+        check_axioms=False,
+    )
+
+
+def test_lean_compile_with_axiom_check_passthrough() -> None:
+    client = TestClient(api.app)
+    with patch.object(
+        api,
+        "compile_lean_code",
+        return_value={
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "stdout": "",
+            "stderr": "",
+            "verification_method": "lake_env_lean",
+            "elapsed_ms": 4.2,
+            "axiom_info": {"axioms": [], "sound": True, "has_sorry_ax": False},
+            "telemetry": {
+                "endpoint": "lean_compile",
+                "model": "local_lean_compiler",
+                "raw_usage": None,
+                "usage_present": False,
+                "latency_ms": 4.2,
+                "retry_count": 0,
+                "local_only": True,
+                "estimated_cost_base_usd": None,
+                "estimated_cost_stress_usd": None,
+            },
+        },
+    ) as mocked_compile:
+        response = client.post(
+            "/api/v1/lean_compile",
+            json={
+                "lean_code": "import Mathlib\n\ntheorem demo : True := by\n  trivial\n",
+                "filename": "demo.lean",
+                "check_axioms": True,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["axiom_info"]["sound"] is True
+    assert body["telemetry"]["local_only"] is True
+    mocked_compile.assert_called_once_with(
+        "import Mathlib\n\ntheorem demo : True := by\n  trivial",
+        filename="demo.lean",
+        check_axioms=True,
+    )
+
+
+def test_lean_compile_rejects_blank_payload() -> None:
+    client = TestClient(api.app)
+    response = client.post("/api/v1/lean_compile", json={"lean_code": "   "})
+    assert response.status_code == 422
+    assert "must not be blank" in response.json()["detail"]
+
+
 def test_verify_exceptions_return_500() -> None:
     client = TestClient(api.app, raise_server_exceptions=False)
     with patch.object(api, "run_pipeline", side_effect=RuntimeError("boom")):
@@ -225,10 +326,13 @@ def test_openapi_schema() -> None:
     assert response.status_code == 200
     schema = response.json()
     assert "/api/v1/verify" in schema["paths"]
+    assert "/api/v1/lean_compile" in schema["paths"]
     assert "/api/v1/jobs/{job_id}/stream" in schema["paths"]
     assert "/api/v1/metrics" in schema["paths"]
     assert "/api/v1/benchmarks/latest" in schema["paths"]
     assert "VerifyRequest" in schema["components"]["schemas"]
+    assert "LeanCompileRequest" in schema["components"]["schemas"]
+    assert "LeanCompileResponse" in schema["components"]["schemas"]
     assert "VerifyAcceptedResponse" in schema["components"]["schemas"]
     assert "JobStatusResponse" in schema["components"]["schemas"]
 
@@ -640,8 +744,36 @@ def test_cache_clear_endpoint() -> None:
 def test_explain_verified() -> None:
     client = TestClient(api.app)
 
-    def fake_explain(*, original_claim, theorem_code, verification_result, on_log=None):
-        return {"explanation": "The proof is valid.", "generated": False}
+    def fake_explain(
+        *,
+        original_claim,
+        theorem_code,
+        verification_result,
+        on_log=None,
+        telemetry_out=None,
+    ):
+        assert telemetry_out is not None
+        return {
+            "explanation": "The proof is valid.",
+            "generated": False,
+            "provider_telemetry": {
+                "provider_calls": [],
+                "provider_call_count": 0,
+                "llm_call_count": 0,
+                "local_only_call_count": 0,
+                "usage_present_count": 0,
+                "usage_present_rate": None,
+                "usage_present": False,
+                "endpoint_counts": {},
+                "model_counts": {},
+                "retry_count_total": 0,
+                "retry_count_max": 0,
+                "latency_ms_total": 0.0,
+                "estimated_cost_base_usd": None,
+                "estimated_cost_stress_usd": None,
+                "local_only": True,
+            },
+        }
 
     with patch.object(api, "explain_result", side_effect=fake_explain):
         response = client.post(
@@ -658,14 +790,43 @@ def test_explain_verified() -> None:
     assert response.status_code == 200
     body = response.json()
     assert len(body["explanation"]) > 0
+    assert body["provider_telemetry"]["local_only"] is True
     assert body["error_code"] == "none"
 
 
 def test_explain_classification_rejected() -> None:
     client = TestClient(api.app)
 
-    def fake_explain(*, original_claim, theorem_code, verification_result, on_log=None):
-        return {"explanation": "Claim not supported.", "generated": False}
+    def fake_explain(
+        *,
+        original_claim,
+        theorem_code,
+        verification_result,
+        on_log=None,
+        telemetry_out=None,
+    ):
+        assert telemetry_out is not None
+        return {
+            "explanation": "Claim not supported.",
+            "generated": False,
+            "provider_telemetry": {
+                "provider_calls": [],
+                "provider_call_count": 0,
+                "llm_call_count": 0,
+                "local_only_call_count": 0,
+                "usage_present_count": 0,
+                "usage_present_rate": None,
+                "usage_present": False,
+                "endpoint_counts": {},
+                "model_counts": {},
+                "retry_count_total": 0,
+                "retry_count_max": 0,
+                "latency_ms_total": 0.0,
+                "estimated_cost_base_usd": None,
+                "estimated_cost_stress_usd": None,
+                "local_only": True,
+            },
+        }
 
     with patch.object(api, "explain_result", side_effect=fake_explain):
         response = client.post(
@@ -682,13 +843,42 @@ def test_explain_classification_rejected() -> None:
     assert response.status_code == 200
     body = response.json()
     assert len(body["explanation"]) > 0
+    assert body["provider_telemetry"]["local_only"] is True
 
 
 def test_explain_formalization_failed() -> None:
     client = TestClient(api.app)
 
-    def fake_explain(*, original_claim, theorem_code, verification_result, on_log=None):
-        return {"explanation": "Could not formalize.", "generated": False}
+    def fake_explain(
+        *,
+        original_claim,
+        theorem_code,
+        verification_result,
+        on_log=None,
+        telemetry_out=None,
+    ):
+        assert telemetry_out is not None
+        return {
+            "explanation": "Could not formalize.",
+            "generated": False,
+            "provider_telemetry": {
+                "provider_calls": [],
+                "provider_call_count": 0,
+                "llm_call_count": 0,
+                "local_only_call_count": 0,
+                "usage_present_count": 0,
+                "usage_present_rate": None,
+                "usage_present": False,
+                "endpoint_counts": {},
+                "model_counts": {},
+                "retry_count_total": 0,
+                "retry_count_max": 0,
+                "latency_ms_total": 0.0,
+                "estimated_cost_base_usd": None,
+                "estimated_cost_stress_usd": None,
+                "local_only": True,
+            },
+        }
 
     with patch.object(api, "explain_result", side_effect=fake_explain):
         response = client.post(
@@ -703,7 +893,9 @@ def test_explain_formalization_failed() -> None:
             },
         )
     assert response.status_code == 200
-    assert len(response.json()["explanation"]) > 0
+    body = response.json()
+    assert len(body["explanation"]) > 0
+    assert body["provider_telemetry"]["local_only"] is True
 
 
 # ---------------------------------------------------------------------------

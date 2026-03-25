@@ -5,6 +5,7 @@ This module exposes a frontend-friendly, multi-step API:
   - GET  /health
   - POST /api/v1/classify
   - POST /api/v1/formalize
+  - POST /api/v1/lean_compile
   - POST /api/v1/verify      (async, returns 202 + job_id)
   - GET  /api/v1/jobs/{job_id}
   - GET  /api/v1/jobs/{job_id}/stream
@@ -15,7 +16,7 @@ This module exposes a frontend-friendly, multi-step API:
   - DELETE /api/v1/cache
 
 Legacy unversioned routes (/api/classify, /api/formalize, /api/verify) are
-preserved as deprecated redirects for backward compatibility.
+preserved as deprecated wrappers for backward compatibility.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ from eval_logger import LOG_FILE
 from explainer import explain_result
 from formalizer import classify_claim
 from job_store import JobStatus, job_store
-from lean_verifier import LEAN_SOURCE_DIR, VERIFICATION_FILE_PREFIX
+from lean_verifier import LEAN_SOURCE_DIR, VERIFICATION_FILE_PREFIX, compile_lean_code
 from outcome_codes import formalize_error_code, verify_error_code
 from pipeline import formalize_claim, parse_claim, run_pipeline
 from result_cache import result_cache
@@ -72,22 +73,28 @@ Recommended client workflow:
 
 1. `POST /api/v1/classify` to determine whether the claim is in scope.
 2. `POST /api/v1/formalize` to obtain a Lean theorem containing `:= by sorry`.
-3. Optionally let a user or agent edit the theorem text.
-4. `POST /api/v1/verify` with the formalized theorem — returns HTTP 202 and a
+3. Optional direct compile path: `POST /api/v1/lean_compile` to run a local
+   Lean compile without invoking the prover.
+4. Optionally let a user or agent edit the theorem text.
+5. `POST /api/v1/verify` with the formalized theorem — returns HTTP 202 and a
    `job_id`. Poll `GET /api/v1/jobs/{job_id}` or stream
    `GET /api/v1/jobs/{job_id}/stream` until the job finishes. Polling also
    returns additive observability metadata such as queue/start/finish timestamps
    and the latest reported pipeline stage.
-5. Use `POST /api/v1/explain` for natural-language summaries of outcomes.
-6. Use `GET /api/v1/metrics`, `GET /api/v1/benchmarks/latest`, and
+6. Use `POST /api/v1/explain` for natural-language summaries of outcomes.
+7. Use `GET /api/v1/metrics`, `GET /api/v1/benchmarks/latest`, and
    `GET /api/v1/cache/stats` for operational insight.
 
 Important behavior:
 
 - `classify` short-circuits raw Lean input and marks it as `RAW_LEAN`.
-- `formalize` preserves the current pipeline behavior, including raw-Lean bypass.
+- `formalize` is the claim-shaping step and preserves the current pipeline
+  behavior, including raw-Lean bypass.
+- `lean_compile` is the thin synchronous compile/debug primitive. It compiles
+  Lean code directly with the local Lean toolchain and returns compiler
+  diagnostics without using the prover.
 - `verify` expects a formalized Lean theorem/lemma/example with a `sorry`
-  placeholder so the agentic prover has something to complete.
+  placeholder and is the async agentic proving path.
 - final Lean verification uses isolated per-run `AgenticProof_*.lean` files, so
   concurrent verify jobs do not clobber a shared `Proof.lean` module.
 """
@@ -149,6 +156,7 @@ def _cleanup_orphaned_agentic_temp_files() -> int:
             continue
     return cleaned
 
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -186,6 +194,35 @@ class VerifyRequest(BaseModel):
     explain: bool = Field(
         default=False,
         description="Include a natural language explanation in the job result.",
+    )
+
+
+class LeanCompileRequest(BaseModel):
+    """Request body for direct Lean compilation without proving."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "lean_code": (
+                    "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  norm_num\n"
+                ),
+                "filename": "one_plus_one.lean",
+                "check_axioms": False,
+            }
+        }
+    )
+
+    lean_code: str = Field(
+        ...,
+        description="Complete Lean file content to compile directly with the local Lean toolchain.",
+    )
+    filename: str | None = Field(
+        default=None,
+        description="Optional file label used to derive the temporary Lean filename.",
+    )
+    check_axioms: bool = Field(
+        default=False,
+        description="If true, run a best-effort axiom check after a successful compile.",
     )
 
 
@@ -264,6 +301,10 @@ class ClassifyResponse(BaseModel):
     suggested_reformulation: str | None = Field(
         default=None,
         description="Reformulation hint for DEFINABLE claims.",
+    )
+    provider_telemetry: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional provider usage telemetry for the classifier call.",
     )
 
 
@@ -346,6 +387,10 @@ class FormalizeResponse(BaseModel):
     fixable: bool | None = Field(
         default=None,
         description="Whether the failure is likely fixable by human editing.",
+    )
+    provider_telemetry: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional provider usage telemetry for the formalizer call(s).",
     )
 
 
@@ -447,6 +492,52 @@ class VerifyResponse(BaseModel):
         default=None,
         description="True if LLM generated the explanation, False if fallback.",
     )
+    provider_telemetry: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional provider usage telemetry for the proving/formalization path.",
+    )
+    explanation_telemetry: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional provider usage telemetry for the explanation step.",
+    )
+
+
+class LeanCompileResponse(BaseModel):
+    """Direct compiler response for Lean code that bypasses the prover."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "errors": [],
+                "warnings": [],
+                "stdout": "",
+                "stderr": "",
+                "verification_method": "lake_env_lean",
+                "elapsed_ms": 412.7,
+                "axiom_info": None,
+            }
+        }
+    )
+
+    success: bool = Field(description="Whether Lean accepted the provided file as-is.")
+    errors: list[str] = Field(description="Lean compiler errors, if any.")
+    warnings: list[str] = Field(description="Lean compiler warnings emitted during the check.")
+    stdout: str = Field(description="Captured stdout from the local Lean compiler invocation.")
+    stderr: str = Field(description="Captured stderr from the local Lean compiler invocation.")
+    verification_method: str = Field(description="Compiler path used for the direct check.")
+    elapsed_ms: float = Field(description="Wall-clock compile time in milliseconds.")
+    axiom_info: dict | None = Field(
+        default=None,
+        description=(
+            "Best-effort axiom usage data for a successful theorem/lemma compile when "
+            "`check_axioms=true`."
+        ),
+    )
+    telemetry: dict[str, Any] | None = Field(
+        default=None,
+        description="Local-only telemetry for the direct Lean compile step.",
+    )
 
 
 class VerifyAcceptedResponse(BaseModel):
@@ -492,6 +583,10 @@ class ExplainResponse(BaseModel):
 
     explanation: str = Field(description="Markdown-formatted explanation.")
     generated: bool = Field(description="True if LLM generated, False if fallback.")
+    provider_telemetry: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional provider usage telemetry for the explanation call.",
+    )
     error_code: LeanEconErrorCode = Field(
         default=LeanEconErrorCode.NONE,
         description="Machine-readable error code.",
@@ -635,14 +730,17 @@ def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
             **result,
         }
         if explain:
+            explanation_calls: list[dict[str, Any]] = []
             expl = explain_result(
                 original_claim=theorem_code,
                 theorem_code=theorem_code,
                 verification_result=result,
                 on_log=on_log,
+                telemetry_out=explanation_calls,
             )
             response_data["explanation"] = expl["explanation"]
             response_data["explanation_generated"] = expl["generated"]
+            response_data["explanation_telemetry"] = expl.get("provider_telemetry")
         job_store.complete(job_id, response_data)
     except Exception as exc:
         job_store.fail(job_id, str(exc))
@@ -696,6 +794,7 @@ def classify_endpoint(request: ClaimRequest) -> ClassifyResponse:
             reason=None,
             is_raw_lean=True,
             error_code=LeanEconErrorCode.NONE,
+            provider_telemetry=None,
         )
 
     try:
@@ -706,7 +805,8 @@ def classify_endpoint(request: ClaimRequest) -> ClassifyResponse:
                 detail="`raw_claim` must contain non-empty content after cleaning.",
             )
 
-        classification = classify_claim(cleaned_claim)
+        provider_calls: list[dict[str, Any]] = []
+        classification = classify_claim(cleaned_claim, telemetry_out=provider_calls)
         is_rejected = classification["category"] == "REQUIRES_DEFINITIONS"
         formalizable = not is_rejected  # ALGEBRAIC, DEFINABLE, and MATHLIB_NATIVE are formalizable
         return ClassifyResponse(
@@ -721,6 +821,7 @@ def classify_endpoint(request: ClaimRequest) -> ClassifyResponse:
             definitions_needed=classification.get("definitions_needed"),
             preamble_matches=classification.get("preamble_matches", []),
             suggested_reformulation=classification.get("suggested_reformulation"),
+            provider_telemetry=classification.get("provider_telemetry"),
         )
     except HTTPException:
         raise
@@ -751,11 +852,56 @@ def formalize_endpoint(request: FormalizeRequest) -> FormalizeResponse:
         preamble_names = request.preamble_names or None
         result = formalize_claim(raw_claim, preamble_names=preamble_names)
         error_code = formalize_error_code(result)
-        return FormalizeResponse(error_code=error_code, **result)
+        provider_telemetry = result.get("formalizer_telemetry", {}).get("provider_telemetry")
+        return FormalizeResponse(
+            error_code=error_code, provider_telemetry=provider_telemetry, **result
+        )
     except HTTPException:
         raise
     except Exception as exc:
         raise _server_error("Claim formalization failed", exc) from exc
+
+
+@router.post(
+    "/lean_compile",
+    response_model=LeanCompileResponse,
+    summary="Compile Lean code directly",
+    description=(
+        "Compile a complete Lean file directly with the local Lean toolchain, "
+        "without using the formalizer or agentic prover. This is useful for "
+        "kernel-truth checks, API clients that already have Lean code, and "
+        "debugging preformalized statements before verify."
+    ),
+    responses={
+        422: {"description": "The Lean source payload was blank."},
+        500: {"description": "Unexpected compiler failure."},
+    },
+)
+def lean_compile_endpoint(request: LeanCompileRequest) -> LeanCompileResponse:
+    """Compile Lean code directly without queueing a proving job."""
+    lean_code = _require_non_empty(request.lean_code, "lean_code")
+
+    try:
+        result = compile_lean_code(
+            lean_code,
+            filename=request.filename,
+            check_axioms=request.check_axioms,
+        )
+        return LeanCompileResponse(
+            success=result["success"],
+            errors=result["errors"],
+            warnings=result["warnings"],
+            stdout=result["stdout"],
+            stderr=result["stderr"],
+            verification_method=result.get("verification_method", "lake_env_lean"),
+            elapsed_ms=float(result.get("elapsed_ms", 0.0)),
+            axiom_info=result.get("axiom_info"),
+            telemetry=result.get("telemetry"),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _server_error("Direct Lean compile failed", exc) from exc
 
 
 @router.post(
@@ -942,14 +1088,17 @@ def explain_endpoint(request: ExplainRequest) -> ExplainResponse:
             }
 
     try:
+        explanation_calls: list[dict[str, Any]] = []
         result = explain_result(
             original_claim=original_claim,
             theorem_code=request.theorem_code or "",
             verification_result=v_result,
+            telemetry_out=explanation_calls,
         )
         return ExplainResponse(
             explanation=result["explanation"],
             generated=result["generated"],
+            provider_telemetry=result.get("provider_telemetry"),
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Explanation failed: {exc}") from exc

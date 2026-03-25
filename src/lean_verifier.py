@@ -16,11 +16,13 @@ import logging
 import re
 import subprocess
 import textwrap
+import time
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 from lean_diagnostics import parse_plain_lean_diagnostics
+from provider_telemetry import build_provider_call_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +196,38 @@ def verify(
           - lean_code (str): The code that was verified.
           - axiom_info (dict | None): Axiom usage info, if available.
     """
+    result = compile_lean_code(lean_code, filename=filename, check_axioms=check_axioms)
+    lean_file = result.get("lean_file")
+    if lean_file:
+        _save_to_outputs(lean_code, Path(lean_file), result)
+    return result
+
+
+def compile_lean_code(
+    lean_code: str,
+    filename: str | None = None,
+    check_axioms: bool = False,
+) -> dict:
+    """
+    Compile one Lean file directly and return diagnostics without proving.
+
+    This bypasses the agentic prover and is suitable for a direct
+    compile/kernel-check API endpoint. Unlike `verify()`, this helper does not
+    persist timestamped output artifacts under `outputs/`.
+
+    Args:
+        lean_code: Complete .lean file content to compile as-is.
+        filename: Optional base name for the temporary Lean file.
+        check_axioms: If True and build succeeds, query lean_verify for axiom info.
+
+    Returns:
+        Verification-style result dict with added keys:
+          - lean_code (str): The code that was compiled.
+          - axiom_info (dict | None): Axiom usage info, if available.
+          - elapsed_ms (float): Wall-clock compile time in milliseconds.
+    """
     lean_path = write_verification_file(lean_code, filename)
+    started_at = time.perf_counter()
     try:
         result = run_direct_lean_check(lean_path)
         result["lean_code"] = lean_code
@@ -220,7 +253,15 @@ def verify(
                 else:
                     logger.warning("Axiom check failed: %s", exc)
 
-        _save_to_outputs(lean_code, lean_path, result)
+        result["elapsed_ms"] = round((time.perf_counter() - started_at) * 1000, 1)
+        result["telemetry"] = build_provider_call_telemetry(
+            endpoint="lean_compile",
+            model="local_lean_compiler",
+            usage=None,
+            latency_ms=result["elapsed_ms"],
+            retry_count=0,
+            local_only=True,
+        )
         return result
     finally:
         lean_path.unlink(missing_ok=True)

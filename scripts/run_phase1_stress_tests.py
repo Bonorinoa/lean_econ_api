@@ -42,11 +42,7 @@ TEST_CASES = [
     / "fixtures"
     / "lean_advanced"
     / "test_05_expected_utility_representation.lean",
-    PROJECT_ROOT
-    / "tests"
-    / "fixtures"
-    / "lean_advanced"
-    / "test_06_advanced_optimization.lean",
+    PROJECT_ROOT / "tests" / "fixtures" / "lean_advanced" / "test_06_advanced_optimization.lean",
 ]
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "phase1_stress"
 SUMMARY_PATH = PROJECT_ROOT / "outputs" / "phase1_stress_test_results.md"

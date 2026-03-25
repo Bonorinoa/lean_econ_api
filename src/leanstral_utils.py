@@ -12,11 +12,13 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from mistralai.client import Mistral
 
 from model_config import LEANSTRAL_MODEL
+from provider_telemetry import build_provider_call_telemetry
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -91,32 +93,52 @@ def call_leanstral(
     model: str = LEANSTRAL_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
+    endpoint: str = "chat.complete",
+    telemetry_out: list[dict[str, Any]] | None = None,
 ) -> str:
     """Send messages to Leanstral with retry logic (exponential backoff on 429/503)."""
-    last_error = None
+    last_error: Exception | None = None
+    response = None
+    retry_count = 0
+    started_at = time.perf_counter()
     max_attempts = MAX_RETRIES
-    for attempt in range(1, MAX_RETRIES_RATE_LIMIT + 1):
-        try:
-            response = client.chat.complete(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
+    try:
+        for attempt in range(1, MAX_RETRIES_RATE_LIMIT + 1):
+            try:
+                response = client.chat.complete(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return response.choices[0].message.content
+            except Exception as exc:
+                last_error = exc
+                is_rate_limit = _is_rate_limit_error(exc)
+                max_attempts = MAX_RETRIES_RATE_LIMIT if is_rate_limit else MAX_RETRIES
+                print(f"  [leanstral] {stage} attempt {attempt}/{max_attempts} failed: {exc}")
+                if attempt >= max_attempts:
+                    break
+                retry_count += 1
+                if is_rate_limit:
+                    delay = 2**attempt  # 2, 4, 8, 16s
+                    print(f"  [leanstral] Rate limited — backing off {delay}s")
+                    time.sleep(delay)
+                else:
+                    time.sleep(RETRY_DELAY_SECONDS)
+    finally:
+        if telemetry_out is not None:
+            telemetry_out.append(
+                build_provider_call_telemetry(
+                    endpoint=endpoint,
+                    model=str(getattr(response, "model", model)) if response is not None else model,
+                    usage=getattr(response, "usage", None) if response is not None else None,
+                    latency_ms=(time.perf_counter() - started_at) * 1000,
+                    retry_count=retry_count,
+                    local_only=False,
+                    error=str(last_error) if last_error is not None and response is None else None,
+                )
             )
-            return response.choices[0].message.content
-        except Exception as exc:
-            last_error = exc
-            is_rate_limit = _is_rate_limit_error(exc)
-            max_attempts = MAX_RETRIES_RATE_LIMIT if is_rate_limit else MAX_RETRIES
-            print(f"  [leanstral] {stage} attempt {attempt}/{max_attempts} failed: {exc}")
-            if attempt >= max_attempts:
-                break
-            if is_rate_limit:
-                delay = 2**attempt  # 2, 4, 8, 16s
-                print(f"  [leanstral] Rate limited — backing off {delay}s")
-                time.sleep(delay)
-            else:
-                time.sleep(RETRY_DELAY_SECONDS)
 
     raise RuntimeError(
         f"Leanstral API failed after {max_attempts} attempts ({stage}): {last_error}"

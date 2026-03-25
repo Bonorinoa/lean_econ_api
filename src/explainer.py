@@ -13,6 +13,7 @@ from mistralai.client import Mistral
 
 from leanstral_utils import call_leanstral
 from model_config import LEANSTRAL_MODEL
+from provider_telemetry import summarize_provider_calls
 
 # Load .env from the project root (one level up from src/)
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -218,7 +219,10 @@ Warnings:
 {_axiom_section(verification_result)}"""
 
 
-def _call_explainer_model(user_prompt: str) -> str:
+def _call_explainer_model(
+    user_prompt: str,
+    telemetry_out: list[dict[str, object]] | None = None,
+) -> str:
     """Run the explanation request against Leanstral."""
     client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
     messages = [
@@ -231,16 +235,20 @@ def _call_explainer_model(user_prompt: str) -> str:
         "explain",
         temperature=EXPLAIN_TEMPERATURE,
         max_tokens=EXPLAIN_MAX_TOKENS,
+        telemetry_out=telemetry_out,
     ).strip()
 
 
-def _call_with_timeout(user_prompt: str) -> str:
+def _call_with_timeout(
+    user_prompt: str,
+    telemetry_out: list[dict[str, object]] | None = None,
+) -> str:
     """Run the model call in a daemon thread so the UI can bail out quickly."""
     result_queue: queue.Queue[tuple[str, str | Exception]] = queue.Queue(maxsize=1)
 
     def worker() -> None:
         try:
-            result_queue.put(("result", _call_explainer_model(user_prompt)))
+            result_queue.put(("result", _call_explainer_model(user_prompt, telemetry_out)))
         except Exception as exc:
             result_queue.put(("error", exc))
 
@@ -262,6 +270,7 @@ def explain_result(
     theorem_code: str,
     verification_result: dict,
     on_log: Callable[[dict], None] | None = None,
+    telemetry_out: list[dict[str, object]] | None = None,
 ) -> dict:
     """
     Generate a natural language explanation of the verification result.
@@ -278,6 +287,12 @@ def explain_result(
           - generated (bool): True if LLM generated it, False if fallback.
     """
     outcome_label = "verification_failed"
+
+    def _provider_telemetry() -> dict | None:
+        if telemetry_out is None:
+            return None
+        return summarize_provider_calls(telemetry_out)
+
     try:
         verification_result = verification_result or {}
         outcome_label = _infer_outcome_label(verification_result)
@@ -293,7 +308,7 @@ def explain_result(
             f"Calling {LEANSTRAL_MODEL} to generate explanation...",
             status="running",
         )
-        explanation = _call_with_timeout(user_prompt)
+        explanation = _call_with_timeout(user_prompt, telemetry_out=telemetry_out)
         if not explanation:
             raise RuntimeError("Leanstral returned an empty explanation")
 
@@ -303,7 +318,11 @@ def explain_result(
             data=_truncate(explanation, 1200),
             status="done",
         )
-        return {"explanation": explanation, "generated": True}
+        result = {"explanation": explanation, "generated": True}
+        provider_telemetry = _provider_telemetry()
+        if provider_telemetry is not None:
+            result["provider_telemetry"] = provider_telemetry
+        return result
     except Exception as exc:
         fallback = FALLBACK_EXPLANATIONS.get(
             outcome_label,
@@ -315,4 +334,8 @@ def explain_result(
             data=str(exc),
             status="error",
         )
-        return {"explanation": fallback, "generated": False}
+        result = {"explanation": fallback, "generated": False}
+        provider_telemetry = _provider_telemetry()
+        if provider_telemetry is not None:
+            result["provider_telemetry"] = provider_telemetry
+        return result

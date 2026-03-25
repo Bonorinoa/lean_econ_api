@@ -19,10 +19,12 @@ from typing import Any, TypeVar
 
 from lean_diagnostics import extract_json_object, extract_mcp_text, normalize_structured_diagnostics
 from mcp_runtime import (
+    FORMALIZATION_MCP_CAPABILITY_VALIDATION,
     formalization_mcp_available,
     mark_formalization_mcp_failure,
     mark_formalization_mcp_success,
     open_lean_mcp_session,
+    prime_lean_mcp_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,27 +87,40 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
       - warnings (list[str]): Warning messages
       - raw (str): Raw tool output
     """
-    allowed, reason = formalization_mcp_available()
+    allowed, reason = formalization_mcp_available(
+        capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION
+    )
     if not allowed:
         raise RuntimeError(reason or "formalization MCP temporarily disabled")
 
     async with open_lean_mcp_session() as session:
         try:
+            await prime_lean_mcp_session(session)
             result = await asyncio.wait_for(
                 session.call_tool("lean_run_code", {"code": lean_code}),
                 timeout=MCP_TOOL_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError as exc:
             mark_formalization_mcp_failure(
-                f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
+                f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s",
+                capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
             )
             raise RuntimeError(
                 f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
             ) from exc
+        except RuntimeError as exc:
+            mark_formalization_mcp_failure(
+                str(exc) or "lean_run_code primer failed",
+                capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+            )
+            raise
 
     if getattr(result, "isError", False):
         raw_error = extract_mcp_text(result)
-        mark_formalization_mcp_failure(raw_error or "lean_run_code MCP error")
+        mark_formalization_mcp_failure(
+            raw_error or "lean_run_code MCP error",
+            capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+        )
         raise RuntimeError(f"lean_run_code MCP error: {raw_error or result}")
 
     raw_text = extract_mcp_text(result)
@@ -133,7 +148,7 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
         # Tool reported failure, but no real errors — likely only sorry warnings
         valid = True
 
-    mark_formalization_mcp_success()
+    mark_formalization_mcp_success(capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION)
 
     return {
         "valid": valid,

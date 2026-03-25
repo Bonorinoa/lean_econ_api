@@ -22,7 +22,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment, stdio_client
 from mistralai.extra.mcp.stdio import MCPClientSTDIO
 
-from lean_diagnostics import normalize_structured_diagnostics
+from lean_diagnostics import extract_mcp_text, normalize_structured_diagnostics
 
 # Suppress noisy "Failed to parse JSONRPC message" warnings from the MCP stdio
 # client. These fire whenever `lake build` writes plain-text progress messages
@@ -45,11 +45,22 @@ LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
 DEFAULT_MCP_RUNTIME_ROOT = str(PROJECT_ROOT / ".tmp" / "lean-lsp-mcp")
 MCP_STARTUP_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_STARTUP_TIMEOUT_SECONDS", "30"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_TOOL_TIMEOUT_SECONDS", "60"))
+FORMALIZATION_MCP_CAPABILITY_VALIDATION = "validation"
+FORMALIZATION_MCP_CAPABILITY_RETRIEVAL = "retrieval"
+FORMALIZATION_MCP_CAPABILITIES = (
+    FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+    FORMALIZATION_MCP_CAPABILITY_RETRIEVAL,
+)
 FORMALIZATION_MCP_COOLDOWN_SECONDS = float(
     os.environ.get("LEANECON_FORMALIZATION_MCP_COOLDOWN_SECONDS", "120")
 )
-_FORMALIZATION_MCP_DISABLED_UNTIL = 0.0
-_FORMALIZATION_MCP_LAST_FAILURE: str | None = None
+FORMALIZATION_MCP_PRIMER_FILE = LEAN_WORKSPACE / "LeanEcon" / "McpSmoke.lean"
+_FORMALIZATION_MCP_DISABLED_UNTIL = {
+    capability: 0.0 for capability in FORMALIZATION_MCP_CAPABILITIES
+}
+_FORMALIZATION_MCP_LAST_FAILURE: dict[str, str | None] = {
+    capability: None for capability in FORMALIZATION_MCP_CAPABILITIES
+}
 
 # NOTE (2026-03-21): we intentionally create a fresh MCPClientSTDIO for each
 # RunContext. Local probing showed that re-registering the same client instance
@@ -73,32 +84,61 @@ def _mcp_startup_failure_message(details: str) -> str:
     )
 
 
-def reset_formalization_mcp_status() -> None:
+def _normalize_formalization_mcp_capability(capability: str) -> str:
+    """Validate and normalize formalizer-side MCP capability names."""
+    if capability not in FORMALIZATION_MCP_CAPABILITIES:
+        supported = ", ".join(FORMALIZATION_MCP_CAPABILITIES)
+        raise ValueError(
+            f"Unsupported formalization MCP capability: {capability!r}. "
+            f"Expected one of: {supported}"
+        )
+    return capability
+
+
+def reset_formalization_mcp_status(*, capability: str | None = None) -> None:
     """Clear formalizer-side MCP cooldown state."""
-    global _FORMALIZATION_MCP_DISABLED_UNTIL, _FORMALIZATION_MCP_LAST_FAILURE
-    _FORMALIZATION_MCP_DISABLED_UNTIL = 0.0
-    _FORMALIZATION_MCP_LAST_FAILURE = None
+    capabilities = (
+        (_normalize_formalization_mcp_capability(capability),)
+        if capability is not None
+        else FORMALIZATION_MCP_CAPABILITIES
+    )
+    for normalized in capabilities:
+        _FORMALIZATION_MCP_DISABLED_UNTIL[normalized] = 0.0
+        _FORMALIZATION_MCP_LAST_FAILURE[normalized] = None
 
 
-def mark_formalization_mcp_failure(reason: str) -> None:
+def mark_formalization_mcp_failure(
+    reason: str,
+    *,
+    capability: str = FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+) -> None:
     """Open the formalizer MCP circuit breaker for a short cooldown window."""
-    global _FORMALIZATION_MCP_DISABLED_UNTIL, _FORMALIZATION_MCP_LAST_FAILURE
-    _FORMALIZATION_MCP_DISABLED_UNTIL = time.monotonic() + FORMALIZATION_MCP_COOLDOWN_SECONDS
-    _FORMALIZATION_MCP_LAST_FAILURE = reason
+    normalized = _normalize_formalization_mcp_capability(capability)
+    _FORMALIZATION_MCP_DISABLED_UNTIL[normalized] = (
+        time.monotonic() + FORMALIZATION_MCP_COOLDOWN_SECONDS
+    )
+    _FORMALIZATION_MCP_LAST_FAILURE[normalized] = reason
 
 
-def mark_formalization_mcp_success() -> None:
+def mark_formalization_mcp_success(
+    *,
+    capability: str = FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+) -> None:
     """Clear any existing formalizer MCP cooldown after a successful tool call."""
-    reset_formalization_mcp_status()
+    reset_formalization_mcp_status(capability=capability)
 
 
-def formalization_mcp_available() -> tuple[bool, str | None]:
+def formalization_mcp_available(
+    *,
+    capability: str = FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+) -> tuple[bool, str | None]:
     """Return whether formalizer-side MCP helpers should currently run."""
-    remaining = _FORMALIZATION_MCP_DISABLED_UNTIL - time.monotonic()
+    normalized = _normalize_formalization_mcp_capability(capability)
+    remaining = _FORMALIZATION_MCP_DISABLED_UNTIL[normalized] - time.monotonic()
     if remaining > 0:
-        reason = _FORMALIZATION_MCP_LAST_FAILURE or "recent MCP failure"
+        reason = _FORMALIZATION_MCP_LAST_FAILURE[normalized] or "recent MCP failure"
         return False, (
-            "formalization MCP temporarily disabled after recent failure: "
+            f"formalization {normalized} MCP temporarily disabled after recent failure: "
             f"{reason} (retry in ~{int(remaining)}s)"
         )
     return True, None
@@ -133,6 +173,30 @@ def lean_workspace_relative_path(path: Path) -> str:
         return str(resolved_path.relative_to(resolved_workspace))
     except ValueError as exc:
         raise ValueError(f"Path is outside lean_workspace/: {path}") from exc
+
+
+async def prime_lean_mcp_session(session: ClientSession) -> None:
+    """Prime a fresh Lean MCP session with a cheap file-based lookup."""
+    try:
+        result = await asyncio.wait_for(
+            session.call_tool(
+                "lean_file_outline",
+                {
+                    "file_path": lean_workspace_relative_path(FORMALIZATION_MCP_PRIMER_FILE),
+                    "max_declarations": "1",
+                },
+            ),
+            timeout=MCP_TOOL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RuntimeError(
+            f"Lean MCP session primer timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
+        ) from exc
+
+    if getattr(result, "isError", False):
+        raise RuntimeError(
+            f"Lean MCP session primer failed: {extract_mcp_text(result) or result}"
+        )
 
 
 @asynccontextmanager

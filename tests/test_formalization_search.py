@@ -17,8 +17,30 @@ def test_build_context_auto_selects_preambles_and_curated_hints() -> None:
     assert "Mathlib.Topology.Order.Basic" in context.candidate_imports
     assert "StrictConcaveOn" in context.candidate_identifiers
     assert "IsCompact.exists_isMaxOn" in context.candidate_identifiers
+    assert "IsCompact.exists_isMaxOn" in context.search_terms
+    assert any("IsMaxOn" in hint for hint in context.shape_guidance)
     assert context.telemetry()["retrieval"]["source_counts"]["preamble"] >= 1
     assert context.telemetry()["retrieval"]["source_counts"]["curated"] >= 1
+
+
+def test_build_context_monotone_convergence_has_shape_guidance() -> None:
+    context = build_formalization_context("A monotone sequence bounded above converges.")
+
+    assert "Mathlib.Topology.Order.MonotoneConvergence" in context.candidate_imports
+    assert "Real.tendsto_of_bddAbove_monotone" in context.candidate_identifiers
+    assert "Real.tendsto_of_bddAbove_monotone" in context.search_terms
+    assert any("Filter.Tendsto" in hint for hint in context.shape_guidance)
+
+
+def test_build_context_fixed_point_has_unique_shape_guidance() -> None:
+    context = build_formalization_context(
+        "A contraction mapping on a complete metric space has a unique fixed point."
+    )
+
+    assert "Mathlib.Topology.MetricSpace.Contracting" in context.candidate_imports
+    assert "ContractingWith.fixedPoint_unique" in context.candidate_identifiers
+    assert "ContractingWith.fixedPoint_unique" in context.search_terms
+    assert any("∃! x, f x = x" in hint for hint in context.shape_guidance)
 
 
 def test_build_context_explicit_preambles_override_auto_selection() -> None:

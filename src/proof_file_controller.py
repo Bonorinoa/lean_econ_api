@@ -182,8 +182,7 @@ class ProofFileController:
             code = DEFAULT_HEADER + code
         code = _INLINE_SORRY_LINE_RE.sub(
             lambda match: (
-                f"{match.group(1)}{match.group(2)}\n"
-                f"{match.group(1)}  sorry{match.group(3)}"
+                f"{match.group(1)}{match.group(2)}\n{match.group(1)}  sorry{match.group(3)}"
             ),
             code,
             count=1,

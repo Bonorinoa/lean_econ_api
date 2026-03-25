@@ -71,7 +71,11 @@ def test_runner_writes_report_and_results() -> None:
     def fake_run_pipeline(*, raw_input: str, preformalized_theorem: str, use_cache: bool):
         return next(pipeline_attempts)
 
-    def fake_grade_semantic_alignment(original_raw_claim: str, generated_theorem_code: str):
+    def fake_grade_semantic_alignment(
+        original_raw_claim: str,
+        generated_theorem_code: str,
+        telemetry_out=None,
+    ):
         return {
             "score": 4,
             "verdict": "mostly_faithful",

@@ -19,6 +19,7 @@ from eval_logger import log_run
 from formalizer import formalize
 from model_config import LEANSTRAL_MODEL
 from prover_backend import get_prover
+from provider_telemetry import collect_provider_calls, summarize_provider_calls
 from result_cache import result_cache
 
 
@@ -42,6 +43,7 @@ class ProveResult(TypedDict):
     agent_summary: str
     agent_elapsed_seconds: float
     axiom_info: dict[str, Any] | None
+    provider_telemetry: dict[str, Any]
 
 
 def _build_run_log_entry(
@@ -56,6 +58,7 @@ def _build_run_log_entry(
     from_cache: bool,
     partial: bool,
     stop_reason: str | None,
+    provider_telemetry: dict[str, Any] | None = None,
     cache_replay: bool = False,
 ) -> dict[str, Any]:
     """Build the append-only eval-log payload for both fresh runs and cache replays."""
@@ -71,6 +74,14 @@ def _build_run_log_entry(
         "partial": partial,
         "stop_reason": stop_reason,
     }
+    if provider_telemetry is not None:
+        entry["provider_telemetry"] = provider_telemetry
+        entry["estimated_cost_base_usd"] = provider_telemetry.get("estimated_cost_base_usd")
+        entry["estimated_cost_stress_usd"] = provider_telemetry.get("estimated_cost_stress_usd")
+        entry["provider_call_count"] = provider_telemetry.get("provider_call_count")
+        entry["llm_call_count"] = provider_telemetry.get("llm_call_count")
+        entry["usage_present"] = provider_telemetry.get("usage_present")
+        entry["local_only"] = provider_telemetry.get("local_only")
     if cache_replay:
         entry["cache_replay"] = True
     return entry
@@ -86,8 +97,15 @@ def _log(
 ):
     """Emit a pipeline log entry."""
     if on_log:
-        on_log({"stage": stage, "message": message, "data": data,
-                "status": status, "elapsed_ms": elapsed_ms})
+        on_log(
+            {
+                "stage": stage,
+                "message": message,
+                "data": data,
+                "status": status,
+                "elapsed_ms": elapsed_ms,
+            }
+        )
     else:
         print(f"[pipeline] {stage}: {message}")
 
@@ -117,6 +135,27 @@ def _formalization_model_label(formalization: dict[str, Any]) -> str:
     return LEANSTRAL_MODEL
 
 
+def _empty_formalization_telemetry(model_label: str) -> dict[str, Any]:
+    return {
+        "model": model_label,
+        "cache_hit": False,
+        "cache_namespace": None,
+        "model_calls": 0,
+        "validation_method": None,
+        "validation_methods": [],
+        "validation_fallback_reasons": [],
+        "repair_buckets": [],
+        "last_repair_bucket": None,
+        "deterministic_repairs_applied": [],
+        "selected_preambles": [],
+        "explicit_preambles": [],
+        "auto_preambles": [],
+        "retrieval": {},
+        "mcp": {},
+        "provider_telemetry": summarize_provider_calls([]),
+    }
+
+
 def _formalization_log_payload(formalization: dict[str, Any]) -> dict[str, Any]:
     return {
         "success": formalization.get("success", False),
@@ -128,6 +167,11 @@ def _formalization_log_payload(formalization: dict[str, Any]) -> dict[str, Any]:
         "failure_reason": formalization.get("failure_reason"),
         "formalizer_telemetry": formalization.get("formalizer_telemetry", {}),
     }
+
+
+def _combined_provider_telemetry(*sources: Any) -> dict[str, Any]:
+    """Merge provider telemetry from one or more stage telemetry payloads."""
+    return summarize_provider_calls(collect_provider_calls(*sources))
 
 
 def _raw_lean_formalization_result(raw_input: str) -> dict[str, Any]:
@@ -142,20 +186,7 @@ def _raw_lean_formalization_result(raw_input: str) -> dict[str, Any]:
         "diagnosis": None,
         "suggested_fix": None,
         "fixable": None,
-        "formalizer_telemetry": {
-            "model": "raw_lean_bypass",
-            "cache_hit": False,
-            "validation_method": None,
-            "validation_methods": [],
-            "validation_fallback_reasons": [],
-            "repair_buckets": [],
-            "deterministic_repairs_applied": [],
-            "selected_preambles": [],
-            "explicit_preambles": [],
-            "auto_preambles": [],
-            "retrieval": {},
-            "mcp": {},
-        },
+        "formalizer_telemetry": _empty_formalization_telemetry("raw_lean_bypass"),
     }
 
 
@@ -171,24 +202,16 @@ def _preformalized_result(theorem_code: str) -> dict[str, Any]:
         "diagnosis": None,
         "suggested_fix": None,
         "fixable": None,
-        "formalizer_telemetry": {
-            "model": "preformalized_input",
-            "cache_hit": False,
-            "validation_method": None,
-            "validation_methods": [],
-            "validation_fallback_reasons": [],
-            "repair_buckets": [],
-            "deterministic_repairs_applied": [],
-            "selected_preambles": [],
-            "explicit_preambles": [],
-            "auto_preambles": [],
-            "retrieval": {},
-            "mcp": {},
-        },
+        "formalizer_telemetry": _empty_formalization_telemetry("preformalized_input"),
     }
 
 
-def _failed_pipeline_result(f_result: dict[str, Any], *, started_at: float) -> dict[str, Any]:
+def _failed_pipeline_result(
+    f_result: dict[str, Any],
+    *,
+    started_at: float,
+    provider_telemetry: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "success": False,
         "lean_code": f_result.get("theorem_code", ""),
@@ -213,6 +236,7 @@ def _failed_pipeline_result(f_result: dict[str, Any], *, started_at: float) -> d
         "agent_summary": "",
         "agent_elapsed_seconds": 0.0,
         "axiom_info": None,
+        "provider_telemetry": provider_telemetry,
     }
 
 
@@ -222,6 +246,7 @@ def _successful_pipeline_result(
     f_result: dict[str, Any],
     pv_result: ProveResult,
     started_at: float,
+    provider_telemetry: dict[str, Any],
 ) -> dict[str, Any]:
     if pv_result["success"]:
         phase = "verified"
@@ -255,6 +280,7 @@ def _successful_pipeline_result(
         "agent_summary": pv_result["agent_summary"],
         "agent_elapsed_seconds": pv_result["agent_elapsed_seconds"],
         "axiom_info": pv_result.get("axiom_info"),
+        "provider_telemetry": provider_telemetry,
     }
 
 
@@ -290,8 +316,11 @@ def formalize_claim(
 
     if result["formalization_failed"]:
         _log(
-            on_log, "formalize", f"Formalization failed: {result['failure_reason']}",
-            status="error", elapsed_ms=formalize_elapsed_ms,
+            on_log,
+            "formalize",
+            f"Formalization failed: {result['failure_reason']}",
+            status="error",
+            elapsed_ms=formalize_elapsed_ms,
         )
     elif result["success"]:
         _log(
@@ -353,6 +382,7 @@ def prove_and_verify(
         "agent_summary": result.get("agent_summary", ""),
         "agent_elapsed_seconds": result.get("elapsed_seconds", 0.0),
         "axiom_info": result.get("axiom_info"),
+        "provider_telemetry": result.get("provider_telemetry", summarize_provider_calls([])),
     }
 
 
@@ -374,10 +404,19 @@ def run_pipeline(
     if use_cache:
         cached = result_cache.get(cache_key_input)
         if cached is not None:
-            _log(on_log, "cache", "Cache hit — returning verified result",
-                 status="done", elapsed_ms=0.0)
+            _log(
+                on_log,
+                "cache",
+                "Cache hit — returning verified result",
+                status="done",
+                elapsed_ms=0.0,
+            )
             cached["elapsed_seconds"] = 0.0
             cached["from_cache"] = True
+            cached_provider_telemetry = dict(cached.get("provider_telemetry", {}))
+            if cached_provider_telemetry:
+                cached["cached_provider_telemetry"] = cached_provider_telemetry
+            cached["provider_telemetry"] = summarize_provider_calls([])
             cached.setdefault("partial", False)
             cached.setdefault("stop_reason", None)
             cached.setdefault("tool_trace", [])
@@ -386,10 +425,10 @@ def run_pipeline(
             cached.setdefault("agent_summary", "")
             cached.setdefault("agent_elapsed_seconds", 0.0)
             cached_theorem = (
-                cached.get("theorem_statement")
-                or cached.get("lean_code")
-                or cache_key_input
+                cached.get("theorem_statement") or cached.get("lean_code") or cache_key_input
             )
+            cached_formalization_telemetry = _empty_formalization_telemetry("cache_replay")
+            cached_formalization_telemetry["cache_hit"] = True
             log_run(
                 _build_run_log_entry(
                     raw_input=raw_input,
@@ -403,7 +442,7 @@ def run_pipeline(
                         "model": "cache_replay",
                         "formalization_failed": False,
                         "failure_reason": None,
-                        "formalizer_telemetry": {},
+                        "formalizer_telemetry": cached_formalization_telemetry,
                     },
                     proving={
                         "success": cached.get("success", True),
@@ -414,6 +453,7 @@ def run_pipeline(
                         "tactic_calls": cached.get("tactic_calls", []),
                         "trace_schema_version": cached.get("trace_schema_version", 1),
                         "agent_summary": cached.get("agent_summary", ""),
+                        "provider_telemetry": summarize_provider_calls([]),
                     },
                     verification={
                         "success": cached.get("success", True),
@@ -424,6 +464,7 @@ def run_pipeline(
                     from_cache=True,
                     partial=cached.get("partial", False),
                     stop_reason="cache_hit",
+                    provider_telemetry=summarize_provider_calls([]),
                     cache_replay=True,
                 )
             )
@@ -435,7 +476,14 @@ def run_pipeline(
         f_result = formalize_claim(raw_input, on_log=on_log, use_cache=use_cache)
 
     if not f_result["success"]:
-        result = _failed_pipeline_result(f_result, started_at=start)
+        provider_telemetry = _combined_provider_telemetry(
+            f_result.get("formalizer_telemetry", {}).get("provider_telemetry"),
+        )
+        result = _failed_pipeline_result(
+            f_result,
+            started_at=start,
+            provider_telemetry=provider_telemetry,
+        )
         log_run(
             _build_run_log_entry(
                 raw_input=raw_input,
@@ -451,6 +499,7 @@ def run_pipeline(
                     "tactic_calls": [],
                     "trace_schema_version": 1,
                     "agent_summary": "",
+                    "provider_telemetry": summarize_provider_calls([]),
                 },
                 verification={
                     "success": False,
@@ -461,17 +510,23 @@ def run_pipeline(
                 from_cache=result["from_cache"],
                 partial=result["partial"],
                 stop_reason=result["stop_reason"],
+                provider_telemetry=result["provider_telemetry"],
             )
         )
         return result
 
     theorem_with_sorry = f_result["theorem_code"]
     pv_result = prove_and_verify(theorem_with_sorry, on_log=on_log)
+    provider_telemetry = _combined_provider_telemetry(
+        f_result.get("formalizer_telemetry", {}).get("provider_telemetry"),
+        pv_result.get("provider_telemetry"),
+    )
     result = _successful_pipeline_result(
         theorem_with_sorry=theorem_with_sorry,
         f_result=f_result,
         pv_result=pv_result,
         started_at=start,
+        provider_telemetry=provider_telemetry,
     )
 
     if use_cache and result["success"]:
@@ -492,6 +547,7 @@ def run_pipeline(
                 "tactic_calls": pv_result["tactic_calls"],
                 "trace_schema_version": pv_result["trace_schema_version"],
                 "agent_summary": pv_result["agent_summary"],
+                "provider_telemetry": pv_result["provider_telemetry"],
             },
             verification={
                 "success": pv_result["success"],
@@ -502,6 +558,7 @@ def run_pipeline(
             from_cache=result["from_cache"],
             partial=result["partial"],
             stop_reason=result["stop_reason"],
+            provider_telemetry=result["provider_telemetry"],
         )
     )
 

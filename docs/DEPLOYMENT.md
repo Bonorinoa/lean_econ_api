@@ -45,7 +45,8 @@ available at `http://localhost:8000/health`.
 - `MISTRAL_API_KEY` must be provided at runtime.
 - `LEANECON_STATE_DIR` defaults to `/app/state` inside the image.
 - The image does not bake a real `.env` file into the container.
-- The image exposes port `8000` and starts `uvicorn src.api:app`.
+- The image exposes port `8000` and starts `uvicorn src.api:app` on
+  `${PORT:-8000}`, so Railway-style injected ports are honored automatically.
 - Verification still happens locally inside the container with the Lean toolchain.
 - Mount `/app/state` if you want the verified-result cache and JSONL run log to
   persist across container restarts.

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import benchmark_harness
+import provider_telemetry as telemetry_helpers
 
 
 def _fake_pipeline_result(
@@ -18,6 +19,7 @@ def _fake_pipeline_result(
     proof_generated: bool = True,
     phase: str | None = None,
     from_cache: bool = False,
+    provider_telemetry: dict | None = None,
 ) -> dict:
     return {
         "success": success,
@@ -44,6 +46,9 @@ def _fake_pipeline_result(
         "agent_summary": "",
         "agent_elapsed_seconds": 0.25,
         "axiom_info": None,
+        "provider_telemetry": (
+            provider_telemetry or telemetry_helpers.summarize_provider_calls([])
+        ),
     }
 
 
@@ -52,6 +57,19 @@ def _fake_formalizer_telemetry(
     validation_method: str = "lake_env_lean",
     repair_buckets: list[str] | None = None,
 ) -> dict:
+    provider_calls = [
+        {
+            "endpoint": "chat.complete",
+            "model": "formalizer",
+            "raw_usage": {"prompt_tokens": 100, "completion_tokens": 40, "total_tokens": 140},
+            "usage_present": True,
+            "latency_ms": 12.5,
+            "retry_count": 0,
+            "local_only": False,
+            "estimated_cost_base_usd": 0.001,
+            "estimated_cost_stress_usd": 0.0015,
+        }
+    ]
     return {
         "model_calls": 1,
         "validation_method": validation_method,
@@ -64,18 +82,63 @@ def _fake_formalizer_telemetry(
             "source_counts": {"preamble": 1, "curated": 2, "mcp": 0},
             "candidate_imports": ["Mathlib.Analysis.Convex.Basic"],
             "candidate_identifiers": ["StrictConcaveOn"],
+            "search_terms": ["IsCompact.exists_isMaxOn"],
+            "shape_guidance": ["Use `∃ x ∈ s, IsMaxOn f s x` for maximum claims."],
         },
+        "provider_telemetry": telemetry_helpers.summarize_provider_calls(provider_calls),
     }
 
 
 def _fake_semantic_alignment(score: int = 5) -> dict:
+    provider_calls = [
+        {
+            "endpoint": "semantic_grade",
+            "model": "semantic-grader",
+            "raw_usage": {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+            "usage_present": True,
+            "latency_ms": 8.0,
+            "retry_count": 0,
+            "local_only": False,
+            "estimated_cost_base_usd": 0.001,
+            "estimated_cost_stress_usd": 0.0015,
+        }
+    ]
     return {
         "score": score,
         "verdict": "faithful",
         "rationale": "Synthetic semantic alignment result.",
         "trivialization_flags": [],
         "generated": True,
+        "provider_telemetry": telemetry_helpers.summarize_provider_calls(provider_calls),
     }
+
+
+def _fake_proving_provider_telemetry() -> dict:
+    provider_calls = [
+        {
+            "endpoint": "conversations.start_async",
+            "model": "leanstral",
+            "raw_usage": {"prompt_tokens": 120, "completion_tokens": 20, "total_tokens": 140},
+            "usage_present": True,
+            "latency_ms": 15.0,
+            "retry_count": 0,
+            "local_only": False,
+            "estimated_cost_base_usd": 0.001,
+            "estimated_cost_stress_usd": 0.0015,
+        },
+        {
+            "endpoint": "conversations.append_async",
+            "model": "leanstral",
+            "raw_usage": {"prompt_tokens": 80, "completion_tokens": 30, "total_tokens": 110},
+            "usage_present": True,
+            "latency_ms": 9.5,
+            "retry_count": 0,
+            "local_only": False,
+            "estimated_cost_base_usd": 0.001,
+            "estimated_cost_stress_usd": 0.0015,
+        },
+    ]
+    return telemetry_helpers.summarize_provider_calls(provider_calls)
 
 
 def test_load_benchmark_cases_preserves_optional_metadata(tmp_path: Path) -> None:
@@ -171,7 +234,11 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
         if preformalized_theorem == "FORMALIZED_A":
             if on_log:
                 on_log({"stage": "agentic_verify", "status": "done", "message": "verified"})
-            return _fake_pipeline_result(success=True, phase="verified")
+            return _fake_pipeline_result(
+                success=True,
+                phase="verified",
+                provider_telemetry=_fake_proving_provider_telemetry(),
+            )
 
         if preformalized_theorem == "STUB_A":
             theorem_stub_attempts["count"] += 1
@@ -189,10 +256,15 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
                     stop_reason="proof_incomplete",
                     proof_generated=False,
                     phase="failed",
+                    provider_telemetry=_fake_proving_provider_telemetry(),
                 )
             if on_log:
                 on_log({"stage": "agentic_verify", "status": "done", "message": "verified"})
-            return _fake_pipeline_result(success=True, phase="verified")
+            return _fake_pipeline_result(
+                success=True,
+                phase="verified",
+                provider_telemetry=_fake_proving_provider_telemetry(),
+            )
 
         assert raw_input == "RAW_A"
         assert preformalized_theorem is None
@@ -203,6 +275,7 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
             stop_reason="timeout",
             proof_generated=False,
             phase="failed",
+            provider_telemetry=_fake_proving_provider_telemetry(),
         )
 
     argv = [
@@ -244,16 +317,27 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
     assert lane_summary["raw_claim_full_api"]["retrieval_source_counts"]["curated"] == 6
     assert lane_summary["raw_claim_full_api"]["semantic_alignment"]["graded_attempts"] == 3
     assert lane_summary["raw_claim_full_api"]["semantic_alignment"]["score_ge_4_rate"] == 1.0
+    assert lane_summary["raw_claim_full_api"]["provider_call_count"] == 12
+    assert lane_summary["raw_claim_full_api"]["llm_call_count"] == 12
+    assert lane_summary["raw_claim_full_api"]["usage_present"] is True
+    assert lane_summary["raw_claim_full_api"]["local_only"] is False
+    assert lane_summary["raw_claim_full_api"]["estimated_cost_base_usd"] == 0.012
+    assert lane_summary["raw_claim_full_api"]["estimated_cost_stress_usd"] == 0.018
     assert lane_summary["theorem_stub_verify"]["pass_at_1"] == 0.0
     assert lane_summary["theorem_stub_verify"]["pass_at_3"] == 1.0
+    assert lane_summary["theorem_stub_verify"]["provider_call_count"] == 6
+    assert lane_summary["theorem_stub_verify"]["estimated_cost_base_usd"] == 0.006
     assert lane_summary["raw_lean_verify"]["pass_at_3"] == 0.0
     assert lane_summary["raw_lean_verify"]["error_code_counts"]["proof_timeout"] == 3
     assert lane_summary["raw_lean_verify"]["failure_stage_counts"]["agentic_verify"] == 3
+    assert lane_summary["raw_lean_verify"]["provider_call_count"] == 6
+    assert lane_summary["raw_lean_verify"]["estimated_cost_base_usd"] == 0.006
     assert by_tier["tier0_smoke"]["lanes"]["raw_claim_full_api"]["pass_at_1"] == 1.0
 
     case_record = payload["cases"][0]
     assert case_record["lanes"]["theorem_stub_verify"]["summary"]["pass_at_3"] is True
     assert case_record["lanes"]["raw_lean_verify"]["summary"]["stop_reason_counts"]["timeout"] == 3
+    assert case_record["lanes"]["raw_claim_full_api"]["summary"]["provider_call_count"] == 12
     assert (
         case_record["lanes"]["raw_claim_full_api"]["attempts"][0]["formalizer_telemetry"][
             "validation_method"
@@ -336,11 +420,12 @@ def test_formalizer_only_mode_skips_verify_lanes(tmp_path: Path) -> None:
     assert payload["summary"]["lanes"]["formalizer_only"]["validation_method_counts"] == {
         "lean_run_code": 3
     }
+    assert payload["summary"]["lanes"]["formalizer_only"]["provider_call_count"] == 6
+    assert payload["summary"]["lanes"]["formalizer_only"]["usage_present"] is True
+    assert payload["summary"]["lanes"]["formalizer_only"]["local_only"] is False
+    assert payload["summary"]["lanes"]["formalizer_only"]["estimated_cost_base_usd"] == 0.006
     assert (
-        payload["summary"]["lanes"]["formalizer_only"]["semantic_alignment"][
-            "graded_attempts"
-        ]
-        == 3
+        payload["summary"]["lanes"]["formalizer_only"]["semantic_alignment"]["graded_attempts"] == 3
     )
     assert payload["summary"]["lanes"]["formalizer_only"]["repair_bucket_counts"] == {
         "unknown_identifier": 3
@@ -383,3 +468,29 @@ def test_load_latest_snapshot_uses_state_dir_and_bundled_fallback(
     assert latest is not None
     assert latest["generated_at"] == "2026-03-24T00:00:00+00:00"
     assert latest["summary"]["total_cases"] == 2
+
+
+def test_latest_snapshot_summary_omits_case_details(monkeypatch, tmp_path: Path) -> None:
+    snapshot_dir = tmp_path / "snapshots"
+    snapshot_dir.mkdir()
+    snapshot_path = snapshot_dir / "latest.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-03-25T00:00:00+00:00",
+                "benchmark_file": "benchmarks/tier1_core_selected_full.jsonl",
+                "config": {"mode": "full", "repetitions": 1, "use_cache": False},
+                "summary": {"total_cases": 3},
+                "cases": [{"id": "bench_001"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = benchmark_harness.latest_snapshot_summary(snapshot_dir=snapshot_dir)
+
+    assert summary is not None
+    assert summary["generated_at"] == "2026-03-25T00:00:00+00:00"
+    assert summary["benchmark_file"] == "benchmarks/tier1_core_selected_full.jsonl"
+    assert summary["summary"]["total_cases"] == 3
+    assert "cases" not in summary

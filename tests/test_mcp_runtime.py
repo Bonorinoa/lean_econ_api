@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -91,12 +92,65 @@ def test_formalization_mcp_status_circuit_breaker_round_trip() -> None:
     assert allowed is True
     assert reason is None
 
-    mcp_runtime.mark_formalization_mcp_failure("lean_run_code bootstrap failed")
-    allowed, reason = mcp_runtime.formalization_mcp_available()
+    mcp_runtime.mark_formalization_mcp_failure(
+        "lean_run_code bootstrap failed",
+        capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+    )
+    allowed, reason = mcp_runtime.formalization_mcp_available(
+        capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_VALIDATION
+    )
     assert allowed is False
     assert "bootstrap failed" in (reason or "")
+
+    retrieval_allowed, retrieval_reason = mcp_runtime.formalization_mcp_available(
+        capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_RETRIEVAL
+    )
+    assert retrieval_allowed is True
+    assert retrieval_reason is None
 
     mcp_runtime.reset_formalization_mcp_status()
     allowed, reason = mcp_runtime.formalization_mcp_available()
     assert allowed is True
     assert reason is None
+
+
+def test_formalization_retrieval_circuit_breaker_is_independent() -> None:
+    mcp_runtime.reset_formalization_mcp_status()
+
+    mcp_runtime.mark_formalization_mcp_failure(
+        "lean_local_search bootstrap failed",
+        capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_RETRIEVAL,
+    )
+
+    allowed, reason = mcp_runtime.formalization_mcp_available(
+        capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_RETRIEVAL
+    )
+    assert allowed is False
+    assert "lean_local_search bootstrap failed" in (reason or "")
+
+    validation_allowed, validation_reason = mcp_runtime.formalization_mcp_available(
+        capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_VALIDATION
+    )
+    assert validation_allowed is True
+    assert validation_reason is None
+
+
+def test_prime_lean_mcp_session_uses_mcp_smoke_file() -> None:
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    class _PrimingSession:
+        async def call_tool(self, name: str, arguments: dict[str, str]):
+            calls.append((name, arguments))
+            return SimpleNamespace(isError=False, content=[{"text": "{}"}])
+
+    asyncio.run(mcp_runtime.prime_lean_mcp_session(_PrimingSession()))
+
+    assert calls == [
+        (
+            "lean_file_outline",
+            {
+                "file_path": "LeanEcon/McpSmoke.lean",
+                "max_declarations": "1",
+            },
+        )
+    ]

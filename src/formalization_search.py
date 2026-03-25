@@ -8,10 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mcp_runtime import (
+    FORMALIZATION_MCP_CAPABILITY_RETRIEVAL,
     formalization_mcp_available,
     mark_formalization_mcp_failure,
     mark_formalization_mcp_success,
     open_lean_mcp_session,
+    prime_lean_mcp_session,
 )
 from preamble_library import (
     build_preamble_block,
@@ -20,10 +22,9 @@ from preamble_library import (
     rank_matching_preambles,
 )
 
-FORMALIZATION_MCP_SEARCH_ENABLED = (
-    os.environ.get("LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH", "0").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+FORMALIZATION_MCP_SEARCH_ENABLED = os.environ.get(
+    "LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS = float(
     os.environ.get("LEANECON_FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS", "5")
 )
@@ -39,6 +40,8 @@ class CuratedHint:
     keywords: tuple[str, ...]
     imports: tuple[str, ...] = ()
     identifiers: tuple[str, ...] = ()
+    search_terms: tuple[str, ...] = ()
+    shape_guidance: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
 
 
@@ -64,6 +67,8 @@ class FormalizationContext:
     preamble_imports: list[str] = field(default_factory=list)
     candidate_imports: list[str] = field(default_factory=list)
     candidate_identifiers: list[str] = field(default_factory=list)
+    search_terms: list[str] = field(default_factory=list)
+    shape_guidance: list[str] = field(default_factory=list)
     retrieval_notes: list[str] = field(default_factory=list)
     mcp_hits: list[SearchHit] = field(default_factory=list)
     mcp_enabled: bool = False
@@ -82,9 +87,11 @@ class FormalizationContext:
         if self.candidate_imports:
             lines.append(f"- Candidate imports: {', '.join(self.candidate_imports[:8])}")
         if self.candidate_identifiers:
-            lines.append(
-                f"- Candidate identifiers: {', '.join(self.candidate_identifiers[:12])}"
-            )
+            lines.append(f"- Candidate identifiers: {', '.join(self.candidate_identifiers[:12])}")
+        if self.search_terms:
+            lines.append(f"- Search anchors: {', '.join(self.search_terms[:8])}")
+        if self.shape_guidance:
+            lines.append(f"- Theorem-shape guidance: {' | '.join(self.shape_guidance[:4])}")
         if self.retrieval_notes:
             lines.append(f"- Notes: {' | '.join(self.retrieval_notes[:4])}")
         if self.mcp_hits:
@@ -104,6 +111,8 @@ class FormalizationContext:
                 "source_counts": dict(self.source_counts),
                 "candidate_imports": list(self.candidate_imports),
                 "candidate_identifiers": list(self.candidate_identifiers),
+                "search_terms": list(self.search_terms),
+                "shape_guidance": list(self.shape_guidance),
                 "notes": list(self.retrieval_notes),
             },
             "mcp": {
@@ -144,7 +153,15 @@ CURATED_HINTS: tuple[CuratedHint, ...] = (
         keywords=("maximum", "minimum", "compact", "extreme value", "weierstrass"),
         imports=("Mathlib.Topology.Order.Basic",),
         identifiers=("IsCompact.exists_isMaxOn", "IsCompact.exists_isMinOn"),
-        notes=("Existence theorems usually need `IsCompact` and `ContinuousOn` hypotheses.",),
+        search_terms=("IsCompact.exists_isMaxOn", "IsCompact.exists_isMinOn"),
+        shape_guidance=(
+            "Use `∃ x ∈ s, IsMaxOn f s x` for maximum claims.",
+            "Use `∃ x ∈ s, IsMinOn f s x` for minimum claims.",
+        ),
+        notes=(
+            "Existence theorems usually need `IsCompact`, `ContinuousOn`, "
+            "and `Set.Nonempty` hypotheses.",
+        ),
     ),
     CuratedHint(
         label="continuity",
@@ -156,14 +173,53 @@ CURATED_HINTS: tuple[CuratedHint, ...] = (
         label="metric_fixed_point",
         keywords=("contraction", "fixed point", "complete metric space", "banach"),
         imports=("Mathlib.Topology.MetricSpace.Contracting",),
-        identifiers=("ContractingWith", "ContractingWith.fixedPoint"),
-        notes=("For Banach fixed point claims, start from `ContractingWith`.",),
+        identifiers=(
+            "ContractingWith",
+            "ContractingWith.fixedPoint_isFixedPt",
+            "ContractingWith.fixedPoint_unique",
+        ),
+        search_terms=(
+            "ContractingWith.fixedPoint_unique",
+            "ContractingWith.fixedPoint_isFixedPt",
+        ),
+        shape_guidance=("Use `∃! x, f x = x` for unique fixed-point claims.",),
+        notes=(
+            "For Banach fixed point claims, start from `ContractingWith` and "
+            "keep the contraction constant in `NNReal`.",
+        ),
     ),
     CuratedHint(
         label="metric_spaces",
         keywords=("metric space", "complete space", "distance"),
         imports=("Mathlib.Topology.MetricSpace.Basic",),
         identifiers=("MetricSpace", "CompleteSpace", "dist"),
+    ),
+    CuratedHint(
+        label="monotone_convergence",
+        keywords=("monotone sequence", "bounded above", "converges", "monotone convergence"),
+        imports=(
+            "Mathlib.Topology.Order.MonotoneConvergence",
+            "Mathlib.Topology.Instances.NNReal.Lemmas",
+        ),
+        identifiers=(
+            "Monotone",
+            "BddAbove",
+            "Filter.Tendsto",
+            "Real.tendsto_of_bddAbove_monotone",
+            "tendsto_atTop_ciSup",
+        ),
+        search_terms=(
+            "Real.tendsto_of_bddAbove_monotone",
+            "tendsto_atTop_ciSup",
+        ),
+        shape_guidance=(
+            "Use a convergence-shaped conclusion such as "
+            "`∃ l, Filter.Tendsto u Filter.atTop (nhds l)`.",
+        ),
+        notes=(
+            "Sequence claims usually model `u : ℕ → ℝ` with `Monotone u` "
+            "and `BddAbove (Set.range u)` hypotheses.",
+        ),
     ),
     CuratedHint(
         label="measure_theory",
@@ -204,14 +260,19 @@ def _dedupe_preserve(values: list[str]) -> list[str]:
 def _matching_curated_hints(claim_text: str) -> list[CuratedHint]:
     normalized = claim_text.lower()
     return [
-        hint
-        for hint in CURATED_HINTS
-        if any(keyword in normalized for keyword in hint.keywords)
+        hint for hint in CURATED_HINTS if any(keyword in normalized for keyword in hint.keywords)
     ]
 
 
 def _claim_components(hints: list[CuratedHint]) -> list[str]:
     return [hint.label for hint in hints]
+
+
+def _search_terms(hints: list[CuratedHint]) -> list[str]:
+    anchored_terms = [item for hint in hints for item in hint.search_terms]
+    identifier_fallbacks = [item for hint in hints for item in hint.identifiers[:2]]
+    label_fallbacks = [hint.label.replace("_", " ") for hint in hints]
+    return _dedupe_preserve(anchored_terms + identifier_fallbacks + label_fallbacks)
 
 
 def _parse_mcp_text(result: Any) -> str:
@@ -231,6 +292,7 @@ def _parse_mcp_text(result: Any) -> str:
 async def _query_mcp_hits_async(search_terms: list[str]) -> list[SearchHit]:
     hits: list[SearchHit] = []
     async with open_lean_mcp_session() as session:
+        await prime_lean_mcp_session(session)
         for query in search_terms[:MAX_MCP_SEARCH_QUERIES]:
             result = await session.call_tool("lean_local_search", {"query": query, "limit": 5})
             if getattr(result, "isError", False):
@@ -242,7 +304,9 @@ async def _query_mcp_hits_async(search_terms: list[str]) -> list[SearchHit]:
 
 
 def _query_mcp_hits(search_terms: list[str]) -> tuple[list[SearchHit], str | None]:
-    allowed, reason = formalization_mcp_available()
+    allowed, reason = formalization_mcp_available(
+        capability=FORMALIZATION_MCP_CAPABILITY_RETRIEVAL
+    )
     if not allowed:
         return [], reason
     if not FORMALIZATION_MCP_SEARCH_ENABLED:
@@ -259,10 +323,13 @@ def _query_mcp_hits(search_terms: list[str]) -> tuple[list[SearchHit], str | Non
         )
     except Exception as exc:
         message = str(exc) or exc.__class__.__name__
-        mark_formalization_mcp_failure(f"MCP retrieval failed: {message}")
+        mark_formalization_mcp_failure(
+            f"MCP retrieval failed: {message}",
+            capability=FORMALIZATION_MCP_CAPABILITY_RETRIEVAL,
+        )
         return [], message
 
-    mark_formalization_mcp_success()
+    mark_formalization_mcp_success(capability=FORMALIZATION_MCP_CAPABILITY_RETRIEVAL)
     return hits, None
 
 
@@ -280,17 +347,15 @@ def build_formalization_context(
     preamble_entries = get_preamble_entries(preamble_names)
 
     curated_hints = _matching_curated_hints(claim_text)
-    candidate_imports = _dedupe_preserve(
-        [item for hint in curated_hints for item in hint.imports]
-    )
+    candidate_imports = _dedupe_preserve([item for hint in curated_hints for item in hint.imports])
     candidate_identifiers = _dedupe_preserve(
         [item for hint in curated_hints for item in hint.identifiers]
     )
-    retrieval_notes = _dedupe_preserve([item for hint in curated_hints for item in hint.notes])
-    search_terms = _dedupe_preserve(
-        list(candidate_identifiers[:1])
-        + [hint.label.replace("_", " ") for hint in curated_hints[:1]]
+    search_terms = _search_terms(curated_hints)
+    shape_guidance = _dedupe_preserve(
+        [item for hint in curated_hints for item in hint.shape_guidance]
     )
+    retrieval_notes = _dedupe_preserve([item for hint in curated_hints for item in hint.notes])
     mcp_hits, mcp_skip_reason = _query_mcp_hits(search_terms)
 
     source_counts = {
@@ -308,6 +373,8 @@ def build_formalization_context(
         preamble_imports=build_preamble_imports(preamble_entries),
         candidate_imports=candidate_imports,
         candidate_identifiers=candidate_identifiers,
+        search_terms=search_terms,
+        shape_guidance=shape_guidance,
         retrieval_notes=retrieval_notes,
         mcp_hits=mcp_hits,
         mcp_enabled=bool(FORMALIZATION_MCP_SEARCH_ENABLED and not mcp_skip_reason),
