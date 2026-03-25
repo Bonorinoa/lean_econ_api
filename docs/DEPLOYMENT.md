@@ -4,7 +4,7 @@ LeanEcon must run with local Lean tooling available because final verification
 depends on the local Lean toolchain inside `lean_workspace/`. Runtime verify
 jobs use isolated per-run temp files compiled with `lake env lean`.
 
-## Docker
+## Local Docker
 
 Treat Docker as the primary pre-deploy validation target. Railway rebuilds take
 long enough that they should be used for confirmation after local validation,
@@ -28,6 +28,18 @@ docker run -p 8000:8000 \
 Then open `http://localhost:8000/docs`. A lightweight health endpoint is
 available at `http://localhost:8000/health`.
 
+For local parity with the active Railway listener port, you can also run:
+
+```bash
+docker run -p 8080:8080 \
+  -e PORT=8080 \
+  -e MISTRAL_API_KEY=your_key_here \
+  -v "$(pwd)/.state:/app/state" \
+  leanecon
+```
+
+Then open `http://localhost:8080/docs`.
+
 ## What the image includes
 
 - Python 3.11
@@ -39,6 +51,21 @@ available at `http://localhost:8000/health`.
 - A prebuilt `lean_workspace/` via `lake build`
 - Python dependencies from `requirements.txt`
 - FastAPI served by Uvicorn on port `8000`
+
+## Railway Runtime
+
+Treat Railway port selection as a deployment concern, not a code-path change.
+The container still defaults to `8000` locally via `${PORT:-8000}`, but the
+active Railway deployment on 2026-03-25 expected `PORT=8080`.
+
+Release checks for Railway should confirm all three of these:
+
+- the service boots with `PORT=8080`
+- `/health` responds on that port
+- `/app/scripts/run_lean_lsp_mcp.sh` exists and is executable inside the image
+
+The CI Docker job now performs that validation against the built image before a
+change can merge.
 
 ## Runtime notes
 

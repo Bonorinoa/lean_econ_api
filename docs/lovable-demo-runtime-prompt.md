@@ -42,12 +42,15 @@ UX requirements:
 - Update the pipeline examples/tests to cover two raw Lean statements and two natural-language statements
 - Use meaningful button labels that match the real action being taken
 
-Current live priorities to fix as of 2026-03-23:
+Current live priorities to fix as of 2026-03-25:
 
 - Keep the natural-language first action labeled `Formalize & Verify`. Live behavior now does run `/classify`, `/formalize`, and then `/verify` in one click, so preserve that honesty.
 - Keep the raw-Lean first action wired directly to `POST /api/v1/verify`. The label `Verify with Lean 4` is now truthful and should stay that way.
 - Preserve the immediate `GET /api/v1/jobs/{job_id}` hydration and `EventSource` streaming. Both are live and materially improve stage visibility.
 - Keep explanation decoupled from verify latency. The app currently calls `POST /api/v1/explain` after verification rather than blocking the verified result.
+- Treat the final verify payload as the source of truth for status badges. If the backend returns `success: true`, `phase: "verified"`, and `partial: false`, do not also show `Partial (timeout)` just because a warning mentions timeout cleanup.
+- Preserve preamble context in Explore-to-Pipeline handoffs. When a theorem card is backed by a preamble entry, the pipeline payload should carry `preamble_names`, not only the claim text.
+- Fix the observed theorem-card mismatch from 2026-03-25: `Preambles -> Use 1 in Pipeline` preserved `crra_utility`, but `CRRA Relative Risk Aversion -> Pipeline` did not visibly preload the same context.
 - Fix state reset more thoroughly. On 2026-03-23, switching modes or changing example inputs could still leave stale stage chips, prior verification panels, and prior explanation text visible until the next run replaced them.
 - Make raw-Lean mode scrub natural-language leftovers. When entering raw-Lean mode, the claim-analysis and explanation panels should not still show the previous natural-language run.
 - Make natural-language mode scrub raw-Lean leftovers. When returning to natural-language mode, prior raw-Lean proofs and explanations should not remain attached to the new claim draft.

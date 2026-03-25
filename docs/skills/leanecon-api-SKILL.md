@@ -55,7 +55,10 @@ Every frontend should implement this sequence:
 
 Use these numbers instead of older March 22-24 placeholders:
 
-- Local non-live pytest: `214 passed, 13 deselected`
+- Local non-live pytest: `216 passed, 13 deselected`
+- Production smoke gate:
+  `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`
+  exited `0` on 2026-03-25 with `summary.overall_ok = true`
 - `lake build` in `lean_workspace`: successful
 - Tier 1 selected full benchmark:
   `benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`
@@ -82,7 +85,7 @@ Interpretation:
 - Natural-language formalization is strong on the bounded Tier 1 core slice.
 - Full raw-claim end-to-end verification is still the weakest public lane.
 - Frontier natural-language formalization is improving, but still mixed.
-- The live service may still lag local fixes until the next deploy.
+- Until a new Railway deploy finishes, the live service may still lag branch-local fixes. Treat the production smoke gate as the deploy truth source.
 
 ## Endpoint reference
 
@@ -403,6 +406,11 @@ producer, risk, dynamic, macro, optimization, welfare, and game theory. For UI
 pickers or product copy, read [`docs/PREAMBLE_CATALOG.md`](../PREAMBLE_CATALOG.md)
 instead of hardcoding module names or counts in multiple places.
 
+For theorem-library or Explore-to-Pipeline handoffs, preserve
+`preamble_names` alongside the claim text. Sending only the natural-language
+claim can silently drop crucial theorem context and reduce formalization
+reliability.
+
 ### Axiom soundness
 
 When verification succeeds, check `axiom_info`:
@@ -424,7 +432,7 @@ Every response includes `error_code` for programmatic error handling:
 - `formalization_timeout` — Formalization timed out
 - `formalization_unformalizable` — Claim is out of Mathlib scope
 - `proof_not_found` — Valid theorem, no proof found
-- `proof_timeout` — Prover timed out (check `partial` field)
+- `proof_timeout` — Prover timed out (check `partial`, `success`, and `stop_reason` together)
 - `verification_rejected` — Lean rejected the proof
 - `verification_sorry` — Proof contains sorry
 - `internal_error` — Unexpected server-side failure
@@ -598,6 +606,7 @@ Recommended benchmark files:
 - `pass@3` as the main retry/internal metric
 - `pass@5` when repetitions are at least 5
 - `p50` / `p95` latency
+- `partial_attempts` / `partial_rate` so interrupted-but-usable runs are visible
 - `failure_stage`, `error_code`, and `stop_reason`
 - `validation_method_counts`, `validation_fallback_reason_counts`, `repair_bucket_counts`, and `retrieval_source_counts`
 - semantic-alignment grading on `raw_claim` lanes
@@ -708,6 +717,11 @@ effort. Show the partial proof with a "Timed out — retry?" option. The
 cancel-scope wording so product UIs see a stable interruption warning instead
 of a raw runtime-internals message.
 
+If the final result has `success: true`, `phase: "verified"`, and
+`partial: false`, treat it as fully verified even if `warnings` mentions an
+interruption or timeout cleanup path. Do not show a `Partial (timeout)` badge
+based only on warning text.
+
 ## Dashboard patterns
 
 For building a dashboard that interacts with each endpoint separately and supports custom workflows:
@@ -770,6 +784,9 @@ For test suites, support batch submission:
 - **Railway Hobby plan.** Resource limits untested under concurrent load. Lean + Mathlib is memory-intensive.
 - **Deploy latency.** Railway rebuilds can take 10+ minutes, so validate with
   local CI and Docker first, then treat Railway smoke checks as confirmation.
+- **Runtime port split.** Railway runs the container on `PORT=8080`; local
+  Docker examples may still expose host port `8000`. External clients should
+  target the public base URL, not a hardcoded internal port.
 
 ## CORS
 

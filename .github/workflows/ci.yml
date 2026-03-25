@@ -43,4 +43,17 @@ jobs:
     needs: lint
     steps:
       - uses: actions/checkout@v4
-      - run: docker build .
+      - run: docker build -t leanecon-ci .
+      - run: |
+          set -euo pipefail
+          docker run -d --name leanecon-ci -e PORT=8080 -e MISTRAL_API_KEY=test-key -p 8080:8080 leanecon-ci
+          trap 'docker rm -f leanecon-ci >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/health > /tmp/leanecon-health.json; then
+              break
+            fi
+            sleep 2
+          done
+          test -s /tmp/leanecon-health.json
+          grep -q '"status":"ok"' /tmp/leanecon-health.json
+          docker exec leanecon-ci test -x /app/scripts/run_lean_lsp_mcp.sh

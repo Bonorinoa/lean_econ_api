@@ -19,7 +19,7 @@ from semantic_alignment import grade_semantic_alignment
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "benchmarks"
-SNAPSHOT_SCHEMA_VERSION = 3
+SNAPSHOT_SCHEMA_VERSION = 4
 
 MODE_FULL = "full"
 MODE_FORMALIZER_ONLY = "formalizer-only"
@@ -295,6 +295,7 @@ def _lane_attempt_summary(
     failure_stage: str | None,
     error_code: str,
     stop_reason: str | None,
+    partial: bool,
     from_cache: bool,
     phase: str | None,
     proof_generated: bool | None,
@@ -315,6 +316,7 @@ def _lane_attempt_summary(
         "failure_stage": failure_stage,
         "error_code": error_code,
         "stop_reason": stop_reason,
+        "partial": partial,
         "from_cache": from_cache,
         "phase": phase,
         "proof_generated": proof_generated,
@@ -403,10 +405,11 @@ def _run_formalizer_only_attempt(case: BenchmarkCase, *, use_cache: bool) -> dic
             success=success,
             fallback="formalize",
         ),
-        error_code=_error_code_value(formalize_error_code(result)),
-        stop_reason=None,
-        from_cache=False,
-        phase="formalized" if success else "formalization_failed",
+            error_code=_error_code_value(formalize_error_code(result)),
+            stop_reason=None,
+            partial=False,
+            from_cache=False,
+            phase="formalized" if success else "formalization_failed",
         proof_generated=None,
         formalization_success=success,
         formalization_attempts=int(result.get("attempts", 0)),
@@ -459,6 +462,7 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
             ),
             error_code=_error_code_value(formalize_error_code(formalization)),
             stop_reason=None,
+            partial=False,
             from_cache=False,
             phase="formalization_failed",
             proof_generated=False,
@@ -515,6 +519,7 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
         ),
         error_code=_error_code_value(verify_error_code(verify_result)),
         stop_reason=verify_result.get("stop_reason"),
+        partial=bool(verify_result.get("partial")),
         from_cache=bool(verify_result.get("from_cache")),
         phase=verify_result.get("phase"),
         proof_generated=verify_result.get("proof_generated"),
@@ -556,6 +561,7 @@ def _run_theorem_stub_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[s
         failure_stage=_failure_stage_from_events(events, success=success, fallback="verify"),
         error_code=_error_code_value(verify_error_code(result)),
         stop_reason=result.get("stop_reason"),
+        partial=bool(result.get("partial")),
         from_cache=bool(result.get("from_cache")),
         phase=result.get("phase"),
         proof_generated=result.get("proof_generated"),
@@ -601,6 +607,7 @@ def _run_raw_lean_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[str, 
         ),
         error_code=_error_code_value(verify_error_code(result)),
         stop_reason=result.get("stop_reason"),
+        partial=bool(result.get("partial")),
         from_cache=bool(result.get("from_cache")),
         phase=result.get("phase"),
         proof_generated=result.get("proof_generated"),
@@ -662,6 +669,7 @@ def _semantic_alignment_summary(attempts: list[dict[str, Any]]) -> dict[str, Any
 
 def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
     latencies = [float(attempt["latency_ms"]) for attempt in attempts]
+    partial_attempts = sum(1 for attempt in attempts if attempt.get("partial"))
     failure_stage_counts = Counter(
         str(attempt["failure_stage"]) for attempt in attempts if attempt.get("failure_stage")
     )
@@ -712,6 +720,8 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         "failure_stage_counts": _ordered_counter(failure_stage_counts),
         "error_code_counts": _ordered_counter(error_code_counts),
         "stop_reason_counts": _ordered_counter(stop_reason_counts),
+        "partial_attempts": partial_attempts,
+        "partial_rate": _rate(partial_attempts, len(attempts)),
         "validation_method_counts": _ordered_counter(validation_method_counts),
         "validation_fallback_reason_counts": _ordered_counter(validation_fallback_reason_counts),
         "repair_bucket_counts": _ordered_counter(repair_bucket_counts),
@@ -753,6 +763,8 @@ def _skipped_lane_record(reason: str) -> dict[str, Any]:
             "failure_stage_counts": {},
             "error_code_counts": {},
             "stop_reason_counts": {},
+            "partial_attempts": 0,
+            "partial_rate": None,
             "validation_method_counts": {},
             "validation_fallback_reason_counts": {},
             "repair_bucket_counts": {},
@@ -797,11 +809,18 @@ def _average_optional_booleans(values: list[bool | None]) -> float | None:
     return round(sum(1 for value in concrete if value) / len(concrete), 3)
 
 
+def _rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 3)
+
+
 def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, Any]:
     applicable_records = [
         record["lanes"][lane] for record in case_records if record["lanes"][lane]["applicable"]
     ]
     all_attempts = [attempt for record in applicable_records for attempt in record["attempts"]]
+    partial_attempts = sum(1 for attempt in all_attempts if attempt.get("partial"))
     failure_stage_counts = Counter(
         str(attempt["failure_stage"]) for attempt in all_attempts if attempt.get("failure_stage")
     )
@@ -859,6 +878,8 @@ def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, 
         "failure_stage_counts": _ordered_counter(failure_stage_counts),
         "error_code_counts": _ordered_counter(error_code_counts),
         "stop_reason_counts": _ordered_counter(stop_reason_counts),
+        "partial_attempts": partial_attempts,
+        "partial_rate": _rate(partial_attempts, len(all_attempts)),
         "validation_method_counts": _ordered_counter(validation_method_counts),
         "validation_fallback_reason_counts": _ordered_counter(validation_fallback_reason_counts),
         "repair_bucket_counts": _ordered_counter(repair_bucket_counts),
@@ -997,8 +1018,11 @@ def render_report(snapshot: dict[str, Any]) -> str:
         "",
         "## Aggregate Lane Summary",
         "",
-        "| Lane | Cases | Attempts | pass@1 | pass@3 | pass@5 | p50 ms | p95 ms | Cache hits |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        (
+            "| Lane | Cases | Attempts | pass@1 | pass@3 | pass@5 | Partial attempts | "
+            "Partial rate | p50 ms | p95 ms | Cache hits |"
+        ),
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for lane in config["lane_order"]:
@@ -1011,6 +1035,8 @@ def render_report(snapshot: dict[str, Any]) -> str:
             f"{_format_pass_metric(lane_summary['pass_at_1'])} | "
             f"{_format_pass_metric(lane_summary['pass_at_3'])} | "
             f"{_format_pass_metric(lane_summary['pass_at_5'])} | "
+            f"{lane_summary['partial_attempts']} | "
+            f"{_format_pass_metric(lane_summary['partial_rate'])} | "
             f"{_format_latency(lane_summary['latency_ms']['p50'])} | "
             f"{_format_latency(lane_summary['latency_ms']['p95'])} | "
             f"{lane_summary['cache_hits']} |"
@@ -1022,8 +1048,8 @@ def render_report(snapshot: dict[str, Any]) -> str:
             [
                 f"### {tier}",
                 "",
-                "| Lane | Cases | Attempts | pass@1 | p95 ms | Semantic >=4 |",
-                "| --- | ---: | ---: | ---: | ---: | ---: |",
+                "| Lane | Cases | Attempts | pass@1 | Partial rate | p95 ms | Semantic >=4 |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         for lane in config["lane_order"]:
@@ -1034,6 +1060,7 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"{lane_summary['applicable_cases']} | "
                 f"{lane_summary['attempts_run']} | "
                 f"{_format_pass_metric(lane_summary['pass_at_1'])} | "
+                f"{_format_pass_metric(lane_summary['partial_rate'])} | "
                 f"{_format_latency(lane_summary['latency_ms']['p95'])} | "
                 f"{_format_pass_metric(lane_summary['semantic_alignment']['score_ge_4_rate'])} |"
             )
@@ -1049,6 +1076,9 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"- Failure stages: {lane_summary['failure_stage_counts'] or '(none)'}",
                 f"- Error codes: {lane_summary['error_code_counts'] or '(none)'}",
                 f"- Stop reasons: {lane_summary['stop_reason_counts'] or '(none)'}",
+                "- Partial attempts/rate: "
+                f"{lane_summary['partial_attempts']} / "
+                f"{_format_pass_metric(lane_summary['partial_rate'])}",
                 f"- Validation methods: {lane_summary['validation_method_counts'] or '(none)'}",
                 "- Validation fallback reasons: "
                 f"{lane_summary['validation_fallback_reason_counts'] or '(none)'}",
@@ -1083,6 +1113,8 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"pass@1={lane_summary['pass_at_1']}, "
                 f"pass@3={lane_summary['pass_at_3']}, "
                 f"pass@5={lane_summary['pass_at_5']}, "
+                f"partial_attempts={lane_summary['partial_attempts']}, "
+                f"partial_rate={lane_summary['partial_rate']}, "
                 f"p50={_format_latency(lane_summary['latency_ms']['p50'])} ms, "
                 f"p95={_format_latency(lane_summary['latency_ms']['p95'])} ms, "
                 f"failure_stages={lane_summary['failure_stage_counts'] or '(none)'}, "

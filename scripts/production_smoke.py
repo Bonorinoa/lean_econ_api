@@ -16,6 +16,7 @@ DEFAULT_BASE_URL = "https://leaneconapi-production.up.railway.app"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 DEFAULT_MAX_POLLS = 20
+REQUIRED_FAST_CHECKS = ("health", "openapi", "metrics", "cache_stats", "classify", "formalize")
 
 TRIVIAL_CLAIM = "1 + 1 = 2"
 TRIVIAL_THEOREM = """\
@@ -197,10 +198,87 @@ def _poll_job(
             break
         time.sleep(poll_interval)
 
+    if final_status not in {"completed", "failed"}:
+        record = _request(client, "GET", f"{base_url}/api/v1/jobs/{job_id}")
+        poll_records.append(record)
+        if record["error_type"]:
+            final_status = "request_error"
+        else:
+            body = record["response_body"] if isinstance(record["response_body"], dict) else {}
+            final_status = str(body.get("status") or "unknown")
+
     return {
         "job_id": job_id,
         "final_status": final_status,
         "polls": poll_records,
+    }
+
+
+def _timestamp_delta_seconds(started_at: Any, ended_at: Any) -> float | None:
+    if not isinstance(started_at, str) or not isinstance(ended_at, str):
+        return None
+    try:
+        started = datetime.fromisoformat(started_at)
+        ended = datetime.fromisoformat(ended_at)
+    except ValueError:
+        return None
+    return round((ended - started).total_seconds(), 3)
+
+
+def _build_release_summary(records: dict[str, Any]) -> dict[str, Any]:
+    required_checks_ok = all(
+        isinstance(records.get(check_name), dict) and bool(records[check_name].get("ok"))
+        for check_name in REQUIRED_FAST_CHECKS
+    )
+
+    verify_record = records.get("verify")
+    verify_polling = records.get("verify_polling")
+    verify_status_ok = isinstance(verify_record, dict) and verify_record.get("status_code") == 202
+
+    verify_completed = False
+    verify_success = False
+    verify_result_partial = None
+    verify_final_status = None
+    verify_final_stage = None
+    verify_queue_to_finish_seconds = None
+    verify_elapsed_seconds = None
+
+    final_poll_body: dict[str, Any] = {}
+    if isinstance(verify_polling, dict):
+        verify_final_status = verify_polling.get("final_status")
+        verify_completed = verify_final_status == "completed"
+        polls = verify_polling.get("polls") or []
+        if polls:
+            last_poll = polls[-1]
+            if isinstance(last_poll, dict) and isinstance(last_poll.get("response_body"), dict):
+                final_poll_body = last_poll["response_body"]
+
+    result_payload = final_poll_body.get("result")
+    result_body = result_payload if isinstance(result_payload, dict) else {}
+    verify_success = verify_completed and bool(result_body.get("success"))
+    if verify_completed:
+        verify_result_partial = bool(result_body.get("partial", False))
+    verify_final_stage = final_poll_body.get("current_stage")
+    verify_queue_to_finish_seconds = _timestamp_delta_seconds(
+        final_poll_body.get("queued_at"),
+        final_poll_body.get("finished_at"),
+    )
+    if isinstance(result_body.get("elapsed_seconds"), (int, float)):
+        verify_elapsed_seconds = float(result_body["elapsed_seconds"])
+
+    overall_ok = required_checks_ok and verify_status_ok and verify_success
+
+    return {
+        "required_checks_ok": required_checks_ok,
+        "verify_accepted": verify_status_ok,
+        "verify_completed": verify_completed,
+        "verify_success": verify_success,
+        "verify_final_status": verify_final_status,
+        "verify_final_stage": verify_final_stage,
+        "verify_result_partial": verify_result_partial,
+        "verify_queue_to_finish_seconds": verify_queue_to_finish_seconds,
+        "verify_elapsed_seconds": verify_elapsed_seconds,
+        "overall_ok": overall_ok,
     }
 
 
@@ -263,6 +341,7 @@ def run_smoke(
                     max_polls=max_polls,
                 )
 
+    records["summary"] = _build_release_summary(records)
     records["ended_at_utc"] = _utc_now()
     return records
 
@@ -293,7 +372,7 @@ def main() -> int:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered + "\n", encoding="utf-8")
 
-    return 0
+    return 0 if result.get("summary", {}).get("overall_ok") else 1
 
 
 if __name__ == "__main__":

@@ -72,6 +72,76 @@ def test_run_smoke_collects_verify_polling(monkeypatch) -> None:
     assert result["verify"]["status_code"] == 202
     assert result["verify_polling"]["final_status"] == "completed"
     assert len(result["verify_polling"]["polls"]) == 2
+    assert result["summary"]["verify_completed"] is True
+    assert result["summary"]["verify_success"] is False
+    assert result["summary"]["overall_ok"] is False
+
+
+def test_run_smoke_terminal_poll_captures_just_finished_job(monkeypatch) -> None:
+    class _TerminalPollClient(_FakeClient):
+        def request(self, method: str, url: str, json: dict | None = None):
+            self.requests.append((method, url, json))
+            if url.endswith("/health"):
+                return _FakeResponse(200, {"status": "ok"})
+            if url.endswith("/openapi.json"):
+                return _FakeResponse(200, {"openapi": "3.1.0"})
+            if url.endswith("/api/v1/metrics"):
+                return _FakeResponse(200, {"total_runs": 1})
+            if url.endswith("/api/v1/cache/stats"):
+                return _FakeResponse(200, {"size": 0})
+            if url.endswith("/api/v1/classify"):
+                return _FakeResponse(200, {"category": "ALGEBRAIC"})
+            if url.endswith("/api/v1/formalize"):
+                return _FakeResponse(200, {"success": True})
+            if url.endswith("/api/v1/verify"):
+                return _FakeResponse(202, {"job_id": "job-123", "status": "queued"})
+            if "/api/v1/jobs/" in url:
+                self._job_polls += 1
+                if self._job_polls < 3:
+                    return _FakeResponse(
+                        200,
+                        {
+                            "job_id": "job-123",
+                            "status": "running",
+                            "queued_at": "2026-03-25T00:00:00+00:00",
+                            "started_at": "2026-03-25T00:00:01+00:00",
+                            "finished_at": None,
+                            "current_stage": "agentic_fast_path",
+                        },
+                    )
+                return _FakeResponse(
+                    200,
+                    {
+                        "job_id": "job-123",
+                        "status": "completed",
+                        "queued_at": "2026-03-25T00:00:00+00:00",
+                        "started_at": "2026-03-25T00:00:01+00:00",
+                        "finished_at": "2026-03-25T00:00:04+00:00",
+                        "current_stage": "prover_dispatch",
+                        "result": {
+                            "success": True,
+                            "partial": False,
+                            "elapsed_seconds": 3.2,
+                        },
+                    },
+                )
+            raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(production_smoke.httpx, "Client", _TerminalPollClient)
+    monkeypatch.setattr(production_smoke.time, "sleep", lambda _: None)
+
+    result = production_smoke.run_smoke(
+        base_url="https://example.test", poll_interval=0.0, max_polls=2
+    )
+
+    assert result["verify_polling"]["final_status"] == "completed"
+    assert len(result["verify_polling"]["polls"]) == 3
+    assert result["summary"]["verify_completed"] is True
+    assert result["summary"]["verify_success"] is True
+    assert result["summary"]["verify_final_stage"] == "prover_dispatch"
+    assert result["summary"]["verify_result_partial"] is False
+    assert result["summary"]["verify_queue_to_finish_seconds"] == 4.0
+    assert result["summary"]["overall_ok"] is True
 
 
 def test_request_error_is_recorded(monkeypatch) -> None:
@@ -93,6 +163,8 @@ def test_request_error_is_recorded(monkeypatch) -> None:
     assert result["formalize"]["ok"] is False
     assert result["formalize"]["error_type"] == "ReadTimeout"
     assert result["verify"]["status_code"] == 202
+    assert result["summary"]["required_checks_ok"] is False
+    assert result["summary"]["overall_ok"] is False
 
 
 def test_request_falls_back_to_curl(monkeypatch) -> None:
@@ -142,7 +214,34 @@ def test_main_writes_json_output(tmp_path, monkeypatch, capsys) -> None:
     with patch.object(sys, "argv", argv):
         exit_code = production_smoke.main()
 
-    assert exit_code == 0
+    assert exit_code == 1
     assert output_path.is_file()
     payload = json.loads(capsys.readouterr().out)
     assert payload["base_url"] == "https://example.test"
+    assert payload["summary"]["overall_ok"] is False
+
+
+def test_main_returns_nonzero_when_verify_never_completes(monkeypatch) -> None:
+    def fake_run_smoke(**_kwargs):
+        return {
+            "base_url": "https://example.test",
+            "summary": {
+                "required_checks_ok": True,
+                "verify_accepted": True,
+                "verify_completed": False,
+                "verify_success": False,
+                "verify_final_status": "running",
+                "verify_final_stage": "agentic_fast_path",
+                "verify_result_partial": None,
+                "verify_queue_to_finish_seconds": None,
+                "verify_elapsed_seconds": None,
+                "overall_ok": False,
+            },
+        }
+
+    monkeypatch.setattr(production_smoke, "run_smoke", fake_run_smoke)
+
+    with patch.object(sys, "argv", ["production_smoke.py"]):
+        exit_code = production_smoke.main()
+
+    assert exit_code == 1

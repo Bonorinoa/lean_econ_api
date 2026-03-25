@@ -117,15 +117,28 @@ The lightweight local checks are:
 ./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q
 ```
 
+For deployed API gating, also run:
+
+```bash
+./leanEconAPI_venv/bin/python scripts/production_smoke.py \
+  --base-url https://leaneconapi-production.up.railway.app \
+  --poll-interval 1 \
+  --max-polls 10
+```
+
+Treat that command as passing only when it exits `0` and reports
+`summary.overall_ok = true`.
+
 Latest local release sweep on 2026-03-25:
 
 - `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
 - `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
-  `214 passed, 13 deselected`
-- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 2 --max-polls 10`:
-  passed end to end against the deployed Railway API (`200` on `/health`,
+  `216 passed, 13 deselected`
+- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`:
+  exited `0` on 2026-03-25 after the tightened release gate passed; `/health`,
   `/openapi.json`, `/api/v1/metrics`, `/api/v1/cache/stats`, classify, and
-  formalize, plus a verify job that completed successfully)
+  formalize all returned success, and the sample verify job completed on the
+  first poll from cache with `current_stage = "cache"` and `partial = false`
 
 For API-specific smoke checks, see `tests/test_api_smoke.py`.
 

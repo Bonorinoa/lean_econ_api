@@ -370,8 +370,9 @@ def test_interrupted_run_logs_terminal_verify_stage_for_partial_success(monkeypa
     )
 
     assert result["success"] is True
-    assert result["partial"] is True
+    assert result["partial"] is False
     assert result["stop_reason"] == agentic_prover.STOP_PROOF_COMPLETE
+    assert "Leanstral timed out before finishing the loop." in result["warnings"]
     assert [
         (entry["stage"], entry["status"])
         for entry in log_entries

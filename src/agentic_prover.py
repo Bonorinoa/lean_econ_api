@@ -909,6 +909,7 @@ def _build_interrupted_run_result(
     elapsed = time.time() - start_time
     success = bool(partial_verification and partial_verification["success"])
     final_stop_reason = STOP_PROOF_COMPLETE if success else stop_reason
+    final_partial = partial and not success
 
     if partial_verification:
         errors = list(partial_verification.get("errors", []))
@@ -938,7 +939,7 @@ def _build_interrupted_run_result(
         "stop_reason": final_stop_reason,
         "output_lean": output_lean,
         "elapsed_seconds": elapsed,
-        "partial": partial,
+        "partial": final_partial,
         "provider_telemetry": provider_telemetry,
     }
 

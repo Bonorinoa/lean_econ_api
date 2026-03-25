@@ -19,6 +19,7 @@ def _fake_pipeline_result(
     proof_generated: bool = True,
     phase: str | None = None,
     from_cache: bool = False,
+    partial: bool = False,
     provider_telemetry: dict | None = None,
 ) -> dict:
     return {
@@ -37,7 +38,7 @@ def _fake_pipeline_result(
         "phase": phase or ("verified" if success else "failed"),
         "elapsed_seconds": 0.25,
         "from_cache": from_cache,
-        "partial": False,
+        "partial": partial,
         "stop_reason": stop_reason,
         "attempts_used": 1,
         "tool_trace": [],
@@ -275,6 +276,7 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
             stop_reason="timeout",
             proof_generated=False,
             phase="failed",
+            partial=True,
             provider_telemetry=_fake_proving_provider_telemetry(),
         )
 
@@ -310,9 +312,11 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
     lane_summary = payload["summary"]["lanes"]
     by_tier = payload["summary"]["by_tier"]
     assert payload["config"]["use_cache"] is False
-    assert payload["snapshot_schema_version"] == 3
+    assert payload["snapshot_schema_version"] == 4
     assert lane_summary["raw_claim_full_api"]["pass_at_1"] == 1.0
     assert lane_summary["raw_claim_full_api"]["pass_at_3"] == 1.0
+    assert lane_summary["raw_claim_full_api"]["partial_attempts"] == 0
+    assert lane_summary["raw_claim_full_api"]["partial_rate"] == 0.0
     assert lane_summary["raw_claim_full_api"]["validation_method_counts"]["lake_env_lean"] == 3
     assert lane_summary["raw_claim_full_api"]["retrieval_source_counts"]["curated"] == 6
     assert lane_summary["raw_claim_full_api"]["semantic_alignment"]["graded_attempts"] == 3
@@ -325,18 +329,25 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
     assert lane_summary["raw_claim_full_api"]["estimated_cost_stress_usd"] == 0.018
     assert lane_summary["theorem_stub_verify"]["pass_at_1"] == 0.0
     assert lane_summary["theorem_stub_verify"]["pass_at_3"] == 1.0
+    assert lane_summary["theorem_stub_verify"]["partial_attempts"] == 0
+    assert lane_summary["theorem_stub_verify"]["partial_rate"] == 0.0
     assert lane_summary["theorem_stub_verify"]["provider_call_count"] == 6
     assert lane_summary["theorem_stub_verify"]["estimated_cost_base_usd"] == 0.006
     assert lane_summary["raw_lean_verify"]["pass_at_3"] == 0.0
+    assert lane_summary["raw_lean_verify"]["partial_attempts"] == 3
+    assert lane_summary["raw_lean_verify"]["partial_rate"] == 1.0
     assert lane_summary["raw_lean_verify"]["error_code_counts"]["proof_timeout"] == 3
     assert lane_summary["raw_lean_verify"]["failure_stage_counts"]["agentic_verify"] == 3
     assert lane_summary["raw_lean_verify"]["provider_call_count"] == 6
     assert lane_summary["raw_lean_verify"]["estimated_cost_base_usd"] == 0.006
     assert by_tier["tier0_smoke"]["lanes"]["raw_claim_full_api"]["pass_at_1"] == 1.0
+    assert by_tier["tier0_smoke"]["lanes"]["raw_lean_verify"]["partial_rate"] == 1.0
 
     case_record = payload["cases"][0]
     assert case_record["lanes"]["theorem_stub_verify"]["summary"]["pass_at_3"] is True
     assert case_record["lanes"]["raw_lean_verify"]["summary"]["stop_reason_counts"]["timeout"] == 3
+    assert case_record["lanes"]["raw_lean_verify"]["summary"]["partial_attempts"] == 3
+    assert case_record["lanes"]["raw_lean_verify"]["summary"]["partial_rate"] == 1.0
     assert case_record["lanes"]["raw_claim_full_api"]["summary"]["provider_call_count"] == 12
     assert (
         case_record["lanes"]["raw_claim_full_api"]["attempts"][0]["formalizer_telemetry"][
@@ -348,6 +359,8 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
     report_text = report_files[0].read_text(encoding="utf-8")
     assert "LeanEcon Benchmark Report" in report_text
     assert "raw_claim -> full API" in report_text
+    assert "Partial attempts" in report_text
+    assert "partial_rate=1.0" in report_text
     assert "Aggregate Tier Summary" in report_text
     assert "bench_001" in report_text
 
@@ -417,6 +430,8 @@ def test_formalizer_only_mode_skips_verify_lanes(tmp_path: Path) -> None:
     payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
     assert list(payload["summary"]["lanes"]) == ["formalizer_only"]
     assert payload["summary"]["lanes"]["formalizer_only"]["pass_at_1"] == 1.0
+    assert payload["summary"]["lanes"]["formalizer_only"]["partial_attempts"] == 0
+    assert payload["summary"]["lanes"]["formalizer_only"]["partial_rate"] == 0.0
     assert payload["summary"]["lanes"]["formalizer_only"]["validation_method_counts"] == {
         "lean_run_code": 3
     }

@@ -126,6 +126,13 @@ Important request fields:
 - `raw_claim`: plain text, LaTeX, or raw Lean 4 input
 - `preamble_names`: optional explicit preamble module names
 
+Integration note:
+
+- clients handing off preamble-backed theorem-library examples into
+  `/api/v1/formalize` should forward the matching `preamble_names`; sending
+  only the natural-language claim can silently drop useful context and reduce
+  formalization reliability
+
 Important response fields:
 
 - `success`: whether the theorem compiled with `sorry`
@@ -448,11 +455,12 @@ As of the 2026-03-25 local release sweep:
 
 - `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
 - `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
-  `214 passed, 13 deselected`
-- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 2 --max-polls 10`:
-  passed end to end on the deployed Railway API; the cold run returned `200`
-  across `health`, `openapi`, `metrics`, and `cache/stats`, classified in about
-  `0.53s`, and completed the sample verify job in about `9.5s`
+  `216 passed, 13 deselected`
+- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`:
+  exited `0` on 2026-03-25 after the tightened gate passed; `/health`,
+  `/openapi.json`, `/api/v1/metrics`, `/api/v1/cache/stats`, classify, and
+  formalize all returned success, and the sample verify job completed on the
+  first poll from cache with `current_stage = "cache"` and `partial = false`
 - latest completed full tier-1 lane report:
   [`benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md)
   shows:
@@ -478,7 +486,17 @@ Use local checks as the release gate before considering a deploy:
 ruff check src tests scripts
 pytest -m "not live and not slow" --tb=short -q
 ./leanEconAPI_venv/bin/python src/mcp_smoke_test.py
+./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10
 docker build .
 ```
 
 For API changes, also sanity-check `tests/test_api_smoke.py`.
+
+Manual frontend coordination check:
+
+- confirm preamble-backed Explore-to-Pipeline handoffs preserve
+  `preamble_names`
+- as observed on 2026-03-25 in the Lovable demo, `Preambles -> Use 1 in
+  Pipeline` preserved `crra_utility`, while the theorem-card `Pipeline` action
+  for `CRRA Relative Risk Aversion` populated the claim text without visibly
+  preloading the same preamble context
