@@ -19,7 +19,7 @@ docker build -t leanecon .
 Run the app with your Mistral API key:
 
 ```bash
-docker run -p 8000:8080 \
+docker run -p 8000:8000 \
   -e MISTRAL_API_KEY=your_key_here \
   -v "$(pwd)/.state:/app/state" \
   leanecon
@@ -45,12 +45,12 @@ available at `http://localhost:8000/health`.
 - `MISTRAL_API_KEY` must be provided at runtime.
 - `LEANECON_STATE_DIR` defaults to `/app/state` inside the image.
 - The image does not bake a real `.env` file into the container.
-- The image exposes port `8080` and starts `uvicorn src.api:app` on
-  `${PORT:-8080}`, so Railway-style injected ports are honored automatically.
+- The image exposes port `8000` and starts `uvicorn src.api:app` on
+  `${PORT:-8000}`, so Railway-style injected ports are honored automatically.
 - On Railway, make sure the public domain target port matches the container
-  listener. If you see an edge `502` with logs showing Uvicorn on `:8080`, set
-  the service target port to `8080` or clear any stale manual target-port
-  override.
+  listener. If you see an edge `502` while the dashboard target port is `8000`,
+  clear any stale `PORT=8080` variable override so the container comes up on
+  `8000` again.
 - Verification still happens locally inside the container with the Lean toolchain.
 - Mount `/app/state` if you want the verified-result cache and JSONL run log to
   persist across container restarts.

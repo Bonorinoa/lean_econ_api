@@ -37,6 +37,6 @@ COPY README.md ./README.md
 RUN chmod +x /app/scripts/run_lean_lsp_mcp.sh
 RUN mkdir -p outputs logs /app/state /app/state/benchmarks/snapshots /app/state/benchmarks/reports
 
-EXPOSE 8080
+EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn src.api:app --host 0.0.0.0 --port ${PORT:-8080}"]
+CMD ["sh", "-c", "uvicorn src.api:app --host 0.0.0.0 --port ${PORT:-8000}"]
