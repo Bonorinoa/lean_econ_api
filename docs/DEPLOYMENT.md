@@ -46,11 +46,13 @@ available at `http://localhost:8000/health`.
 - `LEANECON_STATE_DIR` defaults to `/app/state` inside the image.
 - The image does not bake a real `.env` file into the container.
 - The image exposes port `8000` and starts `uvicorn src.api:app` on
-  `${PORT:-8000}`, so Railway-style injected ports are honored automatically.
-- On Railway, make sure the public domain target port matches the container
-  listener. If you see an edge `502` while the dashboard target port is `8000`,
-  clear any stale `PORT=8080` variable override so the container comes up on
-  `8000` again.
+  `${PORT:-8000}`. That keeps local Docker defaults on `8000`, but Railway may
+  still inject a different runtime `PORT` value.
+- On Railway, trust the deploy log over the Docker fallback. On 2026-03-25, the
+  active deployment came up on `0.0.0.0:8080`, and the public domain only
+  recovered after its target port was changed to `8080` to match.
+- If you see an edge `502`, first check the deploy log listener port and make
+  the Public Networking target port match it before changing application code.
 - Verification still happens locally inside the container with the Lean toolchain.
 - Mount `/app/state` if you want the verified-result cache and JSONL run log to
   persist across container restarts.

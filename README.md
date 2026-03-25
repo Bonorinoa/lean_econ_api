@@ -28,27 +28,28 @@ compile/debug primitive. It is not the default workflow.
 
 ## Current Lane Reality
 
-The current benchmark story is clear:
+The current benchmark story is still consistent:
 
 - strongest lanes: `theorem_stub -> verify` and `raw_lean -> verify`
 - weakest lane: `raw_claim -> full API`
 - natural-language formalization is improving, but it is still the least stable stage
 
 From the latest completed tier-1 full benchmark report
-[`benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md`](benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md):
+[`benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`](benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md):
 
 - `raw_claim -> full API`: `pass@1 = 0.333`
 - `theorem_stub -> verify`: `pass@1 = 1.000`
 - `raw_lean -> verify`: `pass@1 = 1.000`
 
 The latest completed tier-1 formalizer-only report
-[`benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md`](benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md)
-still shows the claim-shaping gate compiling on its bounded core slice at
-`pass@1 = 1.000`, with semantic `>=4` on `0.833` of those cases.
+[`benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md`](benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md)
+shows the bounded claim-shaping gate at `pass@1 = 0.833`, with semantic `>=4`
+on `1.000` of graded completions.
 
-That means LeanEcon is already strongest when the statement is well formed. The
-main work is still claim shaping and full end-to-end raw-claim reliability, not
-final Lean kernel acceptance once the statement is in good Lean form.
+That means LeanEcon is still strongest when the statement is already well
+formed. The main work is still claim shaping and full end-to-end raw-claim
+reliability, not final Lean kernel acceptance once the statement is in good
+Lean form.
 
 ## Pricing And Status
 
@@ -121,6 +122,10 @@ Latest local release sweep on 2026-03-25:
 - `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
 - `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
   `214 passed, 13 deselected`
+- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 2 --max-polls 10`:
+  passed end to end against the deployed Railway API (`200` on `/health`,
+  `/openapi.json`, `/api/v1/metrics`, `/api/v1/cache/stats`, classify, and
+  formalize, plus a verify job that completed successfully)
 
 For API-specific smoke checks, see `tests/test_api_smoke.py`.
 

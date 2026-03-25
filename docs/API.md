@@ -449,21 +449,26 @@ As of the 2026-03-25 local release sweep:
 - `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
 - `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
   `214 passed, 13 deselected`
+- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 2 --max-polls 10`:
+  passed end to end on the deployed Railway API; the cold run returned `200`
+  across `health`, `openapi`, `metrics`, and `cache/stats`, classified in about
+  `0.53s`, and completed the sample verify job in about `9.5s`
 - latest completed full tier-1 lane report:
-  [`benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md)
+  [`benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md)
   shows:
   - `raw_claim -> full API`: `pass@1 = 0.333`
   - `theorem_stub -> verify`: `pass@1 = 1.000`
   - `raw_lean -> verify`: `pass@1 = 1.000`
 - latest completed tier-1 formalizer-only report:
-  [`benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md)
+  [`benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md)
   shows:
-  - `raw_claim -> formalizer-only gate`: `pass@1 = 1.000`
-  - semantic `>=4` rate: `0.833`
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.833`
+  - semantic `>=4` rate: `1.000`
 
 The practical takeaway is unchanged: raw Lean and theorem-stub verification are
 the strongest lanes; raw-claim full-API evaluation is still the weakest lane,
-even though the bounded formalizer-only gate is strong on the tier-1 core slice.
+and the refreshed bounded formalizer-only gate is still volatile even on the
+tier-1 core slice.
 
 ## Validation Workflow
 

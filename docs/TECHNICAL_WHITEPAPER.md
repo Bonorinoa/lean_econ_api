@@ -132,17 +132,17 @@ agentic prover.
 The current benchmark story is mixed but honest.
 
 From the latest completed tier-1 full report
-[`benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260324T002609Z.md):
+[`benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md):
 
 - `raw_claim -> full API`: `pass@1 = 0.333`
 - `theorem_stub -> verify`: `pass@1 = 1.000`
 - `raw_lean -> verify`: `pass@1 = 1.000`
 
 From the latest completed tier-1 formalizer-only report
-[`benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md):
+[`benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md):
 
-- `raw_claim -> formalizer-only gate`: `pass@1 = 1.000`
-- semantic `>=4` rate: `0.833`
+- `raw_claim -> formalizer-only gate`: `pass@1 = 0.833`
+- semantic `>=4` rate: `1.000`
 
 This implies:
 
@@ -152,6 +152,12 @@ This implies:
   after claim shaping, not final Lean acceptance of already well-formed inputs
 - user-facing UX should continue to privilege raw Lean and theorem-stub paths
   as the fastest and most reliable modes
+
+A live production smoke check on 2026-03-25 also returned `200` across
+`/health`, `/openapi.json`, `/api/v1/metrics`, `/api/v1/cache/stats`, classify,
+and formalize, and completed the sample verify job successfully on the deployed
+Railway service. That runtime check reinforces the same point: deployment and
+verify lanes are healthy once the statement is already in good Lean form.
 
 ## Strengths
 
