@@ -50,6 +50,15 @@ def _stub_formalizer_client():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _isolated_formalization_cache(tmp_path: Path):
+    import formalizer
+
+    cache = FormalizationCache(cache_file=tmp_path / "formalization_cache.json")
+    with patch.object(formalizer, "formalization_cache", cache):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Live smoke tests (require MISTRAL_API_KEY + local Lean toolchain)
 # ---------------------------------------------------------------------------
@@ -410,7 +419,7 @@ def test_formalize_no_classify_call() -> None:
     """formalize() must NOT call classify_claim() internally."""
     import formalizer
 
-    lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
+    lean_code = "import Mathlib\n\ntheorem one_add_one_eq_two : 1 + 1 = 2 := by\n  sorry\n"
     with patch.object(formalizer, "call_leanstral", return_value=lean_code):
         with patch.object(
             formalizer,
@@ -427,7 +436,7 @@ def test_formalize_no_classify_call() -> None:
                 "classify_claim",
                 side_effect=AssertionError("classify_claim should not be called"),
             ) as mock_classify:
-                result = formalizer.formalize("1 + 1 = 2")
+                result = formalizer.formalize("1 + 1 = 2", use_cache=False)
     assert result["success"] is True
     mock_classify.assert_not_called()
 
@@ -436,7 +445,11 @@ def test_formalize_with_explicit_preamble() -> None:
     """formalize() with explicit preamble_names should inject preamble imports."""
     import formalizer
 
-    lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
+    lean_code = (
+        "import Mathlib\n\n"
+        "theorem cobb_douglas_elasticity (alpha : ℝ) (h : 0 < alpha) : 0 < alpha := by\n"
+        "  sorry\n"
+    )
     with patch.object(formalizer, "call_leanstral", return_value=lean_code):
         with patch.object(
             formalizer,
@@ -451,6 +464,7 @@ def test_formalize_with_explicit_preamble() -> None:
             result = formalizer.formalize(
                 "Cobb-Douglas elasticity",
                 preamble_names=["cobb_douglas_2factor"],
+                use_cache=False,
             )
     assert result["success"] is True
     assert "cobb_douglas_2factor" in result["preamble_used"]
@@ -461,7 +475,12 @@ def test_formalize_without_preamble_names() -> None:
     """formalize() auto-selects matching preambles when names are omitted."""
     import formalizer
 
-    lean_code = "import Mathlib\nopen Real\n\ntheorem foo : 1 = 1 := by\n  sorry"
+    lean_code = (
+        "import Mathlib\n\n"
+        "theorem marshallian_demand_good1 "
+        "(alpha m p1 q1 : ℝ) (h : q1 = alpha * m / p1) : q1 = alpha * m / p1 := by\n"
+        "  sorry\n"
+    )
     with patch.object(formalizer, "call_leanstral", return_value=lean_code):
         with patch.object(
             formalizer,
@@ -474,7 +493,8 @@ def test_formalize_without_preamble_names() -> None:
             },
         ):
             result = formalizer.formalize(
-                "For Cobb-Douglas preferences, Marshallian demand for good 1 is alpha * m / p1."
+                "For Cobb-Douglas preferences, Marshallian demand for good 1 is alpha * m / p1.",
+                use_cache=False,
             )
     assert result["success"] is True
     assert "marshallian_demand" in result["preamble_used"]

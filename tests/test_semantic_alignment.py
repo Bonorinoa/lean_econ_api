@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 import provider_telemetry
 import semantic_alignment
+
+
+@pytest.fixture(autouse=True)
+def _stub_semantic_alignment_client():
+    with patch.object(semantic_alignment, "get_client", return_value=object()):
+        yield
 
 
 def test_grade_semantic_alignment_success() -> None:
