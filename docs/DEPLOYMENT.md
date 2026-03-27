@@ -70,6 +70,10 @@ change can merge.
 ## Runtime notes
 
 - `MISTRAL_API_KEY` must be provided at runtime.
+- `LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH` now defaults to enabled in the
+  runtime formalizer path. Set it to `0` only when you deliberately want to
+  disable bounded MCP retrieval and fall back to curated hints plus local Lean
+  validation.
 - `LEANECON_STATE_DIR` defaults to `/app/state` inside the image.
 - The image does not bake a real `.env` file into the container.
 - The image exposes port `8000` and starts `uvicorn src.api:app` on

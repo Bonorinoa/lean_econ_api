@@ -55,6 +55,8 @@ def _make_verify_result() -> dict:
         "agent_summary": "Leanstral agentic prover: 1 API round-trips, 1 tactic applications.",
         "agent_elapsed_seconds": 0.1,
         "axiom_info": None,
+        "formalization_context": None,
+        "budget": None,
         "error_code": "none",
     }
 
@@ -448,6 +450,253 @@ def test_verify_uses_preformalized_theorem() -> None:
     assert data["result"]["success"] is True
     assert captured["raw_input"] == RAW_LEAN_THEOREM.strip()
     assert captured["preformalized_theorem"] == RAW_LEAN_THEOREM.strip()
+
+
+def test_verify_threads_formalization_context_and_budget_controls() -> None:
+    client = TestClient(api.app)
+    captured: dict[str, object] = {}
+    formalization_context = {
+        "schema_version": 1,
+        "selected_preambles": ["crra_utility"],
+    }
+    budget_overrides = {"append_round_cap": 5, "wall_clock_timeout_seconds": 45}
+
+    def fake_run_pipeline(**kwargs) -> dict:
+        captured.update(kwargs)
+        result = _make_verify_result()
+        result["formalization_context"] = kwargs["formalization_context"]
+        result["budget"] = {
+            "reasoning_preset": kwargs["reasoning_preset"],
+            "append_round_cap": kwargs["budget_overrides"]["append_round_cap"],
+        }
+        return result
+
+    with patch.object(api, "run_pipeline", side_effect=fake_run_pipeline):
+        response = client.post(
+            "/api/v1/verify",
+            json={
+                "theorem_code": RAW_LEAN_THEOREM,
+                "formalization_context": formalization_context,
+                "reasoning_preset": "high",
+                "budget_overrides": budget_overrides,
+            },
+        )
+
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    for _ in range(20):
+        status_resp = client.get(f"/api/v1/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        data = status_resp.json()
+        if data["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+
+    assert data["status"] == "completed"
+    assert captured["formalization_context"] == formalization_context
+    assert captured["reasoning_preset"] == "high"
+    assert captured["budget_overrides"] == budget_overrides
+    assert data["result"]["formalization_context"] == formalization_context
+    assert data["result"]["budget"]["reasoning_preset"] == "high"
+
+
+def test_verify_synthesizes_formalization_context_from_explicit_preambles() -> None:
+    client = TestClient(api.app)
+    captured: dict[str, object] = {}
+
+    def fake_run_pipeline(**kwargs) -> dict:
+        captured.update(kwargs)
+        result = _make_verify_result()
+        result["formalization_context"] = kwargs["formalization_context"]
+        return result
+
+    with patch.object(api, "run_pipeline", side_effect=fake_run_pipeline):
+        response = client.post(
+            "/api/v1/verify",
+            json={
+                "theorem_code": RAW_LEAN_THEOREM,
+                "preamble_names": ["crra_utility"],
+            },
+        )
+
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    for _ in range(20):
+        status_resp = client.get(f"/api/v1/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        data = status_resp.json()
+        if data["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+
+    assert captured["formalization_context"]["selected_preambles"] == ["crra_utility"]
+    assert captured["formalization_context"]["explicit_preambles"] == ["crra_utility"]
+    assert captured["formalization_context"]["selection_mode"] == "explicit"
+
+
+def test_verify_rejects_mismatched_preamble_names_and_formalization_context() -> None:
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/v1/verify",
+        json={
+            "theorem_code": RAW_LEAN_THEOREM,
+            "preamble_names": ["crra_utility"],
+            "formalization_context": {"selected_preambles": ["cara_utility"]},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "must exactly match" in response.json()["detail"]
+
+
+def test_verify_rejects_zero_budget_override() -> None:
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/v1/verify",
+        json={
+            "theorem_code": RAW_LEAN_THEOREM,
+            "budget_overrides": {"append_round_cap": 0},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "append_round_cap" in response.json()["detail"]
+
+
+def test_verify_rejects_nonnumeric_budget_override() -> None:
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/v1/verify",
+        json={
+            "theorem_code": RAW_LEAN_THEOREM,
+            "budget_overrides": {"append_round_cap": "abc"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "append_round_cap" in response.json()["detail"]
+
+
+def test_verify_rejects_unknown_budget_override_key() -> None:
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/v1/verify",
+        json={
+            "theorem_code": RAW_LEAN_THEOREM,
+            "budget_overrides": {"unknown_budget": 1},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Unsupported budget_overrides field" in response.json()["detail"]
+
+
+def test_verify_rejects_unknown_preambles_in_formalization_context() -> None:
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/v1/verify",
+        json={
+            "theorem_code": RAW_LEAN_THEOREM,
+            "formalization_context": {"selected_preambles": ["not_a_real_preamble"]},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Unknown preamble_names" in response.json()["detail"]
+
+
+def test_verify_preserves_runtime_search_plan_and_retrieval_when_merging_explicit_preambles(
+) -> None:
+    client = TestClient(api.app)
+    captured: dict[str, object] = {}
+    formalization_context = {
+        "selected_preambles": ["crra_utility"],
+        "explicit_preambles": ["crra_utility"],
+        "runtime_search_plan": [
+            {
+                "tool": "lean_local_search",
+                "query": "crra_utility",
+                "reason": "Verify the exact declaration name.",
+            }
+        ],
+        "retrieval": {
+            "mcp_requested": True,
+            "mcp_enabled": True,
+            "mcp_skip_reason": None,
+            "mcp_hits": [
+                {
+                    "source": "lean_local_search",
+                    "query": "crra_utility",
+                    "text": "crra_utility : ...",
+                }
+            ],
+        },
+        "retrieval_notes": ["Prefer the CRRA utility preamble."],
+        "candidate_identifiers": ["crra_utility"],
+    }
+
+    def fake_run_pipeline(**kwargs) -> dict:
+        captured.update(kwargs)
+        result = _make_verify_result()
+        result["formalization_context"] = kwargs["formalization_context"]
+        return result
+
+    with patch.object(api, "run_pipeline", side_effect=fake_run_pipeline):
+        response = client.post(
+            "/api/v1/verify",
+            json={
+                "theorem_code": RAW_LEAN_THEOREM,
+                "preamble_names": ["crra_utility"],
+                "formalization_context": formalization_context,
+            },
+        )
+
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+    for _ in range(20):
+        status_resp = client.get(f"/api/v1/jobs/{job_id}")
+        assert status_resp.status_code == 200
+        data = status_resp.json()
+        if data["status"] in ("completed", "failed"):
+            break
+        time.sleep(0.1)
+
+    assert captured["formalization_context"]["selected_preambles"] == ["crra_utility"]
+    assert (
+        captured["formalization_context"]["runtime_search_plan"]
+        == formalization_context["runtime_search_plan"]
+    )
+    assert (
+        captured["formalization_context"]["retrieval"]["mcp_requested"]
+        == formalization_context["retrieval"]["mcp_requested"]
+    )
+    assert (
+        captured["formalization_context"]["retrieval"]["mcp_enabled"]
+        == formalization_context["retrieval"]["mcp_enabled"]
+    )
+    assert (
+        captured["formalization_context"]["retrieval"]["mcp_skip_reason"]
+        == formalization_context["retrieval"]["mcp_skip_reason"]
+    )
+    assert (
+        captured["formalization_context"]["retrieval"]["mcp_hits"]
+        == formalization_context["retrieval"]["mcp_hits"]
+    )
+    assert captured["formalization_context"]["retrieval"]["source_counts"]["preamble"] == 1
+    assert (
+        captured["formalization_context"]["retrieval_notes"]
+        == formalization_context["retrieval_notes"]
+    )
+    assert (
+        captured["formalization_context"]["candidate_identifiers"]
+        == formalization_context["candidate_identifiers"]
+    )
 
 
 def test_job_status_queued_or_running() -> None:
@@ -938,6 +1187,7 @@ def test_classify_definable_with_preamble() -> None:
     assert body["category"] == "DEFINABLE"
     assert body["formalizable"] is True
     assert "cobb_douglas_2factor" in body["preamble_matches"]
+    assert body["auto_preamble_matches"] == []
     assert body["suggested_reformulation"] is not None
     assert body["error_code"] == "none"
 
@@ -974,6 +1224,53 @@ def test_formalize_with_preamble_names() -> None:
     body = response.json()
     assert body["preamble_used"] == ["cobb_douglas_2factor"]
     assert captured["preamble_names"] == ["cobb_douglas_2factor"]
+
+
+def test_formalize_rejects_unknown_preamble_names() -> None:
+    client = TestClient(api.app)
+
+    response = client.post(
+        "/api/v1/formalize",
+        json={
+            "raw_claim": "Cobb-Douglas output elasticity equals alpha.",
+            "preamble_names": ["not_a_real_preamble"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "Unknown preamble_names" in response.json()["detail"]
+
+
+def test_formalize_returns_formalization_context_when_available() -> None:
+    client = TestClient(api.app)
+    formalization_context = {
+        "schema_version": 1,
+        "selected_preambles": ["crra_utility"],
+        "candidate_imports": ["LeanEcon.Preamble.Consumer.CRRAUtility"],
+    }
+
+    with patch.object(
+        api,
+        "formalize_claim",
+        return_value={
+            "success": True,
+            "theorem_code": RAW_LEAN_THEOREM.strip(),
+            "attempts": 1,
+            "errors": [],
+            "formalization_failed": False,
+            "failure_reason": None,
+            "preamble_used": ["crra_utility"],
+            "diagnosis": None,
+            "suggested_fix": None,
+            "fixable": None,
+            "formalization_context": formalization_context,
+        },
+    ):
+        response = client.post("/api/v1/formalize", json={"raw_claim": "foo"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["formalization_context"] == formalization_context
 
 
 def test_formalize_failure_with_diagnosis() -> None:

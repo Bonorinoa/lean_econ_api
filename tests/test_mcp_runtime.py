@@ -154,3 +154,32 @@ def test_prime_lean_mcp_session_uses_mcp_smoke_file() -> None:
             },
         )
     ]
+
+
+def test_bootstrap_formalization_validation_session_runs_project_queries() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _BootstrapSession:
+        async def call_tool(self, name: str, arguments: dict[str, object]):
+            calls.append((name, arguments))
+            return SimpleNamespace(isError=False, content=[{"text": "{}"}])
+
+    asyncio.run(mcp_runtime.bootstrap_formalization_validation_session(_BootstrapSession()))
+
+    assert calls == [
+        (
+            "lean_file_outline",
+            {
+                "file_path": "LeanEcon/McpSmoke.lean",
+                "max_declarations": "1",
+            },
+        ),
+        (
+            "lean_diagnostic_messages",
+            {"file_path": "LeanEcon/McpSmoke.lean"},
+        ),
+        (
+            "lean_goal",
+            {"file_path": "LeanEcon/McpSmoke.lean", "line": 4},
+        ),
+    ]

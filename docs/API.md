@@ -10,8 +10,8 @@ billing, do not imply stable provider pricing or a stably free Leanstral tier,
 and `/api/v1/lean_compile` remains local-only.
 
 This guide is the operational source of truth. For the architecture and trust
-model, see [`docs/TECHNICAL_WHITEPAPER.md`](./TECHNICAL_WHITEPAPER.md). For the
-project landing page, see [`README.md`](../README.md).
+model, see [`docs/leanstral_architecture.html`](./leanstral_architecture.html).
+For the project landing page, see [`README.md`](../README.md).
 
 OpenAPI schema: `/openapi.json`
 
@@ -87,6 +87,8 @@ Important response fields:
 - `error_code`: machine-readable classifier outcome
 - `definitions_needed`: supporting detail for `DEFINABLE` claims
 - `preamble_matches`: reusable LeanEcon preamble modules
+- `auto_preamble_matches`: the bounded preamble set the backend would
+  auto-select if you do not choose explicit preambles at formalize time
 - `suggested_reformulation`: optional rewrite hint
 
 Behavior notes:
@@ -126,6 +128,13 @@ Important request fields:
 - `raw_claim`: plain text, LaTeX, or raw Lean 4 input
 - `preamble_names`: optional explicit preamble module names
 
+Preamble policy:
+
+- explicit `preamble_names` are authoritative and exact
+- unknown preamble names now return HTTP `422` instead of being silently dropped
+- when `preamble_names` is empty, the formalizer may still add bounded auto-selected
+  preambles using retrieval and curated hints
+
 Integration note:
 
 - clients handing off preamble-backed theorem-library examples into
@@ -146,6 +155,9 @@ Important response fields:
 - `diagnosis`: failure analysis when repair attempts are exhausted
 - `suggested_fix`: concrete suggestion for fixing the formalization
 - `fixable`: whether a human edit is likely to help
+- `formalization_context`: structured handoff metadata for downstream `/verify`
+  calls, including selected preambles, candidate imports, identifiers, runtime
+  search directives, retrieval notes, MCP hits, and validation metadata
 
 Behavior notes:
 
@@ -155,8 +167,10 @@ Behavior notes:
   preambles using bounded retrieval
 - compile failures are bucketed into import/module, identifier, typeclass,
   syntax, or semantic classes before targeted repair
-- MCP-backed search is opportunistic only; when unavailable, the formalizer
-  falls back to curated hints plus local Lean compilation
+- the runtime formalize path now enables bounded MCP retrieval by default and
+  folds the results into `formalization_context.runtime_search_plan`
+- MCP-backed search stays health-gated; when unavailable, the formalizer falls
+  back to curated hints plus local Lean compilation
 - `provider_telemetry`, when present, is observability metadata for the
   formalizer call set rather than a public pricing commitment
 
@@ -210,7 +224,17 @@ Request:
 ```json
 {
   "theorem_code": "import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry",
-  "explain": false
+  "explain": false,
+  "preamble_names": ["crra_utility"],
+  "formalization_context": {
+    "schema_version": 1,
+    "selected_preambles": ["crra_utility"]
+  },
+  "reasoning_preset": "medium",
+  "budget_overrides": {
+    "wall_clock_timeout_seconds": 180,
+    "append_round_cap": 24
+  }
 }
 ```
 
@@ -221,6 +245,15 @@ Important request rules:
 - `explain=true` asks LeanEcon to include an explanation in the final job result
 - for the fastest user-facing flow, keep `explain=false` and call
   `/api/v1/explain` after the job completes
+- `formalization_context` is optional but recommended when `/formalize` and
+  `/verify` are decoupled across client steps
+- when `formalization_context` is present, preserve it unchanged so the prover
+  receives the formalizer's runtime search plan and retrieval hits
+- explicit `preamble_names`, when provided to `verify`, are authoritative and
+  must exactly match `formalization_context.selected_preambles` if both are sent
+- `reasoning_preset` may be `normal`, `medium`, or `high`
+- `budget_overrides` exposes experimental low-level controls such as wall-clock,
+  per-request timeout, append-round, and tool-budget caps
 
 Queue response:
 
@@ -285,6 +318,10 @@ Important fields inside `result`:
   proving calls when usage payloads were available
 - `explanation_telemetry`: separate observability metadata for the optional
   explanation call
+- `formalization_context`: the structured formalizer handoff metadata actually
+  used for the verify run, including retrieval hints and runtime search plan
+- `budget`: resolved proving-budget settings plus compact usage telemetry such as
+  append rounds used, tool calls used, stop reason, and timeout scope
 
 `axiom_info` is best-effort. Cache hits, local fast-path successes, or timed-out
 MCP axiom checks may leave it as `null` even when verification succeeds. When

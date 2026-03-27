@@ -65,7 +65,7 @@ pricing promise.
 ## Canonical Docs
 
 - [`docs/API.md`](docs/API.md): operational canonical API guide
-- [`docs/TECHNICAL_WHITEPAPER.md`](docs/TECHNICAL_WHITEPAPER.md): architecture and trust model
+- [`docs/leanstral_architecture.html`](docs/leanstral_architecture.html): architecture and trust model
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): local Docker and deployment notes
 - [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): archived background note
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): lightweight contributor guidance

@@ -8,11 +8,13 @@ files from disk when prompt context or import statements are needed.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LEAN_WORKSPACE = PROJECT_ROOT / "lean_workspace"
+DEFAULT_AUTO_PREAMBLE_LIMIT = int(os.environ.get("LEANECON_FORMALIZATION_AUTO_PREAMBLES", "2"))
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,29 @@ class PreambleEntry:
     @property
     def lean_path(self) -> Path:
         return LEAN_WORKSPACE / Path(*self.lean_module.split(".")).with_suffix(".lean")
+
+
+@dataclass(frozen=True)
+class PreambleSelectionPlan:
+    """Unified preamble-selection policy shared by classify/formalize/verify."""
+
+    explicit_preamble_names: tuple[str, ...]
+    advisory_entries: tuple[PreambleEntry, ...]
+    auto_entries: tuple[PreambleEntry, ...]
+    selected_entries: tuple[PreambleEntry, ...]
+    selection_mode: str
+
+    @property
+    def advisory_preamble_names(self) -> list[str]:
+        return [entry.name for entry in self.advisory_entries]
+
+    @property
+    def auto_preamble_names(self) -> list[str]:
+        return [entry.name for entry in self.auto_entries]
+
+    @property
+    def selected_preamble_names(self) -> list[str]:
+        return [entry.name for entry in self.selected_entries]
 
 
 PREAMBLE_LIBRARY: dict[str, PreambleEntry] = {}
@@ -502,6 +527,35 @@ def find_matching_preambles(claim_text: str) -> list[PreambleEntry]:
     return [entry for entry, _score in rank_matching_preambles(claim_text)]
 
 
+def select_preamble_plan(
+    claim_text: str,
+    *,
+    explicit_preamble_names: list[str] | None = None,
+    auto_limit: int = DEFAULT_AUTO_PREAMBLE_LIMIT,
+) -> PreambleSelectionPlan:
+    """Compute advisory, auto, and selected preambles under one shared policy."""
+    explicit_names = validate_preamble_names(list(explicit_preamble_names or []))
+    advisory_entries = tuple(entry for entry, _score in rank_matching_preambles(claim_text))
+    bounded_auto_limit = max(0, int(auto_limit))
+    auto_entries = tuple(
+        entry
+        for entry, _score in rank_matching_preambles(claim_text, auto=True)[:bounded_auto_limit]
+    )
+    selected_entries = (
+        tuple(get_preamble_entries(explicit_names))
+        if explicit_names
+        else auto_entries
+    )
+    selection_mode = "explicit" if explicit_names else ("auto" if selected_entries else "none")
+    return PreambleSelectionPlan(
+        explicit_preamble_names=tuple(explicit_names),
+        advisory_entries=advisory_entries,
+        auto_entries=auto_entries,
+        selected_entries=selected_entries,
+        selection_mode=selection_mode,
+    )
+
+
 def build_preamble_block(entries: list[PreambleEntry]) -> str:
     """Concatenate raw Lean source snippets for prompt-time preamble context."""
     if not entries:
@@ -529,6 +583,35 @@ def build_preamble_imports(entries: list[PreambleEntry]) -> list[str]:
         seen_modules.add(entry.lean_module)
         imports.append(f"import {entry.lean_module}")
     return imports
+
+
+def normalize_preamble_names(names: list[str]) -> list[str]:
+    """Trim and deduplicate preamble names while preserving order."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_name in names:
+        cleaned = raw_name.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        normalized.append(cleaned)
+    return normalized
+
+
+def unknown_preamble_names(names: list[str]) -> list[str]:
+    """Return any explicit preamble names that are not in the catalog."""
+    normalized = normalize_preamble_names(names)
+    return [name for name in normalized if name not in PREAMBLE_LIBRARY]
+
+
+def validate_preamble_names(names: list[str]) -> list[str]:
+    """Return normalized names or raise when an explicit preamble is unknown."""
+    normalized = normalize_preamble_names(names)
+    unknown = unknown_preamble_names(normalized)
+    if unknown:
+        joined = ", ".join(unknown)
+        raise ValueError(f"Unknown preamble_names: {joined}")
+    return normalized
 
 
 def get_preamble_entries(names: list[str]) -> list[PreambleEntry]:

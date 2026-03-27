@@ -20,11 +20,11 @@ from typing import Any, TypeVar
 from lean_diagnostics import extract_json_object, extract_mcp_text, normalize_structured_diagnostics
 from mcp_runtime import (
     FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+    bootstrap_formalization_validation_session,
     formalization_mcp_available,
     mark_formalization_mcp_failure,
     mark_formalization_mcp_success,
     open_lean_mcp_session,
-    prime_lean_mcp_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +33,11 @@ MCP_TOOL_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_TOOL_TIMEOUT_SECON
 
 # Axioms that are standard in Mathlib-based proofs
 STANDARD_AXIOMS = frozenset({"propext", "Classical.choice", "Quot.sound"})
+
+
+def _is_missing_project_path_error(message: str) -> bool:
+    """Detect the common lean_run_code bootstrap failure."""
+    return "no valid lean project path found" in message.lower()
 
 
 def _run_sync(factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
@@ -93,35 +98,53 @@ async def _run_code_async(lean_code: str) -> dict[str, Any]:
     if not allowed:
         raise RuntimeError(reason or "formalization MCP temporarily disabled")
 
-    async with open_lean_mcp_session() as session:
-        try:
-            await prime_lean_mcp_session(session)
-            result = await asyncio.wait_for(
-                session.call_tool("lean_run_code", {"code": lean_code}),
-                timeout=MCP_TOOL_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError as exc:
-            mark_formalization_mcp_failure(
-                f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s",
-                capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
-            )
-            raise RuntimeError(
-                f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
-            ) from exc
-        except RuntimeError as exc:
-            mark_formalization_mcp_failure(
-                str(exc) or "lean_run_code primer failed",
-                capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
-            )
-            raise
+    async def _run_once(*, retrying_after_project_path: bool = False) -> Any:
+        async with open_lean_mcp_session() as session:
+            try:
+                await bootstrap_formalization_validation_session(session)
+                return await asyncio.wait_for(
+                    session.call_tool("lean_run_code", {"code": lean_code}),
+                    timeout=MCP_TOOL_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError as exc:
+                suffix = " on retry" if retrying_after_project_path else ""
+                raise RuntimeError(
+                    f"lean_run_code timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s{suffix}"
+                ) from exc
+
+    try:
+        result = await _run_once()
+    except RuntimeError as exc:
+        mark_formalization_mcp_failure(
+            str(exc) or "lean_run_code validation bootstrap failed",
+            capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+        )
+        raise
 
     if getattr(result, "isError", False):
         raw_error = extract_mcp_text(result)
-        mark_formalization_mcp_failure(
-            raw_error or "lean_run_code MCP error",
-            capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
-        )
-        raise RuntimeError(f"lean_run_code MCP error: {raw_error or result}")
+        if raw_error and _is_missing_project_path_error(raw_error):
+            try:
+                retry_result = await _run_once(retrying_after_project_path=True)
+            except RuntimeError as exc:
+                mark_formalization_mcp_failure(
+                    str(exc) or "lean_run_code validation retry failed",
+                    capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+                )
+                raise RuntimeError(
+                    f"lean_run_code retry failed after validation bootstrap: {exc}"
+                ) from exc
+            if not getattr(retry_result, "isError", False):
+                result = retry_result
+            else:
+                raw_error = extract_mcp_text(retry_result)
+
+        if getattr(result, "isError", False):
+            mark_formalization_mcp_failure(
+                raw_error or "lean_run_code MCP error",
+                capability=FORMALIZATION_MCP_CAPABILITY_VALIDATION,
+            )
+            raise RuntimeError(f"lean_run_code MCP error: {raw_error or result}")
 
     raw_text = extract_mcp_text(result)
     data = extract_json_object(raw_text) or {}

@@ -55,6 +55,7 @@ FORMALIZATION_MCP_COOLDOWN_SECONDS = float(
     os.environ.get("LEANECON_FORMALIZATION_MCP_COOLDOWN_SECONDS", "120")
 )
 FORMALIZATION_MCP_PRIMER_FILE = LEAN_WORKSPACE / "LeanEcon" / "McpSmoke.lean"
+FORMALIZATION_MCP_PRIMER_GOAL_LINE = 4
 _FORMALIZATION_MCP_DISABLED_UNTIL = {
     capability: 0.0 for capability in FORMALIZATION_MCP_CAPABILITIES
 }
@@ -196,6 +197,37 @@ async def prime_lean_mcp_session(session: ClientSession) -> None:
     if getattr(result, "isError", False):
         raise RuntimeError(
             f"Lean MCP session primer failed: {extract_mcp_text(result) or result}"
+        )
+
+
+async def bootstrap_formalization_validation_session(session: ClientSession) -> None:
+    """Run extra project-aware MCP queries before validation-oriented tools."""
+    file_path = lean_workspace_relative_path(FORMALIZATION_MCP_PRIMER_FILE)
+    await prime_lean_mcp_session(session)
+
+    diagnostics = await asyncio.wait_for(
+        session.call_tool(
+            "lean_diagnostic_messages",
+            {"file_path": file_path},
+        ),
+        timeout=MCP_TOOL_TIMEOUT_SECONDS,
+    )
+    if getattr(diagnostics, "isError", False):
+        raise RuntimeError(
+            "Lean MCP validation bootstrap failed during diagnostics: "
+            f"{extract_mcp_text(diagnostics) or diagnostics}"
+        )
+
+    goal = await asyncio.wait_for(
+        session.call_tool(
+            "lean_goal",
+            {"file_path": file_path, "line": FORMALIZATION_MCP_PRIMER_GOAL_LINE},
+        ),
+        timeout=MCP_TOOL_TIMEOUT_SECONDS,
+    )
+    if getattr(goal, "isError", False):
+        raise RuntimeError(
+            f"Lean MCP validation bootstrap failed during goal query: {extract_mcp_text(goal) or goal}"
         )
 
 

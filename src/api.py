@@ -38,15 +38,21 @@ from pydantic import BaseModel, ConfigDict, Field
 # app is launched via `uvicorn src.api:app`.
 sys.path.insert(0, str(Path(__file__).parent))
 
+from agentic_prover import resolve_budget_config
 from benchmark_harness import latest_snapshot_summary
 from error_codes import LeanEconErrorCode
 from eval_logger import LOG_FILE
 from explainer import explain_result
+from formalization_search import (
+    merge_explicit_preamble_artifact,
+    normalize_formalization_context_preambles,
+)
 from formalizer import classify_claim
 from job_store import JobStatus, job_store
 from lean_verifier import LEAN_SOURCE_DIR, VERIFICATION_FILE_PREFIX, compile_lean_code
 from outcome_codes import formalize_error_code, verify_error_code
 from pipeline import formalize_claim, parse_claim, run_pipeline
+from preamble_library import validate_preamble_names
 from result_cache import result_cache
 
 logger = logging.getLogger(__name__)
@@ -183,6 +189,8 @@ class VerifyRequest(BaseModel):
             "example": {
                 "theorem_code": SAMPLE_RAW_LEAN_THEOREM,
                 "explain": False,
+                "preamble_names": ["crra_utility"],
+                "reasoning_preset": "medium",
             }
         }
     )
@@ -194,6 +202,33 @@ class VerifyRequest(BaseModel):
     explain: bool = Field(
         default=False,
         description="Include a natural language explanation in the job result.",
+    )
+    preamble_names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional explicit preamble names to preserve user intent when verify is "
+            "decoupled from formalize."
+        ),
+    )
+    formalization_context: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional structured handoff metadata returned by `/api/v1/formalize`. "
+            "Pass this through unchanged when verify is decoupled from formalize."
+        ),
+    )
+    reasoning_preset: Literal["normal", "medium", "high"] | None = Field(
+        default=None,
+        description=(
+            "Optional proving preset. When omitted, LeanEcon uses its backend default."
+        ),
+    )
+    budget_overrides: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional low-level proving-budget overrides such as wall-clock timeout, "
+            "append-round cap, or tool-call budgets."
+        ),
     )
 
 
@@ -269,6 +304,7 @@ class ClassifyResponse(BaseModel):
                 "error_code": "none",
                 "definitions_needed": None,
                 "preamble_matches": [],
+                "auto_preamble_matches": [],
                 "suggested_reformulation": None,
             }
         }
@@ -297,6 +333,13 @@ class ClassifyResponse(BaseModel):
     preamble_matches: list[str] = Field(
         default_factory=list,
         description="Preamble library entries matching the claim.",
+    )
+    auto_preamble_matches: list[str] = Field(
+        default_factory=list,
+        description=(
+            "The bounded preamble set the backend would auto-select if no explicit "
+            "preambles are provided to formalize."
+        ),
     )
     suggested_reformulation: str | None = Field(
         default=None,
@@ -391,6 +434,12 @@ class FormalizeResponse(BaseModel):
     provider_telemetry: dict[str, Any] | None = Field(
         default=None,
         description="Optional provider usage telemetry for the formalizer call(s).",
+    )
+    formalization_context: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Structured formalizer handoff metadata for downstream verify calls and UI clients."
+        ),
     )
 
 
@@ -499,6 +548,16 @@ class VerifyResponse(BaseModel):
     explanation_telemetry: dict[str, Any] | None = Field(
         default=None,
         description="Optional provider usage telemetry for the explanation step.",
+    )
+    formalization_context: dict[str, Any] | None = Field(
+        default=None,
+        description="Structured formalizer handoff metadata used for this verify run.",
+    )
+    budget: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Resolved proving-budget settings and compact usage telemetry for this run."
+        ),
     )
 
 
@@ -678,6 +737,37 @@ def _format_sse_event(event: dict[str, Any]) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
+def _resolve_verify_formalization_context(
+    *,
+    formalization_context: dict[str, Any] | None,
+    preamble_names: list[str],
+) -> dict[str, Any] | None:
+    """Preserve explicit preamble intent across split formalize/verify flows."""
+    normalized_context = normalize_formalization_context_preambles(formalization_context)
+    validated = validate_preamble_names(preamble_names)
+    if not validated:
+        return normalized_context
+    return merge_explicit_preamble_artifact(
+        normalized_context,
+        explicit_preamble_names=validated,
+        source="verify_request",
+    )
+
+
+def _resolve_verify_budget_overrides(
+    *,
+    reasoning_preset: str | None,
+    budget_overrides: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Validate and normalize prove-budget inputs before queueing a verify job."""
+    resolved = resolve_budget_config(
+        reasoning_preset=reasoning_preset,
+        budget_overrides=budget_overrides,
+    )
+    normalized_overrides = dict(resolved.overrides_applied)
+    return normalized_overrides or None
+
+
 def _empty_metrics() -> MetricsResponse:
     """Return a zeroed metrics payload."""
     return MetricsResponse(
@@ -698,7 +788,14 @@ def _empty_metrics() -> MetricsResponse:
 # ---------------------------------------------------------------------------
 
 
-def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
+def _run_verify_job(
+    job_id: str,
+    theorem_code: str,
+    explain: bool,
+    formalization_context: dict[str, Any] | None = None,
+    reasoning_preset: str | None = None,
+    budget_overrides: dict[str, Any] | None = None,
+) -> None:
     """Background task that runs the full pipeline and stores the result."""
     job_store.update_status(job_id, JobStatus.RUNNING)
 
@@ -719,11 +816,19 @@ def _run_verify_job(job_id: str, theorem_code: str, explain: bool) -> None:
         )
 
     try:
-        result = run_pipeline(
-            raw_input=theorem_code,
-            preformalized_theorem=theorem_code,
-            on_log=on_log,
-        )
+        pipeline_kwargs: dict[str, Any] = {
+            "raw_input": theorem_code,
+            "preformalized_theorem": theorem_code,
+            "on_log": on_log,
+        }
+        if formalization_context is not None:
+            pipeline_kwargs["formalization_context"] = formalization_context
+        if reasoning_preset is not None:
+            pipeline_kwargs["reasoning_preset"] = reasoning_preset
+        if budget_overrides is not None:
+            pipeline_kwargs["budget_overrides"] = budget_overrides
+
+        result = run_pipeline(**pipeline_kwargs)
         error_code = verify_error_code(result)
         response_data: dict[str, Any] = {
             "error_code": error_code,
@@ -820,6 +925,7 @@ def classify_endpoint(request: ClaimRequest) -> ClassifyResponse:
             else LeanEconErrorCode.NONE,
             definitions_needed=classification.get("definitions_needed"),
             preamble_matches=classification.get("preamble_matches", []),
+            auto_preamble_matches=classification.get("auto_preamble_matches", []),
             suggested_reformulation=classification.get("suggested_reformulation"),
             provider_telemetry=classification.get("provider_telemetry"),
         )
@@ -849,13 +955,15 @@ def formalize_endpoint(request: FormalizeRequest) -> FormalizeResponse:
     raw_claim = _require_non_empty(request.raw_claim, "raw_claim")
 
     try:
-        preamble_names = request.preamble_names or None
+        preamble_names = validate_preamble_names(request.preamble_names) or None
         result = formalize_claim(raw_claim, preamble_names=preamble_names)
         error_code = formalize_error_code(result)
         provider_telemetry = result.get("formalizer_telemetry", {}).get("provider_telemetry")
         return FormalizeResponse(
             error_code=error_code, provider_telemetry=provider_telemetry, **result
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -935,9 +1043,38 @@ def verify_endpoint(
                 "`:= by sorry` proof stub."
             ),
         )
+    try:
+        validated_preambles = validate_preamble_names(request.preamble_names)
+        resolved_formalization_context = _resolve_verify_formalization_context(
+            formalization_context=request.formalization_context,
+            preamble_names=validated_preambles,
+        )
+        normalized_budget_overrides = _resolve_verify_budget_overrides(
+            reasoning_preset=request.reasoning_preset,
+            budget_overrides=request.budget_overrides,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    job_id = job_store.create({"theorem_code": theorem_code, "explain": request.explain})
-    background_tasks.add_task(_run_verify_job, job_id, theorem_code, request.explain)
+    job_id = job_store.create(
+        {
+            "theorem_code": theorem_code,
+            "explain": request.explain,
+            "preamble_names": validated_preambles,
+            "formalization_context": resolved_formalization_context,
+            "reasoning_preset": request.reasoning_preset,
+            "budget_overrides": normalized_budget_overrides,
+        }
+    )
+    background_tasks.add_task(
+        _run_verify_job,
+        job_id,
+        theorem_code,
+        request.explain,
+        resolved_formalization_context,
+        request.reasoning_preset,
+        normalized_budget_overrides,
+    )
     return VerifyAcceptedResponse(job_id=job_id, status="queued")
 
 

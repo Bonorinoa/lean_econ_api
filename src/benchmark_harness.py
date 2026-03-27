@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+from formalization_search import merge_explicit_preamble_artifact
 from outcome_codes import formalize_error_code, verify_error_code
 from pipeline import formalize_claim, run_pipeline
+from preamble_library import validate_preamble_names
 from provider_telemetry import collect_provider_calls, summarize_provider_calls
 from semantic_alignment import grade_semantic_alignment
 
@@ -202,6 +204,12 @@ def load_benchmark_cases(path: Path) -> list[BenchmarkCase]:
             not isinstance(item, str) for item in preamble_names_raw
         ):
             raise ValueError(f"Line {line_number} has invalid `preamble_names`.")
+        try:
+            preamble_names = validate_preamble_names(
+                [item.strip() for item in preamble_names_raw if item.strip()]
+            )
+        except ValueError as exc:
+            raise ValueError(f"Line {line_number} {exc}") from exc
 
         provenance_raw = payload.get("provenance") or {}
         if not isinstance(provenance_raw, dict):
@@ -219,7 +227,7 @@ def load_benchmark_cases(path: Path) -> list[BenchmarkCase]:
                 theorem_stub=theorem_stub,
                 raw_lean=raw_lean,
                 expected_category=_normalized_optional_text(payload.get("expected_category")),
-                preamble_names=[item.strip() for item in preamble_names_raw if item.strip()],
+                preamble_names=preamble_names,
                 provenance=provenance_raw,
                 metadata=metadata,
             )
@@ -309,6 +317,7 @@ def _lane_attempt_summary(
     formalizer_telemetry: dict[str, Any] | None = None,
     semantic_alignment: dict[str, Any] | None = None,
     provider_telemetry: dict[str, Any] | None = None,
+    budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "success": success,
@@ -330,6 +339,7 @@ def _lane_attempt_summary(
         "formalizer_telemetry": dict(formalizer_telemetry or {}),
         "semantic_alignment": dict(semantic_alignment or {}),
         "provider_telemetry": dict(provider_telemetry or {}),
+        "budget": dict(budget or {}),
     }
 
 
@@ -484,12 +494,22 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
         theorem_code=formalization.get("theorem_code"),
         provider_calls_out=semantic_calls,
     )
-    verify_result = run_pipeline(
-        raw_input=case.raw_claim,
-        preformalized_theorem=str(formalization["theorem_code"]),
-        on_log=on_log,
-        use_cache=use_cache,
-    )
+    verify_kwargs: dict[str, Any] = {
+        "raw_input": case.raw_claim,
+        "preformalized_theorem": str(formalization["theorem_code"]),
+        "on_log": on_log,
+        "use_cache": use_cache,
+    }
+    formalization_context = formalization.get("formalization_context")
+    if case.preamble_names:
+        formalization_context = merge_explicit_preamble_artifact(
+            formalization_context,
+            explicit_preamble_names=case.preamble_names,
+            source="benchmark_raw_claim_full_api",
+        )
+    if formalization_context is not None:
+        verify_kwargs["formalization_context"] = formalization_context
+    verify_result = run_pipeline(**verify_kwargs)
     latency_ms = (time.perf_counter() - start) * 1000
     success = bool(verify_result.get("success"))
     provider_telemetry = _summarize_provider_telemetry(
@@ -531,6 +551,7 @@ def _run_raw_claim_full_api_attempt(case: BenchmarkCase, *, use_cache: bool) -> 
         formalizer_telemetry=formalization.get("formalizer_telemetry"),
         semantic_alignment=semantic_alignment,
         provider_telemetry=provider_telemetry,
+        budget=verify_result.get("budget"),
     )
 
 
@@ -544,12 +565,19 @@ def _run_theorem_stub_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[s
         events.append(dict(entry))
 
     start = time.perf_counter()
-    result = run_pipeline(
-        raw_input=case.raw_claim or case.theorem_stub,
-        preformalized_theorem=case.theorem_stub,
-        on_log=on_log,
-        use_cache=use_cache,
-    )
+    verify_kwargs: dict[str, Any] = {
+        "raw_input": case.raw_claim or case.theorem_stub,
+        "preformalized_theorem": case.theorem_stub,
+        "on_log": on_log,
+        "use_cache": use_cache,
+    }
+    if case.preamble_names:
+        verify_kwargs["formalization_context"] = merge_explicit_preamble_artifact(
+            None,
+            explicit_preamble_names=case.preamble_names,
+            source="benchmark_theorem_stub_verify",
+        )
+    result = run_pipeline(**verify_kwargs)
     latency_ms = (time.perf_counter() - start) * 1000
     success = bool(result.get("success"))
     provider_telemetry = _summarize_provider_telemetry(
@@ -567,12 +595,13 @@ def _run_theorem_stub_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[s
         proof_generated=result.get("proof_generated"),
         formalization_success=True,
         formalization_attempts=0,
-        preamble_used=[],
+        preamble_used=case.preamble_names,
         errors=_normalize_messages(result.get("errors")),
         warnings=_normalize_messages(result.get("warnings")),
         formalizer_telemetry=None,
         semantic_alignment=None,
         provider_telemetry=provider_telemetry,
+        budget=result.get("budget"),
     )
 
 
@@ -619,6 +648,7 @@ def _run_raw_lean_attempt(case: BenchmarkCase, *, use_cache: bool) -> dict[str, 
         formalizer_telemetry=None,
         semantic_alignment=None,
         provider_telemetry=provider_telemetry,
+        budget=result.get("budget"),
     )
 
 
@@ -706,6 +736,42 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         for source, count in source_counts.items():
             if count:
                 retrieval_source_counts[str(source)] += int(count)
+    reasoning_preset_counts = Counter(
+        str(budget.get("reasoning_preset"))
+        for attempt in attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("reasoning_preset")
+    )
+    timeout_scope_counts = Counter(
+        str(budget.get("timeout_scope"))
+        for attempt in attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("timeout_scope")
+    )
+    append_rounds_used = [
+        float(budget["append_rounds_used"])
+        for attempt in attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("append_rounds_used") is not None
+    ]
+    api_round_trips_used = [
+        float(budget["api_round_trips_used"])
+        for attempt in attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("api_round_trips_used") is not None
+    ]
+    tool_calls_used = [
+        float(budget["tool_calls_used"])
+        for attempt in attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("tool_calls_used") is not None
+    ]
+    search_tool_calls_used = [
+        float(budget["search_tool_calls_used"])
+        for attempt in attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("search_tool_calls_used") is not None
+    ]
     provider_telemetry = _summarize_provider_telemetry(attempts)
     return {
         "attempts_run": len(attempts),
@@ -726,6 +792,27 @@ def _summarize_attempts(attempts: list[dict[str, Any]]) -> dict[str, Any]:
         "validation_fallback_reason_counts": _ordered_counter(validation_fallback_reason_counts),
         "repair_bucket_counts": _ordered_counter(repair_bucket_counts),
         "retrieval_source_counts": _ordered_counter(retrieval_source_counts),
+        "budget_present_attempts": sum(1 for attempt in attempts if attempt.get("budget")),
+        "reasoning_preset_counts": _ordered_counter(reasoning_preset_counts),
+        "timeout_scope_counts": _ordered_counter(timeout_scope_counts),
+        "budget_usage": {
+            "append_rounds_used": {
+                "p50": _percentile(append_rounds_used, 0.50),
+                "p95": _percentile(append_rounds_used, 0.95),
+            },
+            "api_round_trips_used": {
+                "p50": _percentile(api_round_trips_used, 0.50),
+                "p95": _percentile(api_round_trips_used, 0.95),
+            },
+            "tool_calls_used": {
+                "p50": _percentile(tool_calls_used, 0.50),
+                "p95": _percentile(tool_calls_used, 0.95),
+            },
+            "search_tool_calls_used": {
+                "p50": _percentile(search_tool_calls_used, 0.50),
+                "p95": _percentile(search_tool_calls_used, 0.95),
+            },
+        },
         "cache_hits": sum(1 for attempt in attempts if attempt.get("from_cache")),
         "semantic_alignment": _semantic_alignment_summary(attempts),
         "provider_telemetry": provider_telemetry,
@@ -769,6 +856,15 @@ def _skipped_lane_record(reason: str) -> dict[str, Any]:
             "validation_fallback_reason_counts": {},
             "repair_bucket_counts": {},
             "retrieval_source_counts": {},
+            "budget_present_attempts": 0,
+            "reasoning_preset_counts": {},
+            "timeout_scope_counts": {},
+            "budget_usage": {
+                "append_rounds_used": {"p50": None, "p95": None},
+                "api_round_trips_used": {"p50": None, "p95": None},
+                "tool_calls_used": {"p50": None, "p95": None},
+                "search_tool_calls_used": {"p50": None, "p95": None},
+            },
             "cache_hits": 0,
             "semantic_alignment": _semantic_alignment_summary([]),
             "provider_telemetry": provider_telemetry,
@@ -857,6 +953,42 @@ def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, 
         for source, count in source_counts.items():
             if count:
                 retrieval_source_counts[str(source)] += int(count)
+    reasoning_preset_counts = Counter(
+        str(budget.get("reasoning_preset"))
+        for attempt in all_attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("reasoning_preset")
+    )
+    timeout_scope_counts = Counter(
+        str(budget.get("timeout_scope"))
+        for attempt in all_attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("timeout_scope")
+    )
+    append_rounds_used = [
+        float(budget["append_rounds_used"])
+        for attempt in all_attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("append_rounds_used") is not None
+    ]
+    api_round_trips_used = [
+        float(budget["api_round_trips_used"])
+        for attempt in all_attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("api_round_trips_used") is not None
+    ]
+    tool_calls_used = [
+        float(budget["tool_calls_used"])
+        for attempt in all_attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("tool_calls_used") is not None
+    ]
+    search_tool_calls_used = [
+        float(budget["search_tool_calls_used"])
+        for attempt in all_attempts
+        for budget in [attempt.get("budget") or {}]
+        if budget.get("search_tool_calls_used") is not None
+    ]
     latencies = [float(attempt["latency_ms"]) for attempt in all_attempts]
     pass_at_1_values = [record["summary"]["pass_at_1"] for record in applicable_records]
     pass_at_3_values = [record["summary"]["pass_at_3"] for record in applicable_records]
@@ -884,6 +1016,27 @@ def _aggregate_lane(case_records: list[dict[str, Any]], lane: str) -> dict[str, 
         "validation_fallback_reason_counts": _ordered_counter(validation_fallback_reason_counts),
         "repair_bucket_counts": _ordered_counter(repair_bucket_counts),
         "retrieval_source_counts": _ordered_counter(retrieval_source_counts),
+        "budget_present_attempts": sum(1 for attempt in all_attempts if attempt.get("budget")),
+        "reasoning_preset_counts": _ordered_counter(reasoning_preset_counts),
+        "timeout_scope_counts": _ordered_counter(timeout_scope_counts),
+        "budget_usage": {
+            "append_rounds_used": {
+                "p50": _percentile(append_rounds_used, 0.50),
+                "p95": _percentile(append_rounds_used, 0.95),
+            },
+            "api_round_trips_used": {
+                "p50": _percentile(api_round_trips_used, 0.50),
+                "p95": _percentile(api_round_trips_used, 0.95),
+            },
+            "tool_calls_used": {
+                "p50": _percentile(tool_calls_used, 0.50),
+                "p95": _percentile(tool_calls_used, 0.95),
+            },
+            "search_tool_calls_used": {
+                "p50": _percentile(search_tool_calls_used, 0.50),
+                "p95": _percentile(search_tool_calls_used, 0.95),
+            },
+        },
         "cache_hits": sum(1 for attempt in all_attempts if attempt.get("from_cache")),
         "semantic_alignment": _semantic_alignment_summary(all_attempts),
         "provider_telemetry": provider_telemetry,
@@ -1003,6 +1156,14 @@ def _format_latency(value: float | None) -> str:
     return f"{value:.1f}"
 
 
+def _format_count_metric(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:.1f}"
+
+
 def render_report(snapshot: dict[str, Any]) -> str:
     """Render a compact markdown report from a benchmark snapshot."""
     config = snapshot["config"]
@@ -1084,6 +1245,14 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"{lane_summary['validation_fallback_reason_counts'] or '(none)'}",
                 f"- Repair buckets: {lane_summary['repair_bucket_counts'] or '(none)'}",
                 f"- Retrieval sources: {lane_summary['retrieval_source_counts'] or '(none)'}",
+                f"- Reasoning presets: {lane_summary['reasoning_preset_counts'] or '(none)'}",
+                f"- Timeout scopes: {lane_summary['timeout_scope_counts'] or '(none)'}",
+                "- Budget usage (p95): "
+                f"append_rounds={_format_count_metric(lane_summary['budget_usage']['append_rounds_used']['p95'])}, "
+                f"api_round_trips={_format_count_metric(lane_summary['budget_usage']['api_round_trips_used']['p95'])}, "
+                f"tool_calls={_format_count_metric(lane_summary['budget_usage']['tool_calls_used']['p95'])}, "
+                "search_tool_calls="
+                f"{_format_count_metric(lane_summary['budget_usage']['search_tool_calls_used']['p95'])}",
                 f"- Semantic alignment: {lane_summary['semantic_alignment'] or '(none)'}",
             ]
         )
@@ -1124,6 +1293,8 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 "validation_fallbacks="
                 f"{lane_summary['validation_fallback_reason_counts'] or '(none)'}, "
                 f"repair_buckets={lane_summary['repair_bucket_counts'] or '(none)'}, "
+                f"reasoning_presets={lane_summary['reasoning_preset_counts'] or '(none)'}, "
+                f"timeout_scopes={lane_summary['timeout_scope_counts'] or '(none)'}, "
                 f"semantic_alignment={lane_summary['semantic_alignment'] or '(none)'}"
             )
         lines.append("")

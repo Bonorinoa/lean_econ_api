@@ -107,6 +107,7 @@ Determines whether a claim is in scope, whether it looks Mathlib-native, and whi
   "formalizable": true,
   "reason": "Uses CRRA utility which is defined in the preamble library",
   "preamble_matches": ["crra_utility"],
+  "auto_preamble_matches": ["crra_utility"],
   "suggested_reformulation": null,
   "definitions_needed": null,
   "error_code": "none"
@@ -124,6 +125,8 @@ Determines whether a claim is in scope, whether it looks Mathlib-native, and whi
 | `REQUIRES_DEFINITIONS` | `false` | Show rejection reason, suggest reformulation |
 
 Note: The classifier includes rescue logic. If the LLM says `REQUIRES_DEFINITIONS` but keyword matching finds preamble entries, it gets rescued to `DEFINABLE`. Likewise, if the LLM says `MATHLIB_NATIVE` but a bundled preamble match exists, it is upgraded to `DEFINABLE`.
+Use `preamble_matches` as the broader advisory set and `auto_preamble_matches`
+as the backend's bounded default if the user does not choose explicitly.
 
 ### POST /api/v1/formalize
 
@@ -182,12 +185,18 @@ Current implementation details:
 - If `preamble_names` is omitted, it may auto-select matching preamble modules.
 - Auto-preamble selection is now keyword-ranked and capped, which reduces noisy
   cross-domain imports on simple economics claims.
+- The runtime formalize path now turns bounded MCP retrieval on by default and
+  uses `lean_local_search` / `lean_loogle` as a first-class retrieval assistant
+  when the MCP path is healthy.
 - The theorem name is deterministically uniquified before validation so
   generated stubs do not collide with imported declarations.
 - Repair is compiler-bucketed: import/module, identifier, typeclass, syntax, or
   semantic mismatch.
-- MCP-backed retrieval is opportunistic only. If MCP is unhealthy, the
-  formalizer skips it and relies on curated hints plus local compilation.
+- The returned `formalization_context` now carries selected preambles,
+  candidate imports/identifiers, MCP hits, and a bounded
+  `runtime_search_plan` for downstream `/verify`.
+- If MCP is unhealthy, the formalizer skips runtime retrieval and relies on
+  curated hints plus local compilation.
 
 ### POST /api/v1/lean_compile
 
@@ -410,6 +419,12 @@ For theorem-library or Explore-to-Pipeline handoffs, preserve
 `preamble_names` alongside the claim text. Sending only the natural-language
 claim can silently drop crucial theorem context and reduce formalization
 reliability.
+
+Also preserve `formalization_context` from `/formalize` into `/verify`
+unchanged. That handoff now includes the formalizer's retrieval notes, MCP
+hits, and suggested runtime search queries for the prover. If you also send
+`preamble_names` to `/verify`, they must exactly match
+`formalization_context.selected_preambles`.
 
 ### Axiom soundness
 
@@ -769,9 +784,9 @@ For test suites, support batch submission:
   Tier 1 core now measures well, but frontier natural-language cases are still
   mixed.
 - **Formalization is now search-assisted but still bounded.** LeanEcon uses
-  preamble matching, curated import/identifier hints, and compiler-bucketed
-  repair before spending more model calls. This improves reliability, but it is
-  still not an open-ended proving loop.
+  preamble matching, curated import/identifier hints, bounded MCP retrieval,
+  and compiler-bucketed repair before spending more model calls. This improves
+  reliability, but it is still not an open-ended proving loop.
 - **Verification is stochastic.** The same claim may pass on one run and fail on the next. Offer retry buttons.
 - **Currently strongest on algebraic identities** (field arithmetic, ring algebra) and preamble-backed claims. Claims involving `Real.rpow` with variable exponents are brittle.
 - **Frontier outcomes are uneven.** Recent formalizer-only runs now clear

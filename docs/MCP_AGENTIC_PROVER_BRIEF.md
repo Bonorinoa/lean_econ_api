@@ -10,7 +10,7 @@ For the current workflow and endpoint contract, use:
 
 - [`README.md`](../README.md)
 - [`docs/API.md`](./API.md)
-- [`docs/TECHNICAL_WHITEPAPER.md`](./TECHNICAL_WHITEPAPER.md)
+- [`docs/leanstral_architecture.html`](./leanstral_architecture.html)
 
 ## Historical Context
 

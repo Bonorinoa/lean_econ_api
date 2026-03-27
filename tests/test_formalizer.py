@@ -37,6 +37,7 @@ from preamble_library import (
     find_matching_preambles,
     get_preamble_entries,
     read_preamble_source,
+    select_preamble_plan,
 )
 from prompts import build_classify_prompt
 from result_cache import FormalizationCache
@@ -57,6 +58,13 @@ def _isolated_formalization_cache(tmp_path: Path):
     cache = FormalizationCache(cache_file=tmp_path / "formalization_cache.json")
     with patch.object(formalizer, "formalization_cache", cache):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _disable_runtime_formalization_mcp_retrieval(monkeypatch) -> None:
+    import formalizer
+
+    monkeypatch.setattr(formalizer, "FORMALIZATION_RUNTIME_RETRIEVAL_ENABLED", False)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +156,16 @@ def test_get_preamble_entries_unknown() -> None:
     assert entries == []
 
 
+def test_select_preamble_plan_distinguishes_advisory_and_auto_matches() -> None:
+    plan = select_preamble_plan(
+        "Under CRRA utility, relative risk aversion is constant and equal to gamma."
+    )
+
+    assert "crra_utility" in plan.advisory_preamble_names
+    assert "crra_utility" in plan.auto_preamble_names
+    assert plan.selection_mode == "auto"
+
+
 def test_preamble_keyword_coverage() -> None:
     """Verify keyword matching for all major textbook concepts."""
     test_cases = [
@@ -228,6 +246,7 @@ def test_classify_definable_with_match() -> None:
         )
     assert result["category"] == "DEFINABLE"
     assert "cobb_douglas_2factor" in result["preamble_matches"]
+    assert "cobb_douglas_2factor" in result["auto_preamble_matches"]
     assert result["definitions_needed"] is not None
 
 
@@ -273,6 +292,7 @@ def test_classify_requires_definitions_rescued() -> None:
     assert result["category"] == "DEFINABLE", f"Expected DEFINABLE, got {result['category']}"
     assert len(result["preamble_matches"]) > 0, "Expected preamble matches from rescue"
     assert "extreme_value_theorem" in result["preamble_matches"]
+    assert "extreme_value_theorem" in result["auto_preamble_matches"]
 
 
 def test_classify_mathlib_native() -> None:
@@ -304,6 +324,7 @@ def test_classify_mathlib_native_rescued() -> None:
         )
     assert result["category"] == "DEFINABLE"
     assert "extreme_value_theorem" in result["preamble_matches"]
+    assert "extreme_value_theorem" in result["auto_preamble_matches"]
     assert result["mathlib_hint"] is None
 
 

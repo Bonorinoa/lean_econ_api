@@ -16,20 +16,31 @@ from mcp_runtime import (
     prime_lean_mcp_session,
 )
 from preamble_library import (
+    DEFAULT_AUTO_PREAMBLE_LIMIT,
     build_preamble_block,
     build_preamble_imports,
-    get_preamble_entries,
-    rank_matching_preambles,
+    normalize_preamble_names,
+    select_preamble_plan,
+    validate_preamble_names,
 )
 
 FORMALIZATION_MCP_SEARCH_ENABLED = os.environ.get(
-    "LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH", "0"
+    "LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
 FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS = float(
     os.environ.get("LEANECON_FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS", "5")
 )
 MAX_MCP_SEARCH_QUERIES = int(os.environ.get("LEANECON_FORMALIZATION_MCP_SEARCH_QUERIES", "2"))
-MAX_AUTO_PREAMBLES = int(os.environ.get("LEANECON_FORMALIZATION_AUTO_PREAMBLES", "2"))
+FORMALIZATION_RUNTIME_MCP_RETRIEVAL_ENABLED = os.environ.get(
+    "LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+MAX_AUTO_PREAMBLES = int(
+    os.environ.get("LEANECON_FORMALIZATION_AUTO_PREAMBLES", str(DEFAULT_AUTO_PREAMBLE_LIMIT))
+)
+FORMALIZATION_MCP_SEARCH_CACHE_LIMIT = int(
+    os.environ.get("LEANECON_FORMALIZATION_MCP_SEARCH_CACHE_LIMIT", "64")
+)
+_FORMALIZATION_MCP_SEARCH_CACHE: dict[tuple[str, ...], "CachedMcpSearchResult"] = {}
 
 
 @dataclass(frozen=True)
@@ -54,6 +65,23 @@ class SearchHit:
     text: str
 
 
+@dataclass(frozen=True)
+class CachedMcpSearchResult:
+    """Cached formalization MCP result that preserves skip semantics."""
+
+    hits: tuple[SearchHit, ...]
+    skip_reason: str | None
+
+
+@dataclass(frozen=True)
+class RuntimeSearchDirective:
+    """One structured search step suggested to the prover or runtime retrieval."""
+
+    tool: str
+    query: str
+    reason: str
+
+
 @dataclass
 class FormalizationContext:
     """Structured prompt context for theorem-stub generation."""
@@ -63,6 +91,8 @@ class FormalizationContext:
     explicit_preamble_names: list[str] = field(default_factory=list)
     auto_preamble_names: list[str] = field(default_factory=list)
     preamble_names: list[str] = field(default_factory=list)
+    advisory_preamble_names: list[str] = field(default_factory=list)
+    selection_mode: str = "none"
     preamble_block: str = ""
     preamble_imports: list[str] = field(default_factory=list)
     candidate_imports: list[str] = field(default_factory=list)
@@ -70,7 +100,9 @@ class FormalizationContext:
     search_terms: list[str] = field(default_factory=list)
     shape_guidance: list[str] = field(default_factory=list)
     retrieval_notes: list[str] = field(default_factory=list)
+    runtime_search_plan: list[RuntimeSearchDirective] = field(default_factory=list)
     mcp_hits: list[SearchHit] = field(default_factory=list)
+    mcp_requested: bool = False
     mcp_enabled: bool = False
     mcp_skip_reason: str | None = None
     source_counts: dict[str, int] = field(
@@ -83,7 +115,16 @@ class FormalizationContext:
         if self.claim_components:
             lines.append(f"- Claim components: {', '.join(self.claim_components)}")
         if self.preamble_names:
-            lines.append(f"- Matching preambles: {', '.join(self.preamble_names)}")
+            preamble_label = (
+                "Selected preambles"
+                if self.selection_mode == "explicit"
+                else "Auto-selected preambles"
+            )
+            lines.append(f"- {preamble_label}: {', '.join(self.preamble_names)}")
+        if self.advisory_preamble_names and self.advisory_preamble_names != self.preamble_names:
+            lines.append(
+                f"- Other advisory preambles: {', '.join(self.advisory_preamble_names[:8])}"
+            )
         if self.candidate_imports:
             lines.append(f"- Candidate imports: {', '.join(self.candidate_imports[:8])}")
         if self.candidate_identifiers:
@@ -94,6 +135,12 @@ class FormalizationContext:
             lines.append(f"- Theorem-shape guidance: {' | '.join(self.shape_guidance[:4])}")
         if self.retrieval_notes:
             lines.append(f"- Notes: {' | '.join(self.retrieval_notes[:4])}")
+        if self.runtime_search_plan:
+            rendered_plan = [
+                f"{directive.tool} `{directive.query}` ({directive.reason})"
+                for directive in self.runtime_search_plan[:3]
+            ]
+            lines.append(f"- Suggested runtime search: {' | '.join(rendered_plan)}")
         if self.mcp_hits:
             for hit in self.mcp_hits[:2]:
                 lines.append(f"- MCP {hit.source} query `{hit.query}`: {hit.text}")
@@ -107,6 +154,8 @@ class FormalizationContext:
             "selected_preambles": list(self.preamble_names),
             "explicit_preambles": list(self.explicit_preamble_names),
             "auto_preambles": list(self.auto_preamble_names),
+            "advisory_preambles": list(self.advisory_preamble_names),
+            "selection_mode": self.selection_mode,
             "retrieval": {
                 "source_counts": dict(self.source_counts),
                 "candidate_imports": list(self.candidate_imports),
@@ -114,14 +163,81 @@ class FormalizationContext:
                 "search_terms": list(self.search_terms),
                 "shape_guidance": list(self.shape_guidance),
                 "notes": list(self.retrieval_notes),
+                "runtime_search_plan": [
+                    {
+                        "tool": directive.tool,
+                        "query": directive.query,
+                        "reason": directive.reason,
+                    }
+                    for directive in self.runtime_search_plan
+                ],
             },
             "mcp": {
+                "requested": self.mcp_requested,
                 "enabled": self.mcp_enabled,
                 "skip_reason": self.mcp_skip_reason,
                 "hits": [
                     {"source": hit.source, "query": hit.query, "text": hit.text}
                     for hit in self.mcp_hits
                 ],
+            },
+        }
+
+    def artifact(
+        self,
+        *,
+        validation_method: str | None = None,
+        validation_methods: list[str] | None = None,
+        validation_fallback_reasons: list[str] | None = None,
+        repair_buckets: list[str] | None = None,
+        deterministic_repairs_applied: list[str] | None = None,
+        cache_hit: bool = False,
+        source: str = "formalizer",
+    ) -> dict[str, Any]:
+        """Build the structured handoff payload shared across API and prover stages."""
+        return {
+            "schema_version": 1,
+            "cache_hit": cache_hit,
+            "source": source,
+            "claim_text": self.claim_text,
+            "claim_components": list(self.claim_components),
+            "selected_preambles": list(self.preamble_names),
+            "explicit_preambles": list(self.explicit_preamble_names),
+            "auto_preambles": list(self.auto_preamble_names),
+            "advisory_preambles": list(self.advisory_preamble_names),
+            "selection_mode": self.selection_mode,
+            "preamble_imports": list(self.preamble_imports),
+            "candidate_imports": list(self.candidate_imports),
+            "candidate_identifiers": list(self.candidate_identifiers),
+            "search_terms": list(self.search_terms),
+            "shape_guidance": list(self.shape_guidance),
+            "retrieval_notes": list(self.retrieval_notes),
+            "runtime_search_plan": [
+                {
+                    "tool": directive.tool,
+                    "query": directive.query,
+                    "reason": directive.reason,
+                }
+                for directive in self.runtime_search_plan
+            ],
+            "retrieval": {
+                "source_counts": dict(self.source_counts),
+                "mcp_requested": self.mcp_requested,
+                "mcp_enabled": self.mcp_enabled,
+                "mcp_skip_reason": self.mcp_skip_reason,
+                "mcp_hits": [
+                    {"source": hit.source, "query": hit.query, "text": hit.text}
+                    for hit in self.mcp_hits
+                ],
+            },
+            "validation": {
+                "method": validation_method,
+                "methods": list(validation_methods or []),
+                "fallback_reasons": list(validation_fallback_reasons or []),
+            },
+            "repairs": {
+                "repair_buckets": list(repair_buckets or []),
+                "deterministic_repairs_applied": list(deterministic_repairs_applied or []),
             },
         }
 
@@ -275,6 +391,62 @@ def _search_terms(hints: list[CuratedHint]) -> list[str]:
     return _dedupe_preserve(anchored_terms + identifier_fallbacks + label_fallbacks)
 
 
+def _extract_inline_code_spans(text: str) -> list[str]:
+    spans: list[str] = []
+    current = ""
+    in_code = False
+    for char in text:
+        if char == "`":
+            if in_code and current.strip():
+                spans.append(current.strip())
+            current = ""
+            in_code = not in_code
+            continue
+        if in_code:
+            current += char
+    return spans
+
+
+def _build_runtime_search_plan(
+    search_terms: list[str],
+    candidate_identifiers: list[str],
+    shape_guidance: list[str],
+) -> list[RuntimeSearchDirective]:
+    directives: list[RuntimeSearchDirective] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _append(tool: str, query: str, reason: str) -> None:
+        cleaned = query.strip()
+        key = (tool, cleaned)
+        if not cleaned or key in seen:
+            return
+        seen.add(key)
+        directives.append(RuntimeSearchDirective(tool=tool, query=cleaned, reason=reason))
+
+    for query in search_terms[:2]:
+        _append(
+            "lean_local_search",
+            query,
+            "Verify the exact declaration name or namespace before proving.",
+        )
+    for query in candidate_identifiers[:2]:
+        _append(
+            "lean_loogle",
+            query,
+            "Inspect theorem signatures or nearby declarations for this identifier.",
+        )
+    for guidance in shape_guidance[:2]:
+        for query in _extract_inline_code_spans(guidance):
+            _append(
+                "lean_loogle",
+                query,
+                "Search for a theorem or goal shape matching the intended conclusion.",
+            )
+            break
+
+    return directives
+
+
 def _parse_mcp_text(result: Any) -> str:
     content = getattr(result, "content", None)
     if content is None:
@@ -289,21 +461,47 @@ def _parse_mcp_text(result: Any) -> str:
     return " ".join(part.strip() for part in parts if part).strip()
 
 
-async def _query_mcp_hits_async(search_terms: list[str]) -> list[SearchHit]:
+async def _query_mcp_hits_async(
+    directives: list[RuntimeSearchDirective],
+) -> tuple[list[SearchHit], list[str]]:
     hits: list[SearchHit] = []
+    errors: list[str] = []
     async with open_lean_mcp_session() as session:
         await prime_lean_mcp_session(session)
-        for query in search_terms[:MAX_MCP_SEARCH_QUERIES]:
-            result = await session.call_tool("lean_local_search", {"query": query, "limit": 5})
+        for directive in directives[:MAX_MCP_SEARCH_QUERIES]:
+            arguments: dict[str, Any]
+            if directive.tool == "lean_local_search":
+                arguments = {"query": directive.query, "limit": 5}
+            elif directive.tool == "lean_loogle":
+                arguments = {"query": directive.query, "num_results": 5}
+            else:
+                errors.append(f"unsupported directive tool: {directive.tool}")
+                continue
+            result = await session.call_tool(directive.tool, arguments)
             if getattr(result, "isError", False):
-                raise RuntimeError(_parse_mcp_text(result))
+                errors.append(
+                    f"{directive.tool} `{directive.query}` failed: {_parse_mcp_text(result)}"
+                )
+                continue
             text = _parse_mcp_text(result)
             if text:
-                hits.append(SearchHit(source="lean_local_search", query=query, text=text[:240]))
-    return hits
+                hits.append(
+                    SearchHit(
+                        source=directive.tool,
+                        query=directive.query,
+                        text=text[:240],
+                    )
+                )
+    return hits, errors
 
 
-def _query_mcp_hits(search_terms: list[str]) -> tuple[list[SearchHit], str | None]:
+def _query_mcp_hits(
+    directives: list[RuntimeSearchDirective],
+    *,
+    enable_mcp_retrieval: bool,
+) -> tuple[list[SearchHit], str | None]:
+    if not enable_mcp_retrieval:
+        return [], "disabled_by_runtime_policy"
     allowed, reason = formalization_mcp_available(
         capability=FORMALIZATION_MCP_CAPABILITY_RETRIEVAL
     )
@@ -311,13 +509,21 @@ def _query_mcp_hits(search_terms: list[str]) -> tuple[list[SearchHit], str | Non
         return [], reason
     if not FORMALIZATION_MCP_SEARCH_ENABLED:
         return [], "disabled_by_config"
-    if not search_terms:
-        return [], "no_search_terms"
+    if not directives:
+        return [], "no_runtime_search_plan"
+
+    cache_key = tuple(
+        f"{directive.tool}:{directive.query}"
+        for directive in directives[:MAX_MCP_SEARCH_QUERIES]
+    )
+    cached_result = _FORMALIZATION_MCP_SEARCH_CACHE.get(cache_key)
+    if cached_result is not None:
+        return list(cached_result.hits), cached_result.skip_reason
 
     try:
-        hits = asyncio.run(
+        hits, tool_errors = asyncio.run(
             asyncio.wait_for(
-                _query_mcp_hits_async(search_terms),
+                _query_mcp_hits_async(directives),
                 timeout=FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS,
             )
         )
@@ -329,22 +535,85 @@ def _query_mcp_hits(search_terms: list[str]) -> tuple[list[SearchHit], str | Non
         )
         return [], message
 
-    mark_formalization_mcp_success(capability=FORMALIZATION_MCP_CAPABILITY_RETRIEVAL)
-    return hits, None
+    if hits or not tool_errors:
+        mark_formalization_mcp_success(capability=FORMALIZATION_MCP_CAPABILITY_RETRIEVAL)
+    if len(_FORMALIZATION_MCP_SEARCH_CACHE) >= FORMALIZATION_MCP_SEARCH_CACHE_LIMIT:
+        oldest_key = next(iter(_FORMALIZATION_MCP_SEARCH_CACHE))
+        _FORMALIZATION_MCP_SEARCH_CACHE.pop(oldest_key, None)
+    skip_reason = " | ".join(tool_errors[:2]) if tool_errors else None
+    _FORMALIZATION_MCP_SEARCH_CACHE[cache_key] = CachedMcpSearchResult(
+        hits=tuple(hits),
+        skip_reason=skip_reason,
+    )
+    return hits, skip_reason
+
+
+def _normalize_formalization_context_preamble_field(
+    formalization_context: dict[str, Any],
+    field_name: str,
+) -> list[str] | None:
+    """Validate one preamble-name field inside a pass-through formalization context."""
+    if field_name not in formalization_context or formalization_context[field_name] is None:
+        return None
+
+    raw_value = formalization_context[field_name]
+    if not isinstance(raw_value, list):
+        raise ValueError(f"`formalization_context.{field_name}` must be a list of preamble names.")
+    if any(not isinstance(item, str) for item in raw_value):
+        raise ValueError(f"`formalization_context.{field_name}` must contain only strings.")
+    return validate_preamble_names(raw_value)
+
+
+def normalize_formalization_context_preambles(
+    formalization_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Normalize only the routing-critical preamble fields inside a formalization context."""
+    if formalization_context is None:
+        return None
+
+    normalized = dict(formalization_context)
+    selected = _normalize_formalization_context_preamble_field(
+        normalized,
+        "selected_preambles",
+    )
+    explicit = _normalize_formalization_context_preamble_field(
+        normalized,
+        "explicit_preambles",
+    )
+    auto = _normalize_formalization_context_preamble_field(
+        normalized,
+        "auto_preambles",
+    )
+
+    if selected is not None:
+        normalized["selected_preambles"] = selected
+    if explicit is not None:
+        normalized["explicit_preambles"] = explicit
+    if auto is not None:
+        normalized["auto_preambles"] = auto
+
+    if selected is not None and explicit is not None and selected != explicit:
+        raise ValueError(
+            "`formalization_context.explicit_preambles` must exactly match "
+            "`formalization_context.selected_preambles` when both are provided."
+        )
+
+    return normalized
 
 
 def build_formalization_context(
     claim_text: str,
     explicit_preamble_names: list[str] | None = None,
+    *,
+    enable_mcp_retrieval: bool = False,
 ) -> FormalizationContext:
     """Build bounded retrieval context for one formalization request."""
-    explicit_names = _dedupe_preserve(list(explicit_preamble_names or []))
-    auto_names: list[str] = []
-    if not explicit_names:
-        ranked_auto_matches = rank_matching_preambles(claim_text, auto=True)
-        auto_names = [entry.name for entry, _score in ranked_auto_matches[:MAX_AUTO_PREAMBLES]]
-    preamble_names = explicit_names or auto_names
-    preamble_entries = get_preamble_entries(preamble_names)
+    selection = select_preamble_plan(
+        claim_text,
+        explicit_preamble_names=explicit_preamble_names,
+        auto_limit=MAX_AUTO_PREAMBLES,
+    )
+    preamble_entries = list(selection.selected_entries)
 
     curated_hints = _matching_curated_hints(claim_text)
     candidate_imports = _dedupe_preserve([item for hint in curated_hints for item in hint.imports])
@@ -356,7 +625,15 @@ def build_formalization_context(
         [item for hint in curated_hints for item in hint.shape_guidance]
     )
     retrieval_notes = _dedupe_preserve([item for hint in curated_hints for item in hint.notes])
-    mcp_hits, mcp_skip_reason = _query_mcp_hits(search_terms)
+    runtime_search_plan = _build_runtime_search_plan(
+        search_terms,
+        candidate_identifiers,
+        shape_guidance,
+    )
+    mcp_hits, mcp_skip_reason = _query_mcp_hits(
+        runtime_search_plan,
+        enable_mcp_retrieval=enable_mcp_retrieval,
+    )
 
     source_counts = {
         "preamble": len(preamble_entries),
@@ -366,9 +643,13 @@ def build_formalization_context(
     return FormalizationContext(
         claim_text=claim_text,
         claim_components=_claim_components(curated_hints),
-        explicit_preamble_names=explicit_names,
-        auto_preamble_names=auto_names if not explicit_names else [],
-        preamble_names=[entry.name for entry in preamble_entries],
+        explicit_preamble_names=list(selection.explicit_preamble_names),
+        auto_preamble_names=(
+            selection.auto_preamble_names if not selection.explicit_preamble_names else []
+        ),
+        preamble_names=selection.selected_preamble_names,
+        advisory_preamble_names=selection.advisory_preamble_names,
+        selection_mode=selection.selection_mode,
         preamble_block=build_preamble_block(preamble_entries),
         preamble_imports=build_preamble_imports(preamble_entries),
         candidate_imports=candidate_imports,
@@ -376,8 +657,123 @@ def build_formalization_context(
         search_terms=search_terms,
         shape_guidance=shape_guidance,
         retrieval_notes=retrieval_notes,
+        runtime_search_plan=runtime_search_plan,
         mcp_hits=mcp_hits,
-        mcp_enabled=bool(FORMALIZATION_MCP_SEARCH_ENABLED and not mcp_skip_reason),
+        mcp_requested=bool(enable_mcp_retrieval),
+        mcp_enabled=bool(
+            enable_mcp_retrieval
+            and FORMALIZATION_MCP_SEARCH_ENABLED
+            and (bool(mcp_hits) or mcp_skip_reason is None)
+        ),
         mcp_skip_reason=mcp_skip_reason,
         source_counts=source_counts,
     )
+
+
+def build_explicit_preamble_artifact(
+    explicit_preamble_names: list[str],
+    *,
+    claim_text: str = "",
+    source: str = "verify_request",
+) -> dict[str, Any]:
+    """Build a minimal formalization artifact from explicit preamble intent alone."""
+    selection = select_preamble_plan(
+        claim_text,
+        explicit_preamble_names=explicit_preamble_names,
+        auto_limit=MAX_AUTO_PREAMBLES,
+    )
+    selected_entries = list(selection.selected_entries)
+    context = FormalizationContext(
+        claim_text=claim_text,
+        claim_components=[],
+        explicit_preamble_names=list(selection.explicit_preamble_names),
+        auto_preamble_names=[],
+        preamble_names=selection.selected_preamble_names,
+        advisory_preamble_names=selection.advisory_preamble_names,
+        selection_mode=selection.selection_mode,
+        preamble_block=build_preamble_block(selected_entries),
+        preamble_imports=build_preamble_imports(selected_entries),
+        candidate_imports=[],
+        candidate_identifiers=[],
+        search_terms=[],
+        shape_guidance=[],
+        retrieval_notes=[],
+        runtime_search_plan=[],
+        mcp_hits=[],
+        mcp_requested=False,
+        mcp_enabled=False,
+        mcp_skip_reason=None,
+        source_counts={"preamble": len(selected_entries), "curated": 0, "mcp": 0},
+    )
+    return context.artifact(source=source)
+
+
+def merge_explicit_preamble_artifact(
+    formalization_context: dict[str, Any] | None,
+    *,
+    explicit_preamble_names: list[str],
+    source: str = "verify_request",
+) -> dict[str, Any]:
+    """Merge explicit preamble intent into a structured artifact without widening it."""
+    explicit_names = validate_preamble_names(list(explicit_preamble_names or []))
+    if not explicit_names:
+        return dict(formalization_context or {})
+
+    merged = dict(formalization_context or {})
+    existing_selected = normalize_preamble_names(
+        [
+            str(item)
+            for item in (
+                merged.get("explicit_preambles") or merged.get("selected_preambles") or []
+            )
+        ]
+    )
+    if existing_selected and existing_selected != explicit_names:
+        raise ValueError(
+            "`preamble_names` must exactly match formalization_context.selected_preambles "
+            "when both are provided."
+        )
+
+    merged.setdefault("schema_version", 1)
+    merged.setdefault("source", source)
+    merged.setdefault("claim_text", "")
+    merged.setdefault("claim_components", [])
+    merged.setdefault("candidate_imports", [])
+    merged.setdefault("candidate_identifiers", [])
+    merged.setdefault("search_terms", [])
+    merged.setdefault("shape_guidance", [])
+    merged.setdefault("retrieval_notes", [])
+    merged.setdefault("runtime_search_plan", [])
+    merged.setdefault(
+        "retrieval",
+        {
+            "source_counts": {},
+            "mcp_requested": False,
+            "mcp_enabled": False,
+            "mcp_skip_reason": None,
+            "mcp_hits": [],
+        },
+    )
+    merged.setdefault("validation", {"method": None, "methods": [], "fallback_reasons": []})
+    merged.setdefault(
+        "repairs",
+        {"repair_buckets": [], "deterministic_repairs_applied": []},
+    )
+
+    artifact = build_explicit_preamble_artifact(
+        explicit_names,
+        claim_text=str(merged.get("claim_text") or ""),
+        source=str(merged.get("source") or source),
+    )
+    merged["selected_preambles"] = artifact["selected_preambles"]
+    merged["explicit_preambles"] = artifact["explicit_preambles"]
+    merged["auto_preambles"] = []
+    merged["advisory_preambles"] = artifact["advisory_preambles"]
+    merged["selection_mode"] = "explicit"
+    merged["preamble_imports"] = artifact["preamble_imports"]
+    retrieval = dict(merged.get("retrieval") or {})
+    source_counts = dict(retrieval.get("source_counts") or {})
+    source_counts["preamble"] = len(explicit_names)
+    retrieval["source_counts"] = source_counts
+    merged["retrieval"] = retrieval
+    return merged
