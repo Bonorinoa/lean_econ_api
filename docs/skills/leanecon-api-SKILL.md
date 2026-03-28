@@ -94,6 +94,8 @@ Interpretation:
   slice.
 - Full raw-claim end-to-end verification is still the weakest public lane.
 - Frontier natural-language formalization is still mixed.
+- Tier 0 curated smoke examples still show the product's potential, but they
+  should not be marketed as the baseline for arbitrary raw-claim inputs.
 - The live service can lag branch-local fixes. Treat the production smoke gate
   as the deploy truth source.
 
@@ -292,9 +294,9 @@ Submits a theorem for agentic proving. **This is async — returns immediately w
 }
 ```
 
-The proof often takes 30-180 seconds on straightforward verify lanes and can be
-much slower on hard raw-claim cases. You MUST either poll or stream — never
-block the UI.
+The proof often takes 30-180 seconds on straightforward theorem-stub or raw
+Lean lanes, and raw-claim runs can take several minutes. You MUST either poll
+or stream — never block the UI.
 For the fastest user-facing flow, keep `explain=false` on `/verify` and call
 `POST /api/v1/explain` only after the verify job completes.
 
@@ -417,7 +419,7 @@ POST /api/v1/formalize
 }
 ```
 
-LeanEcon currently ships 23 preamble entries across 8 areas: consumer,
+LeanEcon currently ships 24 preamble entries across 8 areas: consumer,
 producer, risk, dynamic, macro, optimization, welfare, and game theory. For UI
 pickers or product copy, read [`docs/PREAMBLE_CATALOG.md`](../PREAMBLE_CATALOG.md)
 instead of hardcoding module names or counts in multiple places.
@@ -696,9 +698,39 @@ bottleneck"; the answer depends heavily on the lane and tier.
    - small end-to-end `pass@1` regressions
    Keep `uncharted` pass@k runs for explicit capability probes.
 
+## Public demo recommendations
+
+For Lovable-style public demos, the goal should be to show the system's
+potential honestly rather than to make every claim feel instant or guaranteed.
+
+1. **Split curated showcases from live frontier runs.** The strongest first-run
+   experience is a short list of curated examples that use the best current
+   lanes: raw Lean, theorem stubs, and bounded preamble-backed claims. Treat
+   free-form raw claims as slower experimental runs.
+
+2. **Carry theorem-library context forward.** If an Explore or library surface
+   identifies matching preambles, forward `preamble_names` into `/formalize`,
+   then preserve `formalization_context` unchanged into `/verify`.
+
+3. **Surface job metadata, not just a spinner.** Use `queued_at`,
+   `started_at`, `last_progress_at`, `current_stage`, and `stage_timings` to
+   show progress and to detect stale jobs. If SSE drops, fall back to polling.
+
+4. **Treat `/benchmarks/latest` as optional.** It is honest for that endpoint
+   to return `404` when no runtime snapshot exists yet. Product UIs should show
+   a friendly empty state rather than an error-heavy metrics panel.
+
+5. **Offer a quick path where possible.** If the user already has complete Lean
+   code, `/lean_compile` is the fastest truthful path. Do not force every
+   interaction through the slowest full raw-claim workflow.
+
+6. **Be explicit about latency.** Avoid promising single-digit-second runtimes.
+   Simple verify flows may finish in under a few minutes, while raw-claim runs
+   can take materially longer.
+
 ## UX best practices
 
-### What to show during the 30-180s verification wait
+### What to show during the multi-minute verification wait
 
 Map SSE `stage` values to user-friendly labels:
 
@@ -730,7 +762,9 @@ debug path.
 
 ### The review step matters
 
-After formalize returns `theorem_code`, ALWAYS show it to the user before calling verify. This is the human-in-the-loop layer. The user should confirm "yes, that's what I meant" before spending 30-120s on proving.
+After formalize returns `theorem_code`, ALWAYS show it to the user before
+calling verify. This is the human-in-the-loop layer. The user should confirm
+"yes, that's what I meant" before spending 30-180 seconds or more on proving.
 
 ### Partial results and timeouts
 
@@ -803,7 +837,7 @@ For test suites, support batch submission:
 - **General-equilibrium and richer game-theory claims** still tend to need definitions beyond the current preamble library.
 - **Axiom info is best-effort.** Product UIs should treat missing `axiom_info` as "not available" rather than as a proof failure.
 - **The Leanstral model is a labs endpoint** — not a permanent production API. Plan for prover backend swaps.
-- **Each verification run takes 30-120 seconds.** Plan UX accordingly.
+- **Each verification run often takes 30-180 seconds on easier lanes, and raw-claim runs can take several minutes.** Plan UX accordingly.
 - **Railway Hobby plan.** Resource limits untested under concurrent load. Lean + Mathlib is memory-intensive.
 - **Deploy latency.** Railway rebuilds can take 10+ minutes, so validate with
   local CI and Docker first, then treat Railway smoke checks as confirmation.
