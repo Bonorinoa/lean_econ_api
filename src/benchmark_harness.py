@@ -1229,6 +1229,14 @@ def render_report(snapshot: dict[str, Any]) -> str:
 
     for lane in config["lane_order"]:
         lane_summary = summary["lanes"][lane]
+        budget_usage = lane_summary["budget_usage"]
+        budget_usage_summary = (
+            "- Budget usage (p95): "
+            f"append_rounds={_format_count_metric(budget_usage['append_rounds_used']['p95'])}, "
+            f"api_round_trips={_format_count_metric(budget_usage['api_round_trips_used']['p95'])}, "
+            f"tool_calls={_format_count_metric(budget_usage['tool_calls_used']['p95'])}, "
+            f"search_tool_calls={_format_count_metric(budget_usage['search_tool_calls_used']['p95'])}"
+        )
         lines.extend(
             [
                 "",
@@ -1247,22 +1255,7 @@ def render_report(snapshot: dict[str, Any]) -> str:
                 f"- Retrieval sources: {lane_summary['retrieval_source_counts'] or '(none)'}",
                 f"- Reasoning presets: {lane_summary['reasoning_preset_counts'] or '(none)'}",
                 f"- Timeout scopes: {lane_summary['timeout_scope_counts'] or '(none)'}",
-                (
-                    "- Budget usage (p95): "
-                    f"append_rounds={_format_count_metric(
-                        lane_summary['budget_usage']['append_rounds_used']['p95']
-                    )}, "
-                    f"api_round_trips={_format_count_metric(
-                        lane_summary['budget_usage']['api_round_trips_used']['p95']
-                    )}, "
-                    f"tool_calls={_format_count_metric(
-                        lane_summary['budget_usage']['tool_calls_used']['p95']
-                    )}, "
-                    "search_tool_calls="
-                    f"{_format_count_metric(
-                        lane_summary['budget_usage']['search_tool_calls_used']['p95']
-                    )}"
-                ),
+                budget_usage_summary,
                 f"- Semantic alignment: {lane_summary['semantic_alignment'] or '(none)'}",
             ]
         )
