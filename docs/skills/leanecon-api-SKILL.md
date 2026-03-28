@@ -7,10 +7,15 @@ description: "Integration guide for the LeanEcon formal verification API. Use wh
 
 LeanEcon is a headless formal verification microservice that takes mathematical claims (natural language, LaTeX, or raw Lean 4) and produces machine-checked proofs using Lean 4 and Mathlib.
 
+> LeanEcon v1 is in maintenance-only mode. Active development has moved to
+> `https://github.com/Bonorinoa/leanecon_v2`.
+
 **Base URL:** `https://leaneconapi-production.up.railway.app`
 **Interactive docs:** `{BASE_URL}/docs` (Swagger UI)
 **OpenAPI schema:** `{BASE_URL}/openapi.json`
-**Source of truth:** [`src/api.py`](../../src/api.py), [`docs/API.md`](../API.md), and the live `/openapi.json`.
+**Source of truth:** [`src/api.py`](../../src/api.py), [`docs/API.md`](../API.md),
+[`docs/HARNESS_FORMALIZER_PROVER_REPORT.tex`](../HARNESS_FORMALIZER_PROVER_REPORT.tex),
+and the live `/openapi.json`.
 
 ## Architecture overview
 
@@ -51,41 +56,46 @@ Every frontend should implement this sequence:
 > now also includes additive observability metadata such as queue/start/finish
 > timestamps and the latest reported pipeline stage.
 
-## Current measured reality (2026-03-25)
+## Current measured reality (2026-03-28)
 
 Use these numbers instead of older March 22-24 placeholders:
 
-- Local non-live pytest: `216 passed, 13 deselected`
+- Local non-live pytest: `253 passed, 13 deselected`
+- Local MCP smoke:
+  `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`
+  exited `0` on 2026-03-28
 - Production smoke gate:
   `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`
-  exited `0` on 2026-03-25 with `summary.overall_ok = true`
+  exited `0` on 2026-03-28 with `summary.overall_ok = true`
 - `lake build` in `lean_workspace`: successful
 - Tier 1 selected full benchmark:
-  `benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`
+  `benchmarks/reports/tier1_core_selected_full_full_20260328T181026Z.md`
   shows:
-  - `raw_claim -> full API`: `pass@1 = 0.333`
+  - `raw_claim -> full API`: `pass@1 = 0.000`
   - `theorem_stub -> verify`: `pass@1 = 1.000`
   - `raw_lean -> verify`: `pass@1 = 1.000`
 - Tier 1 core formalizer-only benchmark:
-  `benchmarks/reports/tier1_core_formalizer_only_20260325T070114Z.md`
+  `benchmarks/reports/tier1_core_formalizer_only_20260328T174455Z.md`
   shows:
-  - `raw_claim -> formalizer-only gate`: `pass@1 = 1.000`
-  - semantic `>=4` rate: `0.833`
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.667`
+  - semantic `>=4` rate: `0.750`
 - Tier 2 frontier formalizer-only benchmark:
   `benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md`
   shows:
   - `raw_claim -> formalizer-only gate`: `pass@1 = 0.667`
-  - contraction mapping and monotone-sequence convergence now compile
+  - semantic `>=4` rate: `1.000`
   - the extreme-value repair case still fails
 
 Interpretation:
 
-- Raw Lean remains the strongest path.
-- Theorem-stub verification is also a strong release path.
-- Natural-language formalization is strong on the bounded Tier 1 core slice.
+- Theorem-stub verification and raw Lean verification remain the strongest
+  release paths.
+- Natural-language formalization is still mixed on the bounded Tier 1 core
+  slice.
 - Full raw-claim end-to-end verification is still the weakest public lane.
-- Frontier natural-language formalization is improving, but still mixed.
-- Until a new Railway deploy finishes, the live service may still lag branch-local fixes. Treat the production smoke gate as the deploy truth source.
+- Frontier natural-language formalization is still mixed.
+- The live service can lag branch-local fixes. Treat the production smoke gate
+  as the deploy truth source.
 
 ## Endpoint reference
 
@@ -107,6 +117,7 @@ Determines whether a claim is in scope, whether it looks Mathlib-native, and whi
   "formalizable": true,
   "reason": "Uses CRRA utility which is defined in the preamble library",
   "preamble_matches": ["crra_utility"],
+  "auto_preamble_matches": ["crra_utility"],
   "suggested_reformulation": null,
   "definitions_needed": null,
   "error_code": "none"
@@ -124,6 +135,8 @@ Determines whether a claim is in scope, whether it looks Mathlib-native, and whi
 | `REQUIRES_DEFINITIONS` | `false` | Show rejection reason, suggest reformulation |
 
 Note: The classifier includes rescue logic. If the LLM says `REQUIRES_DEFINITIONS` but keyword matching finds preamble entries, it gets rescued to `DEFINABLE`. Likewise, if the LLM says `MATHLIB_NATIVE` but a bundled preamble match exists, it is upgraded to `DEFINABLE`.
+Use `preamble_matches` as the broader advisory set and `auto_preamble_matches`
+as the backend's bounded default if the user does not choose explicitly.
 
 ### POST /api/v1/formalize
 
@@ -182,12 +195,18 @@ Current implementation details:
 - If `preamble_names` is omitted, it may auto-select matching preamble modules.
 - Auto-preamble selection is now keyword-ranked and capped, which reduces noisy
   cross-domain imports on simple economics claims.
+- The runtime formalize path now turns bounded MCP retrieval on by default and
+  uses `lean_local_search` / `lean_loogle` as a first-class retrieval assistant
+  when the MCP path is healthy.
 - The theorem name is deterministically uniquified before validation so
   generated stubs do not collide with imported declarations.
 - Repair is compiler-bucketed: import/module, identifier, typeclass, syntax, or
   semantic mismatch.
-- MCP-backed retrieval is opportunistic only. If MCP is unhealthy, the
-  formalizer skips it and relies on curated hints plus local compilation.
+- The returned `formalization_context` now carries selected preambles,
+  candidate imports/identifiers, MCP hits, and a bounded
+  `runtime_search_plan` for downstream `/verify`.
+- If MCP is unhealthy, the formalizer skips runtime retrieval and relies on
+  curated hints plus local compilation.
 
 ### POST /api/v1/lean_compile
 
@@ -241,13 +260,27 @@ Submits a theorem for agentic proving. **This is async — returns immediately w
 ```json
 {
   "theorem_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by sorry",
-  "explain": false
+  "explain": false,
+  "preamble_names": ["crra_utility"],
+  "formalization_context": {
+    "schema_version": 1,
+    "selected_preambles": ["crra_utility"]
+  },
+  "reasoning_preset": "medium",
+  "budget_overrides": {
+    "wall_clock_timeout_seconds": 180,
+    "append_round_cap": 24
+  }
 }
 ```
 
-`/api/v1/verify` currently accepts only:
+`/api/v1/verify` currently accepts:
 - `theorem_code`
 - `explain`
+- `preamble_names`
+- `formalization_context`
+- `reasoning_preset`
+- `budget_overrides`
 
 `pass_k` is part of the offline eval harness, not the public verify endpoint.
 
@@ -259,7 +292,9 @@ Submits a theorem for agentic proving. **This is async — returns immediately w
 }
 ```
 
-The proof takes 30-120 seconds. You MUST either poll or stream — never block the UI.
+The proof often takes 30-180 seconds on straightforward verify lanes and can be
+much slower on hard raw-claim cases. You MUST either poll or stream — never
+block the UI.
 For the fastest user-facing flow, keep `explain=false` on `/verify` and call
 `POST /api/v1/explain` only after the verify job completes.
 
@@ -303,35 +338,16 @@ Returns a job envelope. The final verify payload lives under `result`.
 ```json
 {
   "job_id": "abc123-def456",
-  "status": "completed",
-  "queued_at": "2026-03-22T19:00:00+00:00",
-  "started_at": "2026-03-22T19:00:01+00:00",
-  "finished_at": "2026-03-22T19:00:35+00:00",
-  "last_progress_at": "2026-03-22T19:00:32+00:00",
-  "current_stage": "agentic_verify",
-  "result": {
-    "success": true,
-    "phase": "verified",
-    "lean_code": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by norm_num",
-    "errors": [],
-    "warnings": [],
-    "proof_strategy": "Use norm_num.",
-    "proof_tactics": "norm_num",
-    "theorem_statement": "import Mathlib\n\ntheorem one_plus_one : 1 + 1 = 2 := by sorry",
-    "formalization_attempts": 0,
-    "formalization_failed": false,
-    "failure_reason": null,
-    "output_lean": "/app/outputs/Proof_20260322_062903.lean",
-    "proof_generated": true,
-    "elapsed_seconds": 34.95,
-    "from_cache": false,
-    "partial": false,
-    "stop_reason": "proof_complete",
-    "axiom_info": null,
-    "error_code": "none",
-    "explanation": null,
-    "explanation_generated": null
+  "status": "running",
+  "queued_at": "2026-03-28T16:04:19.536923+00:00",
+  "started_at": "2026-03-28T16:04:19.538734+00:00",
+  "finished_at": null,
+  "last_progress_at": "2026-03-28T16:04:19.552935+00:00",
+  "current_stage": "agentic_fast_path",
+  "stage_timings": {
+    "agentic_init": 0.8392333984375
   },
+  "result": null,
   "error": null
 }
 ```
@@ -410,6 +426,12 @@ For theorem-library or Explore-to-Pipeline handoffs, preserve
 `preamble_names` alongside the claim text. Sending only the natural-language
 claim can silently drop crucial theorem context and reduce formalization
 reliability.
+
+Also preserve `formalization_context` from `/formalize` into `/verify`
+unchanged. That handoff now includes the formalizer's retrieval notes, MCP
+hits, and suggested runtime search queries for the prover. If you also send
+`preamble_names` to `/verify`, they must exactly match
+`formalization_context.selected_preambles`.
 
 ### Axiom soundness
 
@@ -653,10 +675,11 @@ bottleneck"; the answer depends heavily on the lane and tier.
 
 1. **Hallucinated Mathlib paths and theorem names.** The formalizer or prover guesses identifiers such as `StrictConcaveOn.neg_deriv2` or `StrictConcaveOn.contDiff_iff_deriv2_nonpos` that do not exist. Fix: verify identifiers with search before committing to them, and add search-assisted import/name discovery during formalization.
 
-2. **Frontier imports and definitions are still brittle.** Distinguish "model
-   invented the wrong module or object" from true theorem difficulty. Search
-   and retrieval help, but identifier/module invention still shows up in harder
-   claims.
+2. **Strict concavity and power notation are brittle failure surfaces.** A
+   recurring formalizer mistake is to emit bare `StrictConcave` when Mathlib
+   needs `StrictConcaveOn` or `ConcaveOn`. Real-power claims also drift into
+   brittle `Real.rpow` formulations when a natural-exponent `x ^ n` statement
+   would be simpler and easier to prove.
 
 3. **Type class and calculus API mismatches.** Claims about derivatives, Hessians, normed spaces, or product spaces still trigger `failed to synthesize instance`, `Unknown constant`, or function-shape mismatches. The model often reaches for one-dimensional `deriv` lemmas on higher-dimensional `fderiv` goals.
 
@@ -675,7 +698,7 @@ bottleneck"; the answer depends heavily on the lane and tier.
 
 ## UX best practices
 
-### What to show during the 30-120s verification wait
+### What to show during the 30-180s verification wait
 
 Map SSE `stage` values to user-friendly labels:
 
@@ -769,9 +792,9 @@ For test suites, support batch submission:
   Tier 1 core now measures well, but frontier natural-language cases are still
   mixed.
 - **Formalization is now search-assisted but still bounded.** LeanEcon uses
-  preamble matching, curated import/identifier hints, and compiler-bucketed
-  repair before spending more model calls. This improves reliability, but it is
-  still not an open-ended proving loop.
+  preamble matching, curated import/identifier hints, bounded MCP retrieval,
+  and compiler-bucketed repair before spending more model calls. This improves
+  reliability, but it is still not an open-ended proving loop.
 - **Verification is stochastic.** The same claim may pass on one run and fail on the next. Offer retry buttons.
 - **Currently strongest on algebraic identities** (field arithmetic, ring algebra) and preamble-backed claims. Claims involving `Real.rpow` with variable exponents are brittle.
 - **Frontier outcomes are uneven.** Recent formalizer-only runs now clear

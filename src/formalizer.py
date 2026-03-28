@@ -22,13 +22,17 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from formalization_search import FormalizationContext, build_formalization_context
+from formalization_search import (
+    FORMALIZATION_RUNTIME_MCP_RETRIEVAL_ENABLED,
+    FormalizationContext,
+    build_formalization_context,
+)
 from lean_diagnostics import extract_json_object
 from lean_verifier import run_direct_lean_check, write_lean_file
 from leanstral_utils import call_leanstral, get_client, strip_fences
 from mcp_runtime import formalization_mcp_available
 from model_config import LEANSTRAL_MODEL, model_fingerprint
-from preamble_library import find_matching_preambles
+from preamble_library import select_preamble_plan
 from prompts import (
     DIAGNOSE_SYSTEM_PROMPT,
     build_classify_prompt,
@@ -46,6 +50,7 @@ FORMALIZE_MAX_TOKENS = 4096  # theorem statements are short
 MAX_FORMALIZATION_MODEL_CALLS = 2
 MAX_FORMALIZATION_VALIDATIONS = 3
 SORRY_VALIDATION_TIMEOUT = 120  # seconds for direct Lean fallback with sorry
+FORMALIZATION_RUNTIME_RETRIEVAL_ENABLED = FORMALIZATION_RUNTIME_MCP_RETRIEVAL_ENABLED
 FORMALIZATION_CACHE_NAMESPACE = model_fingerprint(
     scope="formalize",
     extras={
@@ -591,6 +596,7 @@ def _build_formalize_result(
     suggested_fix: str | None,
     fixable: bool | None,
     formalizer_telemetry: dict[str, Any],
+    formalization_context: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "success": success,
@@ -604,6 +610,7 @@ def _build_formalize_result(
         "suggested_fix": suggested_fix,
         "fixable": fixable,
         "formalizer_telemetry": formalizer_telemetry,
+        "formalization_context": formalization_context,
     }
 
 
@@ -682,9 +689,7 @@ def classify_claim(
           - mathlib_hint (str | None): Mathlib navigation hint for MATHLIB_NATIVE
     """
     client = get_client()
-    provider_telemetry = (
-        summarize_provider_calls(telemetry_out) if telemetry_out is not None else None
-    )
+    selection = select_preamble_plan(claim_text)
     messages = [
         {"role": "system", "content": build_classify_prompt()},
         {"role": "user", "content": claim_text},
@@ -695,6 +700,10 @@ def classify_claim(
         "classify",
         temperature=0.0,
         max_tokens=512,
+        telemetry_out=telemetry_out,
+    )
+    provider_telemetry = (
+        summarize_provider_calls(telemetry_out) if telemetry_out is not None else None
     )
     line = raw.strip().splitlines()[0].strip()
 
@@ -704,6 +713,7 @@ def classify_claim(
         reason: str | None = None,
         definitions_needed: str | None = None,
         preamble_matches: list[str] | None = None,
+        auto_preamble_matches: list[str] | None = None,
         suggested_reformulation: str | None = None,
         mathlib_hint: str | None = None,
     ) -> dict:
@@ -712,6 +722,7 @@ def classify_claim(
             "reason": reason,
             "definitions_needed": definitions_needed,
             "preamble_matches": preamble_matches or [],
+            "auto_preamble_matches": auto_preamble_matches or [],
             "suggested_reformulation": suggested_reformulation,
             "mathlib_hint": mathlib_hint,
             "provider_telemetry": provider_telemetry,
@@ -726,15 +737,16 @@ def classify_claim(
         reason = line.removeprefix(prefix).lstrip(":").strip() or None
 
         # Preamble rescue: check if we actually have definitions for this claim
-        rescue_matches = find_matching_preambles(claim_text)
+        rescue_matches = list(selection.advisory_entries)
         if rescue_matches:
-            match_names = [m.name for m in rescue_matches]
+            match_names = selection.advisory_preamble_names
             match_descriptions = [m.description for m in rescue_matches]
             return _result(
                 category="DEFINABLE",
                 reason=reason,
                 definitions_needed=reason,
                 preamble_matches=match_names,
+                auto_preamble_matches=selection.auto_preamble_names,
                 suggested_reformulation=(
                     f"Initially classified as requiring unavailable definitions, "
                     f"but LeanEcon has built-in modules for: "
@@ -743,12 +755,17 @@ def classify_claim(
                 ),
             )
 
-        return _result(category="REQUIRES_DEFINITIONS", reason=reason)
+        return _result(
+            category="REQUIRES_DEFINITIONS",
+            reason=reason,
+            preamble_matches=selection.advisory_preamble_names,
+            auto_preamble_matches=selection.auto_preamble_names,
+        )
 
     if line.startswith("DEFINABLE"):
         detail = line.removeprefix("DEFINABLE").lstrip(":").strip() or None
-        matches = find_matching_preambles(claim_text)
-        match_names = [m.name for m in matches]
+        matches = list(selection.advisory_entries)
+        match_names = selection.advisory_preamble_names
 
         if matches:
             match_descriptions = [m.description for m in matches]
@@ -770,20 +787,22 @@ def classify_claim(
             reason=detail,
             definitions_needed=detail,
             preamble_matches=match_names,
+            auto_preamble_matches=selection.auto_preamble_names,
             suggested_reformulation=suggested,
         )
 
     if line.startswith("MATHLIB_NATIVE"):
         detail = line.removeprefix("MATHLIB_NATIVE").lstrip(":").strip() or None
-        rescue_matches = find_matching_preambles(claim_text)
+        rescue_matches = list(selection.advisory_entries)
         if rescue_matches:
-            match_names = [m.name for m in rescue_matches]
+            match_names = selection.advisory_preamble_names
             match_descriptions = [m.description for m in rescue_matches]
             return _result(
                 category="DEFINABLE",
                 reason=detail,
                 definitions_needed=detail,
                 preamble_matches=match_names,
+                auto_preamble_matches=selection.auto_preamble_names,
                 suggested_reformulation=(
                     f"The classifier pointed to Mathlib-native material ({detail}), "
                     f"but LeanEcon already has built-in modules for: "
@@ -794,15 +813,16 @@ def classify_claim(
         return _result(
             category="MATHLIB_NATIVE",
             reason=detail,
-            preamble_matches=[],
+            preamble_matches=selection.advisory_preamble_names,
+            auto_preamble_matches=selection.auto_preamble_names,
             suggested_reformulation=None,
             mathlib_hint=detail,
         )
 
-    alg_matches = find_matching_preambles(claim_text)
     return _result(
         category="ALGEBRAIC",
-        preamble_matches=[m.name for m in alg_matches],
+        preamble_matches=selection.advisory_preamble_names,
+        auto_preamble_matches=selection.auto_preamble_names,
     )
 
 
@@ -919,6 +939,16 @@ def formalize(
             provider_calls=provider_calls,
         )
 
+    def _artifact(*, cache_hit: bool) -> dict[str, Any]:
+        return context.artifact(
+            validation_method=validation_methods[-1] if validation_methods else None,
+            validation_methods=validation_methods,
+            validation_fallback_reasons=validation_fallback_reasons,
+            repair_buckets=repair_buckets,
+            deterministic_repairs_applied=deterministic_repairs_applied,
+            cache_hit=cache_hit,
+        )
+
     def _result(
         *,
         success: bool,
@@ -944,6 +974,7 @@ def formalize(
             suggested_fix=suggested_fix,
             fixable=fixable,
             formalizer_telemetry=_telemetry(cache_hit=cache_hit),
+            formalization_context=_artifact(cache_hit=cache_hit),
         )
 
     def _record_validation(lean_code: str) -> dict[str, Any]:
@@ -960,7 +991,11 @@ def formalize(
 
     _log("Starting formalization...", status="running")
 
-    context = build_formalization_context(claim_text, explicit_preamble_names=preamble_names)
+    context = build_formalization_context(
+        claim_text,
+        explicit_preamble_names=preamble_names,
+        enable_mcp_retrieval=FORMALIZATION_RUNTIME_RETRIEVAL_ENABLED,
+    )
     preamble_used = list(context.preamble_names)
     if preamble_used:
         mode = "explicit" if context.explicit_preamble_names else "auto-selected"
@@ -982,6 +1017,10 @@ def formalize(
                 **cached_telemetry,
                 "cache_hit": True,
             }
+            cached_context = dict(cached.get("formalization_context", {}))
+            if cached_context:
+                cached_context["cache_hit"] = True
+                cached_result["formalization_context"] = cached_context
             return cached_result
 
     client = get_client()

@@ -4,6 +4,10 @@ LeanEcon must run with local Lean tooling available because final verification
 depends on the local Lean toolchain inside `lean_workspace/`. Runtime verify
 jobs use isolated per-run temp files compiled with `lake env lean`.
 
+LeanEcon v1 is in maintenance-only mode. Use this document to keep the current
+service stable; target `https://github.com/Bonorinoa/leanecon_v2` for new
+deployment architecture work.
+
 ## Local Docker
 
 Treat Docker as the primary pre-deploy validation target. Railway rebuilds take
@@ -95,3 +99,34 @@ change can merge.
 - This is a Docker deployment path, not a serverless one. The app is not a fit
   for platforms that do not provide the required Lean toolchain and local build
   workflow.
+
+## Environment Variables Used At Runtime
+
+The current v1 runtime uses these environment variables:
+
+- Required runtime secret:
+  `MISTRAL_API_KEY`
+- Container listener selection:
+  `PORT` via the container startup command
+- Python state/config:
+  `LEANECON_STATE_DIR`
+- Model/config fingerprinting:
+  `LEANECON_MODEL`, `LEANECON_CONFIG_VERSION`
+- Formalizer retrieval tuning:
+  `LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH`,
+  `LEANECON_FORMALIZATION_MCP_SEARCH_TIMEOUT_SECONDS`,
+  `LEANECON_FORMALIZATION_MCP_SEARCH_QUERIES`,
+  `LEANECON_FORMALIZATION_AUTO_PREAMBLES`,
+  `LEANECON_FORMALIZATION_MCP_SEARCH_CACHE_LIMIT`
+- MCP runtime tuning:
+  `LEANECON_MCP_STARTUP_TIMEOUT_SECONDS`,
+  `LEANECON_MCP_TOOL_TIMEOUT_SECONDS`,
+  `LEANECON_FORMALIZATION_MCP_COOLDOWN_SECONDS`
+- Telemetry cost assumptions:
+  `LEANECON_LLM_INPUT_USD_PER_1K_TOKENS`,
+  `LEANECON_LLM_OUTPUT_USD_PER_1K_TOKENS`,
+  `LEANECON_LLM_STRESS_MULTIPLIER`
+
+The formalizer-side MCP toggle currently uses the same
+`LEANECON_ENABLE_FORMALIZATION_MCP_SEARCH` flag for both prompt-time retrieval
+and runtime retrieval gating.

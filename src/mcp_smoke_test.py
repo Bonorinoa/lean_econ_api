@@ -25,6 +25,7 @@ from mcp_runtime import (
     lean_workspace_relative_path,
     open_lean_mcp_session,
     open_mistral_run_context,
+    prime_lean_mcp_session,
 )
 from model_config import LEANSTRAL_MODEL
 
@@ -35,6 +36,10 @@ EXPECTED_DIAGNOSTIC_LINE = 5
 EXPECTED_DIAGNOSTIC_SUBSTRING = "Tactic `rfl` failed"
 EXPECTED_GOAL_SUBSTRING = "⊢ x = y"
 REQUIRED_TOOLS = {"lean_diagnostic_messages", "lean_goal"}
+SMOKE_MCP_TOOL_TIMEOUT_SECONDS = max(
+    MCP_TOOL_TIMEOUT_SECONDS,
+    float(os.environ.get("LEANECON_MCP_SMOKE_TOOL_TIMEOUT_SECONDS", "180")),
+)
 
 
 def _print_header(title: str) -> None:
@@ -98,12 +103,16 @@ async def _verify_run_context_tools() -> list[str]:
 async def _run_raw_queries() -> tuple[object, object]:
     try:
         async with open_lean_mcp_session() as session:
+            await prime_lean_mcp_session(
+                session,
+                timeout_seconds=SMOKE_MCP_TOOL_TIMEOUT_SECONDS,
+            )
             diagnostics = await asyncio.wait_for(
                 session.call_tool(
                     "lean_diagnostic_messages",
                     {"file_path": TARGET_FILE},
                 ),
-                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+                timeout=SMOKE_MCP_TOOL_TIMEOUT_SECONDS,
             )
             if getattr(diagnostics, "isError", False):
                 raise RuntimeError("lean_diagnostic_messages returned an MCP error")
@@ -113,7 +122,7 @@ async def _run_raw_queries() -> tuple[object, object]:
                     "lean_goal",
                     {"file_path": TARGET_FILE, "line": GOAL_QUERY_LINE},
                 ),
-                timeout=MCP_TOOL_TIMEOUT_SECONDS,
+                timeout=SMOKE_MCP_TOOL_TIMEOUT_SECONDS,
             )
             if getattr(goal, "isError", False):
                 raise RuntimeError("lean_goal returned an MCP error")
@@ -121,8 +130,9 @@ async def _run_raw_queries() -> tuple[object, object]:
             return diagnostics, goal
     except asyncio.TimeoutError as exc:
         raise RuntimeError(
-            f"MCP tool call timed out after {MCP_TOOL_TIMEOUT_SECONDS:.0f}s. "
-            "Increase LEANECON_MCP_TOOL_TIMEOUT_SECONDS if Lean type-checking is slow."
+            f"MCP tool call timed out after {SMOKE_MCP_TOOL_TIMEOUT_SECONDS:.0f}s. "
+            "Increase LEANECON_MCP_SMOKE_TOOL_TIMEOUT_SECONDS if cold Lean MCP "
+            "startup is slower in this environment."
         ) from exc
 
 

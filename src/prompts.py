@@ -69,17 +69,21 @@ TYPE CLASS SETUP — common pitfalls:
 - Do NOT apply HasDerivAt or HasFDerivAt on product types (ℝ × ℝ) directly.
   Decompose into component-wise derivatives instead.
 
-INLINE DEFINITIONS:
-When you need economic functional forms (utility functions, production functions),
-define them inline in the theorem hypotheses rather than importing external
-definitions. This makes the formalization self-contained.
-Example: (u : ℝ → ℝ) (hu : ∀ c > 0, u c = c ^ (1 - γ) / (1 - γ))
+LEANECON PREAMBLES:
+When selected LeanEcon preambles fit the claim, prefer importing and
+referencing their named definitions and lemmas rather than re-defining them
+inline. Only define economic functional forms locally when no selected preamble
+matches the claim's content closely enough.
+Example of an inline fallback when no preamble fits:
+  (u : ℝ → ℝ) (hu : ∀ c > 0, u c = c ^ (1 - γ) / (1 - γ))
 
 SEMANTIC SAFETY CHECKS:
 - Preserve the original direction of the claim.
 - Preserve explicit quantifiers such as "exists", "unique", and "for every".
 - Keep object types explicit when the claim names them (metric spaces,
   complete spaces, derivatives, budget sets, etc.).
+- Never use bare `StrictConcave`. Use `StrictConcaveOn ℝ s f` or
+  `ConcaveOn ℝ s f` instead.
 - If you use `ContractingWith`, the contraction constant must be `NNReal` / `ℝ≥0`,
   not a plain `ℝ`.
 - If the English claim is one-way ("if", "under", "with", "lies in"), use
@@ -87,6 +91,8 @@ SEMANTIC SAFETY CHECKS:
 
 AVOID:
 - Real.rpow with variable exponents when possible. Use c⁻¹ instead of c ^ (-1).
+- For real-valued power functions, prefer `x ^ n` with natural-number exponents
+  over `Real.rpow x n` when the exponent is known to be a natural number.
 - Prefer algebraic identities that field_simp + ring can handle.
 - Do not use identifiers you are not certain exist in Mathlib. If unsure,
   state the property from first principles using basic types.
@@ -238,6 +244,9 @@ COMMON FIXES:
   StrictConcave → StrictConcaveOn ℝ s f
   hessian → fderiv ℝ (fderiv ℝ f)
   Concave → ConcaveOn ℝ Set.univ f
+  Before guessing a replacement identifier, verify that the import path and
+  namespace actually exist. If unsure, restate the property from first
+  principles using basic Mathlib types.
 - "failed to synthesize instance" → The type class context is incomplete.
   Add explicit instances: [NormedAddCommGroup X], [NormedSpace ℝ X], etc.
   Product types (ℝ × X) need component-wise structure, not direct instances.
@@ -272,14 +281,12 @@ def build_formalize_prompt(
     if preamble_block:
         prompt += f"""
 
-        AVAILABLE DEFINITIONS (preamble):
-        The following Lean 4 definitions are provided and MUST be included in the
-        output .lean file AFTER the `import Mathlib` / `open Real` header and BEFORE
-        the theorem statement.
-        ```lean
-        {preamble_block}```
-
-        When using these definitions, reference them by name in the theorem statement.
+        SELECTED PREAMBLES:
+        The following LeanEcon preambles are available for this claim. Prefer importing
+        and referencing these modules and exported identifiers directly. Do NOT paste
+        or redefine their source in the generated file unless no listed preamble
+        captures the needed object faithfully.
+        {preamble_block}
         """
 
     return prompt
@@ -299,8 +306,10 @@ UNKNOWN IDENTIFIER FAILURE
 
 The previous Lean file failed because it used at least one identifier that Lean
 does not know. Replace guessed names with real Mathlib or LeanEcon identifiers.
-Prefer the retrieval context identifiers when available. If no exact identifier
-is known, restate the property from first principles instead of hallucinating.
+Prefer the retrieval context identifiers when available. Before guessing a
+replacement identifier, verify that the import path and namespace exist. If no
+exact identifier is known, restate the property from first principles instead
+of hallucinating.
 """,
     "typeclass_instance": """\
 TYPECLASS OR INSTANCE FAILURE

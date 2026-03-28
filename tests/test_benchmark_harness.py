@@ -203,6 +203,30 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
     )
 
     theorem_stub_attempts = {"count": 0}
+    preserved_context = {
+        "selected_preambles": ["budget_set"],
+        "runtime_search_plan": [
+            {
+                "tool": "lean_local_search",
+                "query": "budget_set",
+                "reason": "Verify the theorem library symbol before proving.",
+            }
+        ],
+        "retrieval": {
+            "mcp_requested": True,
+            "mcp_enabled": True,
+            "mcp_skip_reason": None,
+            "mcp_hits": [
+                {
+                    "source": "lean_local_search",
+                    "query": "budget_set",
+                    "text": "budget_set : ...",
+                }
+            ],
+        },
+        "retrieval_notes": ["Prefer the explicit budget-set preamble."],
+        "candidate_identifiers": ["in_budget_set"],
+    }
 
     def fake_formalize_claim(raw_claim: str, on_log=None, preamble_names=None, use_cache=True):
         assert raw_claim == "Claim A"
@@ -222,17 +246,47 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
             "suggested_fix": None,
             "fixable": None,
             "formalizer_telemetry": _fake_formalizer_telemetry(),
+            "formalization_context": dict(preserved_context),
         }
 
     def fake_run_pipeline(
         *,
         raw_input: str,
         preformalized_theorem: str | None = None,
+        formalization_context: dict | None = None,
         on_log=None,
         use_cache: bool,
     ):
         assert use_cache is False
         if preformalized_theorem == "FORMALIZED_A":
+            assert formalization_context is not None
+            assert formalization_context["selected_preambles"] == ["budget_set"]
+            assert (
+                formalization_context["runtime_search_plan"]
+                == preserved_context["runtime_search_plan"]
+            )
+            assert (
+                formalization_context["retrieval"]["mcp_requested"]
+                == preserved_context["retrieval"]["mcp_requested"]
+            )
+            assert (
+                formalization_context["retrieval"]["mcp_enabled"]
+                == preserved_context["retrieval"]["mcp_enabled"]
+            )
+            assert (
+                formalization_context["retrieval"]["mcp_skip_reason"]
+                == preserved_context["retrieval"]["mcp_skip_reason"]
+            )
+            assert (
+                formalization_context["retrieval"]["mcp_hits"]
+                == preserved_context["retrieval"]["mcp_hits"]
+            )
+            assert formalization_context["retrieval"]["source_counts"]["preamble"] == 1
+            assert formalization_context["retrieval_notes"] == preserved_context["retrieval_notes"]
+            assert (
+                formalization_context["candidate_identifiers"]
+                == preserved_context["candidate_identifiers"]
+            )
             if on_log:
                 on_log({"stage": "agentic_verify", "status": "done", "message": "verified"})
             return _fake_pipeline_result(
@@ -242,6 +296,8 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
             )
 
         if preformalized_theorem == "STUB_A":
+            assert formalization_context is not None
+            assert formalization_context["selected_preambles"] == ["budget_set"]
             theorem_stub_attempts["count"] += 1
             if theorem_stub_attempts["count"] < 3:
                 if on_log:
@@ -269,6 +325,7 @@ def test_main_writes_snapshot_and_report_with_separate_lane_metrics(tmp_path: Pa
 
         assert raw_input == "RAW_A"
         assert preformalized_theorem is None
+        assert formalization_context is None
         if on_log:
             on_log({"stage": "agentic_verify", "status": "error", "message": "timed out"})
         return _fake_pipeline_result(

@@ -33,7 +33,8 @@ def verify_error_code(result: Mapping[str, Any]) -> LeanEconErrorCode:
     """Map a verification result to a stable machine-readable error code."""
     if result.get("success"):
         return LeanEconErrorCode.NONE
-    if result.get("stop_reason") == "timeout":
+    stop_reason = str(result.get("stop_reason") or "")
+    if "timeout" in stop_reason:
         return LeanEconErrorCode.PROOF_TIMEOUT
     lean_code = str(result.get("lean_code") or "")
     if lean_code and "sorry" in lean_code:

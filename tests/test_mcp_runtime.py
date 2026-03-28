@@ -154,3 +154,62 @@ def test_prime_lean_mcp_session_uses_mcp_smoke_file() -> None:
             },
         )
     ]
+
+
+def test_open_lean_mcp_session_does_not_relabel_body_exceptions() -> None:
+    @asynccontextmanager
+    async def _fake_stdio_client(_params):
+        yield "read", "write"
+
+    class _FakeClientSession:
+        def __init__(self, _read: str, _write: str):
+            self.initialized = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def initialize(self) -> None:
+            self.initialized = True
+
+    async def _boom_inside_context() -> None:
+        async with mcp_runtime.open_lean_mcp_session():
+            raise RuntimeError("body boom")
+
+    with (
+        patch.object(mcp_runtime, "stdio_client", _fake_stdio_client),
+        patch.object(mcp_runtime, "ClientSession", _FakeClientSession),
+    ):
+        with pytest.raises(RuntimeError, match="body boom"):
+            asyncio.run(_boom_inside_context())
+
+
+def test_bootstrap_formalization_validation_session_runs_project_queries() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class _BootstrapSession:
+        async def call_tool(self, name: str, arguments: dict[str, object]):
+            calls.append((name, arguments))
+            return SimpleNamespace(isError=False, content=[{"text": "{}"}])
+
+    asyncio.run(mcp_runtime.bootstrap_formalization_validation_session(_BootstrapSession()))
+
+    assert calls == [
+        (
+            "lean_file_outline",
+            {
+                "file_path": "LeanEcon/McpSmoke.lean",
+                "max_declarations": "1",
+            },
+        ),
+        (
+            "lean_diagnostic_messages",
+            {"file_path": "LeanEcon/McpSmoke.lean"},
+        ),
+        (
+            "lean_goal",
+            {"file_path": "LeanEcon/McpSmoke.lean", "line": 4},
+        ),
+    ]

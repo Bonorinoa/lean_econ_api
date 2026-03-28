@@ -10,6 +10,9 @@ def test_build_catalog_markdown_includes_known_entry() -> None:
 
     assert markdown.startswith("# LeanEcon Preamble Catalog")
     assert "`crra_utility`" in markdown
+    assert "| Name | Status | Auto-Select |" in markdown
+    assert "`strong`" in markdown
+    assert "`compatibility-only`" in markdown
     assert "LeanEcon/Preamble/Consumer/CRRAUtility.lean" in markdown
 
 

@@ -52,8 +52,10 @@ def build_catalog_markdown() -> str:
         ),
         "",
         (
-            f"LeanEcon currently ships {len(PREAMBLE_LIBRARY)} reusable preamble "
-            "entries grouped below by domain."
+            f"LeanEcon currently ships {len(PREAMBLE_LIBRARY)} preamble entries grouped "
+            "below by domain. `strong` entries are theorem-bearing and eligible for "
+            "auto-selection; `compatibility-only` entries stay importable but are "
+            "excluded from auto-selection until they gain stronger helper lemmas."
         ),
         "",
     ]
@@ -67,18 +69,28 @@ def build_catalog_markdown() -> str:
             [
                 f"## {category}",
                 "",
-                "| Name | Lean Module | Lean File | Description | Parameters | Keywords |",
-                "| --- | --- | --- | --- | --- | --- |",
+                (
+                    "| Name | Status | Auto-Select | Lean Module | Lean File | "
+                    "Description | Theorem Shapes | Parameters | Keywords |"
+                ),
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
             ]
         )
         for entry in entries:
             parameters = ", ".join(entry.parameters) if entry.parameters else "(none)"
             keywords = ", ".join(entry.keywords)
+            theorem_shapes = (
+                " | ".join(entry.theorem_shapes)
+                if entry.theorem_shapes
+                else "(definition-only)"
+            )
             lean_file = entry.lean_path.relative_to(PROJECT_ROOT).as_posix()
             link = _lean_file_link(entry.lean_path)
             lines.append(
-                f"| `{entry.name}` | `{entry.lean_module}` | [{lean_file}]({link}) | "
-                f"{entry.description} | `{parameters}` | {keywords} |"
+                f"| `{entry.name}` | `{entry.status}` | "
+                f"`{'yes' if entry.auto_select else 'no'}` | `{entry.lean_module}` | "
+                f"[{lean_file}]({link}) | {entry.description} | {theorem_shapes} | "
+                f"`{parameters}` | {keywords} |"
             )
         lines.append("")
 

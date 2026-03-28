@@ -44,13 +44,30 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Constants
 # ---------------------------------------------------------------------------
 
-TIMEOUT_MS = 120_000  # 2 minutes for the full run_async conversation
-DEFAULT_MAX_STEPS = 12  # not enforced directly — run_async manages its own loop
+DEFAULT_CONVERSATION_TIMEOUT_MS = 120_000
+TIMEOUT_MS = DEFAULT_CONVERSATION_TIMEOUT_MS  # Backward-compatible alias.
+DEFAULT_MAX_STEPS = 12  # Advisory budget for preset scaling.
+DEFAULT_WALL_CLOCK_TIMEOUT_SECONDS = 180
+DEFAULT_APPEND_ROUND_CAP = 24
+
+REASONING_PRESET_NORMAL = "normal"
+REASONING_PRESET_MEDIUM = "medium"
+REASONING_PRESET_HIGH = "high"
+DEFAULT_REASONING_PRESET = REASONING_PRESET_MEDIUM
+REASONING_PRESET_NAMES = (
+    REASONING_PRESET_NORMAL,
+    REASONING_PRESET_MEDIUM,
+    REASONING_PRESET_HIGH,
+)
 
 STOP_PROOF_COMPLETE = "proof_complete"
 STOP_PROOF_INCOMPLETE = "proof_incomplete"
 STOP_RUN_ERROR = "run_error"
 STOP_TIMEOUT = "timeout"
+STOP_APPEND_ROUND_CAP = "append_round_cap"
+STOP_TOOL_BUDGET_EXHAUSTED = "tool_budget_exhausted"
+STOP_RETRY_BACKOFF_EXHAUSTED = "retry_backoff_exhausted"
+STOP_EMPTY_TOOL_CYCLE = "empty_tool_cycle"
 PARTIAL_TIMEOUT_CLEANUP_WARNING = (
     "Agentic prover stopped during Lean/MCP cleanup after a timeout. "
     "Returning the latest proof state."
@@ -87,6 +104,8 @@ AGENTIC_SEARCH_TOOLS = frozenset(
         "lean_code_actions",
         "lean_state_search",
         "lean_hammer_premise",
+        "lean_local_search",
+        "lean_loogle",
     }
 )
 AGENTIC_ALLOWED_TOOLS = frozenset(
@@ -128,12 +147,208 @@ LOCAL_FAST_PATH_ALGEBRA_TACTICS = (
     "nlinarith",
 )
 LOCAL_FAST_PATH_FIELD_TACTICS = ("field_simp\nring",)
+LOCAL_FAST_PATH_ORDER_TACTICS = (
+    "positivity",
+    "gcongr",
+)
+LOCAL_FAST_PATH_CAST_TACTICS = ("norm_cast",)
 NUMERIC_LITERAL_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 TACTIC_HYPOTHESIS_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
 
 
 class ToolBudgetExceededError(RuntimeError):
     """Raised when the prover burns through its tool-call budget."""
+
+
+class AppendRoundLimitExceededError(RuntimeError):
+    """Raised when the prover exceeds its append-round cap."""
+
+
+class ConversationRequestTimeoutError(RuntimeError):
+    """Raised when one Conversations API request exceeds its request timeout."""
+
+
+@dataclass(frozen=True)
+class ProverBudgetConfig:
+    """Resolved proving budgets for one verify request."""
+
+    reasoning_preset: str
+    max_steps: int
+    per_request_timeout_ms: int
+    wall_clock_timeout_seconds: float
+    append_round_cap: int
+    max_total_tool_calls: int
+    max_search_tool_calls: int
+    max_consecutive_read_only_calls: int
+    overrides_applied: dict[str, Any] = field(default_factory=dict)
+
+
+REASONING_PRESET_BASE_CONFIGS: dict[str, dict[str, Any]] = {
+    REASONING_PRESET_NORMAL: {
+        "max_steps": 10,
+        "per_request_timeout_ms": 90_000,
+        "wall_clock_timeout_seconds": 120.0,
+        "append_round_cap": 16,
+    },
+    REASONING_PRESET_MEDIUM: {
+        "max_steps": DEFAULT_MAX_STEPS,
+        "per_request_timeout_ms": DEFAULT_CONVERSATION_TIMEOUT_MS,
+        "wall_clock_timeout_seconds": float(DEFAULT_WALL_CLOCK_TIMEOUT_SECONDS),
+        "append_round_cap": DEFAULT_APPEND_ROUND_CAP,
+    },
+    REASONING_PRESET_HIGH: {
+        "max_steps": 18,
+        "per_request_timeout_ms": DEFAULT_CONVERSATION_TIMEOUT_MS,
+        "wall_clock_timeout_seconds": 300.0,
+        "append_round_cap": 40,
+    },
+}
+
+SUPPORTED_BUDGET_OVERRIDE_FIELDS = frozenset(
+    {
+        "max_steps",
+        "per_request_timeout_ms",
+        "wall_clock_timeout_seconds",
+        "append_round_cap",
+        "max_total_tool_calls",
+        "max_search_tool_calls",
+        "max_consecutive_read_only_calls",
+    }
+)
+
+
+def _coerce_positive_int(value: Any, field_name: str) -> int:
+    """Normalize an override into a positive integer."""
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"`{field_name}` must be an integer.") from exc
+    if coerced <= 0:
+        raise ValueError(f"`{field_name}` must be greater than zero.")
+    return coerced
+
+
+def _coerce_positive_float(value: Any, field_name: str) -> float:
+    """Normalize an override into a positive float."""
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"`{field_name}` must be a number.") from exc
+    if coerced <= 0:
+        raise ValueError(f"`{field_name}` must be greater than zero.")
+    return coerced
+
+
+def resolve_budget_config(
+    *,
+    reasoning_preset: str | None = None,
+    budget_overrides: dict[str, Any] | None = None,
+) -> ProverBudgetConfig:
+    """Resolve preset and override inputs into one immutable budget config."""
+    preset = (reasoning_preset or DEFAULT_REASONING_PRESET).strip().lower()
+    if preset not in REASONING_PRESET_BASE_CONFIGS:
+        supported = ", ".join(REASONING_PRESET_NAMES)
+        raise ValueError(f"Unsupported reasoning_preset {preset!r}. Expected one of: {supported}")
+
+    base = dict(REASONING_PRESET_BASE_CONFIGS[preset])
+    overrides = dict(budget_overrides or {})
+    unknown_override_names = sorted(
+        str(key) for key in overrides if str(key) not in SUPPORTED_BUDGET_OVERRIDE_FIELDS
+    )
+    if unknown_override_names:
+        joined = ", ".join(unknown_override_names)
+        raise ValueError(f"Unsupported budget_overrides field(s): {joined}")
+    applied_overrides: dict[str, Any] = {}
+
+    if "max_steps" in overrides:
+        base["max_steps"] = _coerce_positive_int(overrides["max_steps"], "max_steps")
+        applied_overrides["max_steps"] = base["max_steps"]
+    if "per_request_timeout_ms" in overrides:
+        base["per_request_timeout_ms"] = _coerce_positive_int(
+            overrides["per_request_timeout_ms"],
+            "per_request_timeout_ms",
+        )
+        applied_overrides["per_request_timeout_ms"] = base["per_request_timeout_ms"]
+    if "wall_clock_timeout_seconds" in overrides:
+        base["wall_clock_timeout_seconds"] = _coerce_positive_float(
+            overrides["wall_clock_timeout_seconds"],
+            "wall_clock_timeout_seconds",
+        )
+        applied_overrides["wall_clock_timeout_seconds"] = base["wall_clock_timeout_seconds"]
+    if "append_round_cap" in overrides:
+        base["append_round_cap"] = _coerce_positive_int(
+            overrides["append_round_cap"],
+            "append_round_cap",
+        )
+        applied_overrides["append_round_cap"] = base["append_round_cap"]
+
+    (
+        max_total_tool_calls,
+        max_search_tool_calls,
+        max_consecutive_read_only_calls,
+    ) = _budget_limits(int(base["max_steps"]))
+
+    if "max_total_tool_calls" in overrides:
+        max_total_tool_calls = _coerce_positive_int(
+            overrides["max_total_tool_calls"],
+            "max_total_tool_calls",
+        )
+        applied_overrides["max_total_tool_calls"] = max_total_tool_calls
+    if "max_search_tool_calls" in overrides:
+        max_search_tool_calls = _coerce_positive_int(
+            overrides["max_search_tool_calls"],
+            "max_search_tool_calls",
+        )
+        applied_overrides["max_search_tool_calls"] = max_search_tool_calls
+    if "max_consecutive_read_only_calls" in overrides:
+        max_consecutive_read_only_calls = _coerce_positive_int(
+            overrides["max_consecutive_read_only_calls"],
+            "max_consecutive_read_only_calls",
+        )
+        applied_overrides["max_consecutive_read_only_calls"] = max_consecutive_read_only_calls
+
+    return ProverBudgetConfig(
+        reasoning_preset=preset,
+        max_steps=int(base["max_steps"]),
+        per_request_timeout_ms=int(base["per_request_timeout_ms"]),
+        wall_clock_timeout_seconds=float(base["wall_clock_timeout_seconds"]),
+        append_round_cap=int(base["append_round_cap"]),
+        max_total_tool_calls=max_total_tool_calls,
+        max_search_tool_calls=max_search_tool_calls,
+        max_consecutive_read_only_calls=max_consecutive_read_only_calls,
+        overrides_applied=applied_overrides,
+    )
+
+
+def _budget_summary(
+    budget_config: ProverBudgetConfig,
+    *,
+    steps_used: int,
+    tool_tracker: "AgenticToolTracker | None" = None,
+    stop_reason: str | None = None,
+    timeout_scope: str | None = None,
+) -> dict[str, Any]:
+    """Build a compact public-facing budget telemetry payload."""
+    return {
+        "reasoning_preset": budget_config.reasoning_preset,
+        "overrides_applied": dict(budget_config.overrides_applied),
+        "max_steps": budget_config.max_steps,
+        "per_request_timeout_ms": budget_config.per_request_timeout_ms,
+        "wall_clock_timeout_seconds": budget_config.wall_clock_timeout_seconds,
+        "append_round_cap": budget_config.append_round_cap,
+        "max_total_tool_calls": budget_config.max_total_tool_calls,
+        "max_search_tool_calls": budget_config.max_search_tool_calls,
+        "max_consecutive_read_only_calls": budget_config.max_consecutive_read_only_calls,
+        "api_round_trips_used": steps_used,
+        "append_rounds_used": max(0, steps_used - 1),
+        "tool_calls_used": tool_tracker.total_tool_calls if tool_tracker is not None else None,
+        "search_tool_calls_used": (
+            tool_tracker.total_search_calls if tool_tracker is not None else None
+        ),
+        "blocked_tool_calls": tool_tracker.blocked_tool_calls if tool_tracker is not None else None,
+        "stop_reason": stop_reason,
+        "timeout_scope": timeout_scope,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +739,12 @@ def _local_fast_path_tactics(theorem_with_sorry: str) -> list[str]:
         tactics.extend(LOCAL_FAST_PATH_ALGEBRA_TACTICS)
     if "/" in theorem_surface or "⁻¹" in theorem_surface:
         tactics.extend(LOCAL_FAST_PATH_FIELD_TACTICS)
+    if any(token in theorem_surface for token in ("≤", "<", "≥", ">")):
+        tactics.extend(LOCAL_FAST_PATH_ORDER_TACTICS)
+    if any(token in theorem_surface for token in ("ℕ", "Nat")) and any(
+        token in theorem_surface for token in ("ℤ", "Int", "ℚ", "Rat", "ℝ", "Real")
+    ):
+        tactics.extend(LOCAL_FAST_PATH_CAST_TACTICS)
     tactics.extend(LOCAL_FAST_PATH_CORE_TACTICS)
     return list(dict.fromkeys(tactics))
 
@@ -558,6 +779,7 @@ def _try_local_tactic_fast_path(
     *,
     on_log,
     start_time: float,
+    budget_config: ProverBudgetConfig | None = None,
 ) -> dict[str, Any] | None:
     """Try a tiny deterministic tactic sweep before paying for Leanstral+MCP."""
     if not _should_try_local_fast_path(theorem_with_sorry):
@@ -628,6 +850,15 @@ def _try_local_tactic_fast_path(
                 "elapsed_seconds": elapsed,
                 "partial": False,
                 "provider_telemetry": summarize_provider_calls([]),
+                "budget": (
+                    _budget_summary(
+                        budget_config,
+                        steps_used=0,
+                        stop_reason=STOP_PROOF_COMPLETE,
+                    )
+                    if budget_config is not None
+                    else None
+                ),
             }
 
     controller.restore_last_good_checkpoint()
@@ -689,12 +920,27 @@ def _is_cancel_scope_error(exc: BaseException) -> bool:
     return False
 
 
-def _normalized_interruption_warning(kind: str) -> str:
+def _normalized_interruption_warning(
+    kind: str,
+    budget_config: ProverBudgetConfig | None = None,
+) -> str:
     """Return a stable user-facing warning for partial-result interruptions."""
     if kind == "cancel_scope":
         return PARTIAL_TIMEOUT_CLEANUP_WARNING
-    if kind == "timeout":
-        return f"run_async timed out after {TIMEOUT_MS}ms"
+    if kind == "timeout_wall_clock":
+        seconds = (
+            budget_config.wall_clock_timeout_seconds
+            if budget_config is not None
+            else DEFAULT_WALL_CLOCK_TIMEOUT_SECONDS
+        )
+        return f"Proving wall-clock budget exhausted after {seconds:.0f}s"
+    if kind == "timeout_request":
+        timeout_ms = (
+            budget_config.per_request_timeout_ms
+            if budget_config is not None
+            else DEFAULT_CONVERSATION_TIMEOUT_MS
+        )
+        return f"Conversation request timed out after {timeout_ms}ms"
     raise ValueError(f"Unknown interruption warning kind: {kind}")
 
 
@@ -706,6 +952,7 @@ async def _run_conversation_with_backoff(
     instructions: str,
     completion_args,
     timeout_ms: int,
+    append_round_cap: int | None = None,
     on_log: callable | None = None,
     provider_calls_out: list[dict[str, Any]] | None = None,
 ):
@@ -754,6 +1001,11 @@ async def _run_conversation_with_backoff(
                 return response
             except Exception as exc:
                 last_exc = exc
+                if isinstance(exc, asyncio.TimeoutError):
+                    _record_telemetry(error=exc)
+                    raise ConversationRequestTimeoutError(
+                        f"Conversation request timed out after {timeout_ms}ms"
+                    ) from exc
                 if not _is_retryable_run_error(exc) or attempt == total_attempts:
                     _record_telemetry(error=exc)
                     raise
@@ -786,6 +1038,7 @@ async def _run_conversation_with_backoff(
         completion_args=completion_args,
     )
 
+    append_rounds = 0
     while True:
         if run_ctx.conversation_id is None:
             res = await request_with_backoff(
@@ -800,6 +1053,10 @@ async def _run_conversation_with_backoff(
             run_result.conversation_id = res.conversation_id
             run_ctx.conversation_id = res.conversation_id
         else:
+            if append_round_cap is not None and append_rounds >= append_round_cap:
+                raise AppendRoundLimitExceededError(
+                    f"Append round cap reached after {append_rounds} append calls."
+                )
             res = await request_with_backoff(
                 lambda: client.beta.conversations.append_async(
                     conversation_id=run_ctx.conversation_id,
@@ -809,6 +1066,7 @@ async def _run_conversation_with_backoff(
                 "append",
                 endpoint="conversations.append_async",
             )
+            append_rounds += 1
 
         run_ctx.request_count += 1
         run_result.output_entries.extend(res.outputs)
@@ -849,6 +1107,9 @@ def _build_interrupted_run_result(
     stop_reason: str,
     agent_summary: str,
     partial: bool,
+    budget_config: ProverBudgetConfig | None = None,
+    tool_tracker: AgenticToolTracker | None = None,
+    timeout_scope: str | None = None,
     on_log: callable | None = None,
 ) -> dict[str, Any]:
     """Build a graceful partial result after a timeout or external API interruption."""
@@ -941,6 +1202,17 @@ def _build_interrupted_run_result(
         "elapsed_seconds": elapsed,
         "partial": final_partial,
         "provider_telemetry": provider_telemetry,
+        "budget": (
+            _budget_summary(
+                budget_config,
+                steps_used=steps_used,
+                tool_tracker=tool_tracker,
+                stop_reason=final_stop_reason,
+                timeout_scope=timeout_scope,
+            )
+            if budget_config is not None
+            else None
+        ),
     }
 
 
@@ -971,8 +1243,10 @@ Your task is to find a complete tactic proof that Lean accepts.
 - lean_code_actions
 - lean_state_search
 - lean_hammer_premise
+- lean_local_search
+- lean_loogle
 
-No generic build/import/search tools are available in this run.
+No generic build tools are available in this run. Use the search tools sparingly.
 
 ## Workflow
 
@@ -1010,9 +1284,13 @@ in the tactic (e.g., exact h, norm_num on arithmetic).
 When you are stuck, prefer the goal-local search tools:
 - lean_state_search for lemmas that can close the current goal
 - lean_hammer_premise for premise suggestions
+- lean_local_search for known identifiers, declarations, and namespace lookup
+- lean_loogle for type-shape and theorem-signature search
 
 Use search only after at least one tactic attempt has failed.
 Do not spend the search budget before writing a plausible proof attempt.
+If the formalizer handoff suggests specific search queries, prefer those exact
+queries before inventing broader ones.
 
 ## Discovering tactics with code actions
 
@@ -1055,6 +1333,65 @@ def _build_instructions(
             str(max_consecutive_read_only_calls),
         )
     )
+
+
+def _build_formalizer_handoff_block(formalization_context: dict[str, Any] | None) -> str:
+    """Render only the prover-relevant subset of formalizer context.
+
+    Keep the full formalization artifact in telemetry/results, but avoid feeding
+    speculative retrieval/search hints straight back into the prover prompt.
+    Those hints are useful for observability and post-hoc analysis, but in
+    practice they can also over-nudge the model into burning search budget
+    instead of first working from the theorem and local diagnostics.
+    """
+    if not isinstance(formalization_context, dict) or not formalization_context:
+        return ""
+
+    lines = ["FORMALIZER HANDOFF CONTEXT:"]
+    selected_preambles = formalization_context.get("selected_preambles") or []
+    if selected_preambles:
+        lines.append(f"- Selected preambles: {', '.join(str(item) for item in selected_preambles)}")
+
+    preamble_imports = formalization_context.get("preamble_imports") or []
+    if preamble_imports:
+        rendered_preamble_imports = ", ".join(str(item) for item in preamble_imports[:6])
+        lines.append(f"- Preamble imports already in scope: {rendered_preamble_imports}")
+
+    validation = formalization_context.get("validation") or {}
+    validation_method = validation.get("method")
+    if validation_method:
+        lines.append(f"- Formalizer validation method: {validation_method}")
+
+    repairs = formalization_context.get("repairs") or {}
+    repair_buckets = repairs.get("repair_buckets") or []
+    if repair_buckets:
+        lines.append(f"- Prior repair buckets: {', '.join(str(item) for item in repair_buckets)}")
+
+    candidate_imports = formalization_context.get("candidate_imports") or []
+    candidate_identifiers = formalization_context.get("candidate_identifiers") or []
+    search_terms = formalization_context.get("search_terms") or []
+    shape_guidance = formalization_context.get("shape_guidance") or []
+    retrieval_notes = formalization_context.get("retrieval_notes") or []
+    runtime_search_plan = formalization_context.get("runtime_search_plan") or []
+    retrieval = formalization_context.get("retrieval") or {}
+    mcp_hits = retrieval.get("mcp_hits") or []
+    if any(
+        (
+            candidate_imports,
+            candidate_identifiers,
+            search_terms,
+            shape_guidance,
+            retrieval_notes,
+            runtime_search_plan,
+            mcp_hits,
+        )
+    ):
+        lines.append(
+            "- Additional retrieval/search telemetry was preserved outside this prompt; "
+            "trust the theorem and local diagnostics before using search tools."
+        )
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1326,6 +1663,8 @@ async def _prove_theorem_agentic_async(
     theorem_with_sorry: str,
     on_log: callable | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    formalization_context: dict[str, Any] | None = None,
+    budget_config: ProverBudgetConfig | None = None,
 ) -> dict[str, Any]:
     """
     Run the Leanstral+MCP agentic proving loop via Mistral's run_async.
@@ -1339,6 +1678,9 @@ async def _prove_theorem_agentic_async(
     from mistralai.client.models.completionargs import CompletionArgs
 
     controller = ProofFileController()
+    resolved_budget = budget_config or resolve_budget_config(
+        budget_overrides={"max_steps": max_steps},
+    )
     start_time = time.time()
     try:
         # --- Step 1: Initialize working file ---
@@ -1359,6 +1701,7 @@ async def _prove_theorem_agentic_async(
             controller,
             on_log=on_log,
             start_time=start_time,
+            budget_config=resolved_budget,
         )
         if fast_path_result is not None:
             return fast_path_result
@@ -1369,26 +1712,22 @@ async def _prove_theorem_agentic_async(
 
         trace_recorder = TraceRecorder()
         apply_tactic_fn, tactic_call_log = _make_apply_tactic(controller, trace_recorder)
-        (
-            max_total_tool_calls,
-            max_search_tool_calls,
-            max_consecutive_read_only_calls,
-        ) = _budget_limits(max_steps)
         tool_tracker = AgenticToolTracker(
-            max_total_tool_calls=max_total_tool_calls,
-            max_search_tool_calls=max_search_tool_calls,
-            max_consecutive_read_only_calls=max_consecutive_read_only_calls,
+            max_total_tool_calls=resolved_budget.max_total_tool_calls,
+            max_search_tool_calls=resolved_budget.max_search_tool_calls,
+            max_consecutive_read_only_calls=resolved_budget.max_consecutive_read_only_calls,
         )
         client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
 
         instructions = _build_instructions(
             file_path=controller.mcp_file_path,
             goal_line=controller.goal_query_line,
-            max_total_tool_calls=max_total_tool_calls,
-            max_search_tool_calls=max_search_tool_calls,
-            max_consecutive_read_only_calls=max_consecutive_read_only_calls,
+            max_total_tool_calls=resolved_budget.max_total_tool_calls,
+            max_search_tool_calls=resolved_budget.max_search_tool_calls,
+            max_consecutive_read_only_calls=resolved_budget.max_consecutive_read_only_calls,
         )
 
+        formalizer_handoff = _build_formalizer_handoff_block(formalization_context)
         user_prompt = (
             f"Prove this Lean 4 theorem:\n\n"
             f"```lean\n{theorem_with_sorry.strip()}\n```\n\n"
@@ -1397,6 +1736,8 @@ async def _prove_theorem_agentic_async(
             "then prefer the cheap loop of apply_tactic followed by "
             "lean_diagnostic_messages. Use search/suggestion tools only as a fallback."
         )
+        if formalizer_handoff:
+            user_prompt = f"{user_prompt}\n\n{formalizer_handoff}"
 
         # --- Step 3: Run the agentic loop ---
         _log(on_log, "agentic_run", "Leanstral proving loop started...", status="running")
@@ -1433,18 +1774,22 @@ async def _prove_theorem_agentic_async(
                     elapsed_ms=(time.time() - t_agentic_setup) * 1000,
                 )
 
-                result = await _run_conversation_with_backoff(
-                    client,
-                    run_ctx,
-                    inputs=user_prompt,
-                    instructions=instructions,
-                    completion_args=CompletionArgs(
-                        temperature=1.0,
-                        max_tokens=32000,
+                result = await asyncio.wait_for(
+                    _run_conversation_with_backoff(
+                        client,
+                        run_ctx,
+                        inputs=user_prompt,
+                        instructions=instructions,
+                        completion_args=CompletionArgs(
+                            temperature=1.0,
+                            max_tokens=32000,
+                        ),
+                        timeout_ms=resolved_budget.per_request_timeout_ms,
+                        append_round_cap=resolved_budget.append_round_cap,
+                        on_log=on_log,
+                        provider_calls_out=provider_calls,
                     ),
-                    timeout_ms=TIMEOUT_MS,
-                    on_log=on_log,
-                    provider_calls_out=provider_calls,
+                    timeout=resolved_budget.wall_clock_timeout_seconds,
                 )
 
                 # Extract results
@@ -1464,7 +1809,10 @@ async def _prove_theorem_agentic_async(
 
         except asyncio.TimeoutError:
             steps_used = getattr(run_ctx, "request_count", steps_used)
-            error_message = _normalized_interruption_warning("timeout")
+            error_message = _normalized_interruption_warning(
+                "timeout_wall_clock",
+                resolved_budget,
+            )
             trace_recorder.finalize_pending_attempt(tactic_call_log)
             return _build_interrupted_run_result(
                 controller=controller,
@@ -1478,15 +1826,68 @@ async def _prove_theorem_agentic_async(
                 interruption_message=error_message,
                 stop_reason=STOP_TIMEOUT,
                 agent_summary=(
-                    "Leanstral agentic prover timed out before finishing the proving loop. "
-                    "Returning the latest proof state for inspection."
+                    "Leanstral agentic prover hit the wall-clock proving budget "
+                    "before finishing the loop and returned the latest proof state."
                 ),
                 partial=True,
+                budget_config=resolved_budget,
+                tool_tracker=tool_tracker,
+                timeout_scope="wall_clock",
                 on_log=on_log,
             )
         except Exception as exc:
             _log(on_log, "agentic_run", f"run_async error: {exc}", status="error")
             steps_used = getattr(run_ctx, "request_count", steps_used)
+
+            if isinstance(exc, ConversationRequestTimeoutError):
+                trace_recorder.finalize_pending_attempt(tactic_call_log)
+                return _build_interrupted_run_result(
+                    controller=controller,
+                    model_text=model_text,
+                    tool_trace_entries=tool_trace_entries,
+                    tactic_call_log=tactic_call_log,
+                    provider_calls=provider_calls,
+                    steps_used=steps_used,
+                    start_time=start_time,
+                    agentic_run_started_at=t_agentic_run,
+                    interruption_message=_normalized_interruption_warning(
+                        "timeout_request",
+                        resolved_budget,
+                    ),
+                    stop_reason=STOP_TIMEOUT,
+                    agent_summary=(
+                        "Leanstral agentic prover hit the per-request Conversations timeout "
+                        "and returned the latest proof state."
+                    ),
+                    partial=True,
+                    budget_config=resolved_budget,
+                    tool_tracker=tool_tracker,
+                    timeout_scope="request",
+                    on_log=on_log,
+                )
+
+            if isinstance(exc, AppendRoundLimitExceededError):
+                trace_recorder.finalize_pending_attempt(tactic_call_log)
+                return _build_interrupted_run_result(
+                    controller=controller,
+                    model_text=model_text,
+                    tool_trace_entries=tool_trace_entries,
+                    tactic_call_log=tactic_call_log,
+                    provider_calls=provider_calls,
+                    steps_used=steps_used,
+                    start_time=start_time,
+                    agentic_run_started_at=t_agentic_run,
+                    interruption_message=str(exc),
+                    stop_reason=STOP_APPEND_ROUND_CAP,
+                    agent_summary=(
+                        "Leanstral agentic prover hit the append-round cap and "
+                        "returned the latest proof state instead of looping longer."
+                    ),
+                    partial=True,
+                    budget_config=resolved_budget,
+                    tool_tracker=tool_tracker,
+                    on_log=on_log,
+                )
 
             if isinstance(exc, ToolBudgetExceededError):
                 trace_recorder.finalize_pending_attempt(tactic_call_log)
@@ -1500,13 +1901,15 @@ async def _prove_theorem_agentic_async(
                     start_time=start_time,
                     agentic_run_started_at=t_agentic_run,
                     interruption_message=str(exc),
-                    stop_reason=STOP_PROOF_INCOMPLETE,
+                    stop_reason=STOP_TOOL_BUDGET_EXHAUSTED,
                     agent_summary=(
                         "Leanstral agentic prover halted early because the "
                         "tool budget detected a high-waste loop and returned "
                         "the latest proof state instead."
                     ),
                     partial=True,
+                    budget_config=resolved_budget,
+                    tool_tracker=tool_tracker,
                     on_log=on_log,
                 )
 
@@ -1526,12 +1929,14 @@ async def _prove_theorem_agentic_async(
                     start_time=start_time,
                     agentic_run_started_at=t_agentic_run,
                     interruption_message=interruption_message,
-                    stop_reason=STOP_PROOF_INCOMPLETE,
+                    stop_reason=STOP_RETRY_BACKOFF_EXHAUSTED,
                     agent_summary=(
                         "Leanstral agentic prover exhausted exponential backoff retries "
                         "for a transient API error and returned the latest proof state."
                     ),
                     partial=True,
+                    budget_config=resolved_budget,
+                    tool_tracker=tool_tracker,
                     on_log=on_log,
                 )
 
@@ -1551,13 +1956,15 @@ async def _prove_theorem_agentic_async(
                     start_time=start_time,
                     agentic_run_started_at=t_agentic_run,
                     interruption_message=interruption_message,
-                    stop_reason=STOP_PROOF_INCOMPLETE,
+                    stop_reason=STOP_EMPTY_TOOL_CYCLE,
                     agent_summary=(
                         "Leanstral agentic prover intercepted an empty tool-result cycle "
                         "and returned the latest proof state instead of "
                         "surfacing a raw API 3001 failure."
                     ),
                     partial=True,
+                    budget_config=resolved_budget,
+                    tool_tracker=tool_tracker,
                     on_log=on_log,
                 )
 
@@ -1566,7 +1973,10 @@ async def _prove_theorem_agentic_async(
                 # its cancel scopes during SDK timeout teardown (Python 3.12+). This
                 # is semantically a timeout, not a hard failure — route to the graceful
                 # partial-result path so any completed tactics are preserved.
-                interruption_message = _normalized_interruption_warning("cancel_scope")
+                interruption_message = _normalized_interruption_warning(
+                    "cancel_scope",
+                    resolved_budget,
+                )
                 trace_recorder.finalize_pending_attempt(tactic_call_log)
                 return _build_interrupted_run_result(
                     controller=controller,
@@ -1586,32 +1996,36 @@ async def _prove_theorem_agentic_async(
                         "Returning the latest proof state."
                     ),
                     partial=True,
+                    budget_config=resolved_budget,
+                    tool_tracker=tool_tracker,
+                    timeout_scope="request",
                     on_log=on_log,
                 )
 
-            stop_reason = STOP_RUN_ERROR
-            elapsed = time.time() - start_time
             trace_recorder.finalize_pending_attempt(tactic_call_log)
-            provider_telemetry = summarize_provider_calls(provider_calls)
-            return {
-                "success": False,
-                "strategy": model_text,
-                "proof_tactics": controller.current_tactic_block,
-                "full_lean_code": controller.current_lean_code,
-                "errors": [str(exc)],
-                "warnings": [],
-                "tool_trace": tool_trace_entries,
-                "tactic_calls": tactic_call_log,
-                "trace_schema_version": TRACE_SCHEMA_VERSION,
-                "steps_used": steps_used,
-                "mcp_enabled": True,
-                "agent_summary": f"run_async failed: {exc}",
-                "stop_reason": stop_reason,
-                "output_lean": None,
-                "elapsed_seconds": elapsed,
-                "partial": False,
-                "provider_telemetry": provider_telemetry,
-            }
+            exception_text = str(exc).strip()
+            run_error_message = (
+                f"run_async failed: {exception_text}"
+                if exception_text
+                else "run_async failed after the latest proof-state update."
+            )
+            return _build_interrupted_run_result(
+                controller=controller,
+                model_text=model_text,
+                tool_trace_entries=tool_trace_entries,
+                tactic_call_log=tactic_call_log,
+                provider_calls=provider_calls,
+                steps_used=steps_used,
+                start_time=start_time,
+                agentic_run_started_at=t_agentic_run,
+                interruption_message=run_error_message,
+                stop_reason=STOP_RUN_ERROR,
+                agent_summary=run_error_message,
+                partial=False,
+                budget_config=resolved_budget,
+                tool_tracker=tool_tracker,
+                on_log=on_log,
+            )
 
         _log(
             on_log,
@@ -1674,6 +2088,7 @@ async def _prove_theorem_agentic_async(
                 f"{tool_tracker.total_search_calls} search, "
                 f"{tool_tracker.blocked_tool_calls} blocked."
             ),
+            f"Reasoning preset: {resolved_budget.reasoning_preset}.",
         ]
         if tool_tracker.total_diagnostic_calls:
             summary_parts.append(
@@ -1692,6 +2107,24 @@ async def _prove_theorem_agentic_async(
                 f"Duplicate read-only queries blocked "
                 f"{tool_tracker.duplicate_read_only_hits} time(s)."
             )
+        runtime_search_plan = (
+            formalization_context.get("runtime_search_plan")
+            if isinstance(formalization_context, dict)
+            else []
+        ) or []
+        retrieval = (
+            formalization_context.get("retrieval")
+            if isinstance(formalization_context, dict)
+            else {}
+        ) or {}
+        mcp_hits = retrieval.get("mcp_hits") or []
+        if runtime_search_plan:
+            summary_parts.append(
+                "Formalizer handoff supplied "
+                f"{len(runtime_search_plan)} runtime search directive(s)."
+            )
+        if mcp_hits:
+            summary_parts.append(f"Formalizer MCP retrieval supplied {len(mcp_hits)} hit(s).")
         if success:
             summary_parts.append("Proof verified by the local Lean compiler.")
         else:
@@ -1716,6 +2149,12 @@ async def _prove_theorem_agentic_async(
             "elapsed_seconds": elapsed,
             "partial": False,
             "provider_telemetry": provider_telemetry,
+            "budget": _budget_summary(
+                resolved_budget,
+                steps_used=steps_used,
+                tool_tracker=tool_tracker,
+                stop_reason=stop_reason,
+            ),
         }
     finally:
         controller.cleanup()
@@ -1738,10 +2177,16 @@ class LeanstralProver:
         self,
         theorem_with_sorry: str,
         on_log: Any | None = None,
+        formalization_context: dict[str, Any] | None = None,
+        reasoning_preset: str | None = None,
+        budget_overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return prove_theorem_agentic(
             theorem_with_sorry=theorem_with_sorry,
             on_log=on_log,
+            formalization_context=formalization_context,
+            reasoning_preset=reasoning_preset,
+            budget_overrides=budget_overrides,
         )
 
 
@@ -1754,6 +2199,9 @@ def prove_theorem_agentic(
     theorem_with_sorry: str,
     on_log: callable | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    formalization_context: dict[str, Any] | None = None,
+    reasoning_preset: str | None = None,
+    budget_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Agentic prover using Leanstral + MCP via Mistral's Conversations API.
@@ -1764,18 +2212,31 @@ def prove_theorem_agentic(
     Args:
         theorem_with_sorry: Complete Lean 4 theorem with sorry placeholder.
         on_log: Optional callback for pipeline log entries.
-        max_steps: Advisory step budget (actual loop is managed by run_async).
+        max_steps: Legacy advisory step budget override.
+        formalization_context: Structured formalizer handoff metadata.
+        reasoning_preset: One of normal, medium, or high.
+        budget_overrides: Optional low-level proving-budget overrides.
 
     Returns:
         dict with keys: success, strategy, proof_tactics, full_lean_code,
         errors, warnings, tool_trace, steps_used, mcp_enabled, agent_summary,
         stop_reason, output_lean, elapsed_seconds.
     """
+    resolved_budget = resolve_budget_config(
+        reasoning_preset=reasoning_preset,
+        budget_overrides={
+            **(budget_overrides or {}),
+            **({"max_steps": max_steps} if max_steps != DEFAULT_MAX_STEPS else {}),
+        },
+    )
+
     return asyncio.run(
         _prove_theorem_agentic_async(
             theorem_with_sorry=theorem_with_sorry,
             on_log=on_log,
-            max_steps=max_steps,
+            max_steps=resolved_budget.max_steps,
+            formalization_context=formalization_context,
+            budget_config=resolved_budget,
         )
     )
 

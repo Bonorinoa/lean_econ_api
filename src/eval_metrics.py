@@ -15,6 +15,8 @@ SEARCH_TOOL_NAMES = {
     "lean_code_actions",
     "lean_state_search",
     "lean_hammer_premise",
+    "lean_local_search",
+    "lean_loogle",
 }
 
 

@@ -54,7 +54,9 @@ def test_aggregate_trace_metrics() -> None:
                     "tool_name": "lean_diagnostic_messages",
                     "kernel_errors": ["line 7: unknown identifier x"],
                     "blocked": True,
-                }
+                },
+                {"type": "tool_call", "tool_name": "lean_local_search"},
+                {"type": "tool_call", "tool_name": "lean_loogle"},
             ],
             "tactic_calls": [
                 {"tactic": "exact x", "successful": False},
@@ -65,13 +67,13 @@ def test_aggregate_trace_metrics() -> None:
     metrics = aggregate_trace_metrics(records)
     assert metrics["runs_considered"] == 2
     assert metrics["cache_replays_skipped"] == 0
-    assert metrics["total_tool_calls"] == 4
+    assert metrics["total_tool_calls"] == 6
     assert metrics["successful_tactic_applications"] == 1
-    assert metrics["tool_call_efficiency"] == 0.25
-    assert metrics["tool_call_waste_ratio"] == 0.75
+    assert metrics["tool_call_efficiency"] == 0.167
+    assert metrics["tool_call_waste_ratio"] == 0.833
     assert metrics["write_tool_calls"] == 1
     assert metrics["diagnostic_tool_calls"] == 2
-    assert metrics["search_tool_calls"] == 1
+    assert metrics["search_tool_calls"] == 3
     assert metrics["blocked_tool_calls"] == 1
     assert metrics["tactic_depth_average"] == 3.0
     assert metrics["error_frequency"]["line 7: unknown identifier x"] == 1

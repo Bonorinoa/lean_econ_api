@@ -5,6 +5,11 @@ mathematical claims in economics and adjacent mathematics. It turns plain
 language, LaTeX, or Lean 4 inputs into Lean-checked results using Lean 4,
 Mathlib, and the current Leanstral-backed proving loop.
 
+> **Active development has moved to [LeanEcon v2](https://github.com/Bonorinoa/leanecon_v2).**
+> This repository (v1) is in maintenance-only mode. Critical fixes only.
+> See the v2 repo for the provider-agnostic architecture, autoresearch loops,
+> and the simplified API contract.
+
 The public workflow is intentionally explicit:
 
 1. `POST /api/v1/classify` for optional scope hints and preamble suggestions
@@ -28,28 +33,33 @@ compile/debug primitive. It is not the default workflow.
 
 ## Current Lane Reality
 
-The current benchmark story is still consistent:
+The current benchmark story is stable:
 
-- strongest lanes: `theorem_stub -> verify` and `raw_lean -> verify`
-- weakest lane: `raw_claim -> full API`
-- natural-language formalization is improving, but it is still the least stable stage
+- strongest public lanes: `theorem_stub -> verify` and `raw_lean -> verify`
+- weakest public lane: `raw_claim -> full API`
+- bounded formalization is still mixed on the tier-1 core slice and frontier
+  claims
 
 From the latest completed tier-1 full benchmark report
-[`benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`](benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md):
+[`benchmarks/reports/tier1_core_selected_full_full_20260328T181026Z.md`](benchmarks/reports/tier1_core_selected_full_full_20260328T181026Z.md):
 
-- `raw_claim -> full API`: `pass@1 = 0.333`
+- `raw_claim -> full API`: `pass@1 = 0.000`
 - `theorem_stub -> verify`: `pass@1 = 1.000`
 - `raw_lean -> verify`: `pass@1 = 1.000`
 
 The latest completed tier-1 formalizer-only report
-[`benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md`](benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md)
-shows the bounded claim-shaping gate at `pass@1 = 0.833`, with semantic `>=4`
-on `1.000` of graded completions.
+[`benchmarks/reports/tier1_core_formalizer_only_20260328T174455Z.md`](benchmarks/reports/tier1_core_formalizer_only_20260328T174455Z.md)
+shows the bounded claim-shaping gate at `pass@1 = 0.667`, with semantic `>=4`
+on `0.750` of graded completions.
 
-That means LeanEcon is still strongest when the statement is already well
-formed. The main work is still claim shaping and full end-to-end raw-claim
-reliability, not final Lean kernel acceptance once the statement is in good
-Lean form.
+The latest completed tier-2 frontier formalizer-only report
+[`benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md`](benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md)
+shows `pass@1 = 0.667`, with the extreme-value repair case still failing.
+
+LeanEcon remains strongest when the statement is already in good Lean form.
+The frozen v1 gap is still end-to-end `raw_claim` reliability; the latest
+selected tier-1 rerun restored strong theorem-stub and raw-Lean verification,
+but raw claims still fail on that slice.
 
 ## Pricing And Status
 
@@ -65,7 +75,9 @@ pricing promise.
 ## Canonical Docs
 
 - [`docs/API.md`](docs/API.md): operational canonical API guide
-- [`docs/TECHNICAL_WHITEPAPER.md`](docs/TECHNICAL_WHITEPAPER.md): architecture and trust model
+- [`docs/HARNESS_FORMALIZER_PROVER_REPORT.tex`](docs/HARNESS_FORMALIZER_PROVER_REPORT.tex): canonical architecture and trust-model audit
+- [`docs/FINAL_V1_BENCHMARK.md`](docs/FINAL_V1_BENCHMARK.md): final maintenance-mode validation and benchmark baseline
+- [`docs/leanstral_architecture.html`](docs/leanstral_architecture.html): archived historical note; not the current architecture source of truth
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md): local Docker and deployment notes
 - [`docs/MCP_AGENTIC_PROVER_BRIEF.md`](docs/MCP_AGENTIC_PROVER_BRIEF.md): archived background note
 - [`CONTRIBUTING.md`](CONTRIBUTING.md): lightweight contributor guidance
@@ -103,7 +115,7 @@ cd ..
 ### Run
 
 ```bash
-uvicorn src.api:app --host 0.0.0.0 --port 8000
+./leanEconAPI_venv/bin/python -m uvicorn src.api:app --host 0.0.0.0 --port 8000
 ```
 
 Open `http://localhost:8000/docs` for the generated Swagger UI.
@@ -115,6 +127,8 @@ The lightweight local checks are:
 ```bash
 ./leanEconAPI_venv/bin/ruff check src tests scripts
 ./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q
+./leanEconAPI_venv/bin/python src/mcp_smoke_test.py
+cd lean_workspace && lake build && cd ..
 ```
 
 For deployed API gating, also run:
@@ -129,15 +143,20 @@ For deployed API gating, also run:
 Treat that command as passing only when it exits `0` and reports
 `summary.overall_ok = true`.
 
-Latest local release sweep on 2026-03-25:
+Latest local maintenance sweep on 2026-03-28:
 
 - `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
 - `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
-  `216 passed, 13 deselected`
+  `253 passed, 13 deselected`
+- `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`: exited `0`
+- `cd lean_workspace && lake build && cd ..`: passed
+
+Most recent Railway production smoke:
+
 - `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`:
-  exited `0` on 2026-03-25 after the tightened release gate passed; `/health`,
-  `/openapi.json`, `/api/v1/metrics`, `/api/v1/cache/stats`, classify, and
-  formalize all returned success, and the sample verify job completed on the
+  exited `0` on 2026-03-28; `/health`, `/openapi.json`, `/api/v1/metrics`,
+  `/api/v1/cache/stats`, classify, and formalize all returned success, and the
+  sample verify job completed on the
   first poll from cache with `current_stage = "cache"` and `partial = false`
 
 For API-specific smoke checks, see `tests/test_api_smoke.py`.

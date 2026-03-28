@@ -24,9 +24,15 @@ class _FakeSession:
         self._result = result
 
     async def call_tool(self, name: str, arguments: dict):
-        assert name in {"lean_file_outline", "lean_run_code", "lean_verify"}
+        assert name in {
+            "lean_file_outline",
+            "lean_diagnostic_messages",
+            "lean_goal",
+            "lean_run_code",
+            "lean_verify",
+        }
         assert isinstance(arguments, dict)
-        if name == "lean_file_outline":
+        if name in {"lean_file_outline", "lean_diagnostic_messages", "lean_goal"}:
             return SimpleNamespace(isError=False, content=[{"text": "{}"}])
         return self._result
 
@@ -154,7 +160,7 @@ def test_extract_theorem_name() -> None:
     assert lean_runner.extract_theorem_name("theorem demo : True := by trivial") == "demo"
 
 
-def test_run_code_primes_session_before_run_code(monkeypatch) -> None:
+def test_run_code_bootstraps_validation_session_before_run_code(monkeypatch) -> None:
     events: list[str] = []
     payload = {
         "success": True,
@@ -178,35 +184,95 @@ def test_run_code_primes_session_before_run_code(monkeypatch) -> None:
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-    async def _prime(session) -> None:
-        events.append("prime_start")
+    async def _bootstrap(session) -> None:
+        events.append("bootstrap_start")
         await session.call_tool(
-            "lean_file_outline",
-            {"file_path": "LeanEcon/McpSmoke.lean", "max_declarations": "1"},
+            "lean_diagnostic_messages",
+            {"file_path": "LeanEcon/McpSmoke.lean"},
         )
-        events.append("prime_done")
+        await session.call_tool(
+            "lean_goal",
+            {"file_path": "LeanEcon/McpSmoke.lean", "line": 4},
+        )
+        events.append("bootstrap_done")
 
     monkeypatch.setattr(lean_runner, "open_lean_mcp_session", lambda: _RunCodeContext())
-    monkeypatch.setattr(lean_runner, "prime_lean_mcp_session", _prime)
+    monkeypatch.setattr(lean_runner, "bootstrap_formalization_validation_session", _bootstrap)
 
     output = asyncio.run(lean_runner._run_code_async("import Mathlib"))
 
     assert output["valid"] is True
-    assert events == ["prime_start", "lean_file_outline", "prime_done", "lean_run_code"]
+    assert events == [
+        "bootstrap_start",
+        "lean_diagnostic_messages",
+        "lean_goal",
+        "bootstrap_done",
+        "lean_run_code",
+    ]
+
+
+def test_run_code_retries_once_after_project_path_bootstrap_failure(monkeypatch) -> None:
+    calls = {"bootstrap": 0, "lean_run_code": 0}
+    success_payload = {
+        "success": True,
+        "diagnostics": [
+            {"severity": "warning", "message": "declaration uses `sorry`"},
+        ],
+    }
+
+    class _RetrySession:
+        async def call_tool(self, name: str, arguments: dict):
+            assert isinstance(arguments, dict)
+            if name == "lean_run_code":
+                calls["lean_run_code"] += 1
+                if calls["lean_run_code"] == 1:
+                    return SimpleNamespace(
+                        isError=True,
+                        content=[
+                            {
+                                "text": (
+                                    "Error executing tool lean_run_code: "
+                                    "No valid Lean project path found. "
+                                    "Run another tool first to set it up."
+                                )
+                            }
+                        ],
+                    )
+                return SimpleNamespace(
+                    isError=False,
+                    content=[{"text": json.dumps(success_payload)}],
+                )
+            return SimpleNamespace(isError=False, content=[{"text": "{}"}])
+
+    class _RetrySessionContext:
+        async def __aenter__(self):
+            return _RetrySession()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _bootstrap(_session) -> None:
+        calls["bootstrap"] += 1
+
+    monkeypatch.setattr(lean_runner, "open_lean_mcp_session", lambda: _RetrySessionContext())
+    monkeypatch.setattr(lean_runner, "bootstrap_formalization_validation_session", _bootstrap)
+
+    output = asyncio.run(lean_runner._run_code_async("import Mathlib"))
+
+    assert output["valid"] is True
+    assert calls == {"bootstrap": 2, "lean_run_code": 2}
 
 
 def test_run_code_circuit_breaker_skips_repeated_failures(monkeypatch) -> None:
     mcp_runtime.reset_formalization_mcp_status()
-    calls = {"primer": 0, "lean_run_code": 0}
+    calls = {"bootstrap": 0, "lean_run_code": 0}
 
     class _ProjectPathSession:
         async def call_tool(self, name: str, arguments: dict):
             assert isinstance(arguments, dict)
-            if name == "lean_file_outline":
-                calls["primer"] += 1
+            if name != "lean_run_code":
                 return SimpleNamespace(isError=False, content=[{"text": "{}"}])
             calls["lean_run_code"] += 1
-            assert name == "lean_run_code"
             return SimpleNamespace(
                 isError=True,
                 content=[
@@ -226,18 +292,22 @@ def test_run_code_circuit_breaker_skips_repeated_failures(monkeypatch) -> None:
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
+    async def _bootstrap(_session) -> None:
+        calls["bootstrap"] += 1
+
     monkeypatch.setattr(lean_runner, "open_lean_mcp_session", lambda: _ProjectPathContext())
+    monkeypatch.setattr(lean_runner, "bootstrap_formalization_validation_session", _bootstrap)
 
     with pytest.raises(RuntimeError, match="No valid Lean project path found"):
         asyncio.run(lean_runner._run_code_async("import Mathlib"))
 
-    assert calls["primer"] == 1
-    assert calls["lean_run_code"] == 1
+    assert calls["bootstrap"] == 2
+    assert calls["lean_run_code"] == 2
 
     with pytest.raises(RuntimeError, match="temporarily disabled"):
         asyncio.run(lean_runner._run_code_async("import Mathlib"))
 
-    assert calls["lean_run_code"] == 1
+    assert calls["lean_run_code"] == 2
     retrieval_allowed, retrieval_reason = mcp_runtime.formalization_mcp_available(
         capability=mcp_runtime.FORMALIZATION_MCP_CAPABILITY_RETRIEVAL
     )

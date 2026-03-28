@@ -24,6 +24,9 @@ class ProverBackend(Protocol):
         self,
         theorem_with_sorry: str,
         on_log: Any | None = None,
+        formalization_context: dict[str, Any] | None = None,
+        reasoning_preset: str | None = None,
+        budget_overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Attempt to prove the given theorem and return a normalized backend dict."""
         ...

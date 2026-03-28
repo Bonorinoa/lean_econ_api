@@ -44,6 +44,7 @@ class ProveResult(TypedDict):
     agent_elapsed_seconds: float
     axiom_info: dict[str, Any] | None
     provider_telemetry: dict[str, Any]
+    budget: dict[str, Any] | None
 
 
 def _build_run_log_entry(
@@ -156,6 +157,40 @@ def _empty_formalization_telemetry(model_label: str) -> dict[str, Any]:
     }
 
 
+def _empty_formalization_context(model_label: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "cache_hit": False,
+        "source": model_label,
+        "claim_text": "",
+        "claim_components": [],
+        "selected_preambles": [],
+        "explicit_preambles": [],
+        "auto_preambles": [],
+        "preamble_imports": [],
+        "candidate_imports": [],
+        "candidate_identifiers": [],
+        "search_terms": [],
+        "shape_guidance": [],
+        "retrieval_notes": [],
+        "retrieval": {
+            "source_counts": {},
+            "mcp_enabled": False,
+            "mcp_skip_reason": None,
+            "mcp_hits": [],
+        },
+        "validation": {
+            "method": None,
+            "methods": [],
+            "fallback_reasons": [],
+        },
+        "repairs": {
+            "repair_buckets": [],
+            "deterministic_repairs_applied": [],
+        },
+    }
+
+
 def _formalization_log_payload(formalization: dict[str, Any]) -> dict[str, Any]:
     return {
         "success": formalization.get("success", False),
@@ -187,10 +222,14 @@ def _raw_lean_formalization_result(raw_input: str) -> dict[str, Any]:
         "suggested_fix": None,
         "fixable": None,
         "formalizer_telemetry": _empty_formalization_telemetry("raw_lean_bypass"),
+        "formalization_context": _empty_formalization_context("raw_lean_bypass"),
     }
 
 
-def _preformalized_result(theorem_code: str) -> dict[str, Any]:
+def _preformalized_result(
+    theorem_code: str,
+    formalization_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "success": True,
         "theorem_code": theorem_code.strip(),
@@ -203,6 +242,8 @@ def _preformalized_result(theorem_code: str) -> dict[str, Any]:
         "suggested_fix": None,
         "fixable": None,
         "formalizer_telemetry": _empty_formalization_telemetry("preformalized_input"),
+        "formalization_context": formalization_context
+        or _empty_formalization_context("preformalized_input"),
     }
 
 
@@ -237,6 +278,8 @@ def _failed_pipeline_result(
         "agent_elapsed_seconds": 0.0,
         "axiom_info": None,
         "provider_telemetry": provider_telemetry,
+        "formalization_context": f_result.get("formalization_context"),
+        "budget": None,
     }
 
 
@@ -281,6 +324,8 @@ def _successful_pipeline_result(
         "agent_elapsed_seconds": pv_result["agent_elapsed_seconds"],
         "axiom_info": pv_result.get("axiom_info"),
         "provider_telemetry": provider_telemetry,
+        "formalization_context": f_result.get("formalization_context"),
+        "budget": pv_result.get("budget"),
     }
 
 
@@ -348,13 +393,22 @@ def prove_and_verify(
     theorem_with_sorry: str,
     on_log: callable | None = None,
     prover_name: str = "leanstral",
+    formalization_context: dict[str, Any] | None = None,
+    reasoning_preset: str | None = None,
+    budget_overrides: dict[str, Any] | None = None,
 ) -> ProveResult:
     """Phase 2: proof generation plus final Lean verification."""
     prover = get_prover(prover_name)
     success = False
     _log(on_log, "prover_dispatch", f"Using prover: {prover.name}", status="running")
     t_prover = time.time()
-    result = prover.prove(theorem_with_sorry, on_log=on_log)
+    result = prover.prove(
+        theorem_with_sorry,
+        on_log=on_log,
+        formalization_context=formalization_context,
+        reasoning_preset=reasoning_preset,
+        budget_overrides=budget_overrides,
+    )
     success = result.get("success", False)
     _log(
         on_log,
@@ -383,6 +437,7 @@ def prove_and_verify(
         "agent_elapsed_seconds": result.get("elapsed_seconds", 0.0),
         "axiom_info": result.get("axiom_info"),
         "provider_telemetry": result.get("provider_telemetry", summarize_provider_calls([])),
+        "budget": result.get("budget"),
     }
 
 
@@ -390,6 +445,9 @@ def run_pipeline(
     raw_input: str,
     on_log: callable | None = None,
     preformalized_theorem: str | None = None,
+    formalization_context: dict[str, Any] | None = None,
+    reasoning_preset: str | None = None,
+    budget_overrides: dict[str, Any] | None = None,
     use_cache: bool = True,
 ) -> dict:
     """
@@ -424,6 +482,8 @@ def run_pipeline(
             cached.setdefault("trace_schema_version", 1)
             cached.setdefault("agent_summary", "")
             cached.setdefault("agent_elapsed_seconds", 0.0)
+            cached.setdefault("budget", None)
+            cached.setdefault("formalization_context", None)
             cached_theorem = (
                 cached.get("theorem_statement") or cached.get("lean_code") or cache_key_input
             )
@@ -453,6 +513,7 @@ def run_pipeline(
                         "tactic_calls": cached.get("tactic_calls", []),
                         "trace_schema_version": cached.get("trace_schema_version", 1),
                         "agent_summary": cached.get("agent_summary", ""),
+                        "budget": cached.get("budget"),
                         "provider_telemetry": summarize_provider_calls([]),
                     },
                     verification={
@@ -471,7 +532,10 @@ def run_pipeline(
             return cached
 
     if preformalized_theorem is not None:
-        f_result = _preformalized_result(preformalized_theorem)
+        f_result = _preformalized_result(
+            preformalized_theorem,
+            formalization_context=formalization_context,
+        )
     else:
         f_result = formalize_claim(raw_input, on_log=on_log, use_cache=use_cache)
 
@@ -499,6 +563,7 @@ def run_pipeline(
                     "tactic_calls": [],
                     "trace_schema_version": 1,
                     "agent_summary": "",
+                    "budget": None,
                     "provider_telemetry": summarize_provider_calls([]),
                 },
                 verification={
@@ -516,7 +581,13 @@ def run_pipeline(
         return result
 
     theorem_with_sorry = f_result["theorem_code"]
-    pv_result = prove_and_verify(theorem_with_sorry, on_log=on_log)
+    pv_result = prove_and_verify(
+        theorem_with_sorry,
+        on_log=on_log,
+        formalization_context=f_result.get("formalization_context"),
+        reasoning_preset=reasoning_preset,
+        budget_overrides=budget_overrides,
+    )
     provider_telemetry = _combined_provider_telemetry(
         f_result.get("formalizer_telemetry", {}).get("provider_telemetry"),
         pv_result.get("provider_telemetry"),
@@ -547,6 +618,7 @@ def run_pipeline(
                 "tactic_calls": pv_result["tactic_calls"],
                 "trace_schema_version": pv_result["trace_schema_version"],
                 "agent_summary": pv_result["agent_summary"],
+                "budget": pv_result.get("budget"),
                 "provider_telemetry": pv_result["provider_telemetry"],
             },
             verification={

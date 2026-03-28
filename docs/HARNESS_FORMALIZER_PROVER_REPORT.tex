@@ -1,0 +1,480 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue,
+  pdftitle={Harness, Formalizer, and Agentic Prover Audit},
+  pdfauthor={LeanEcon internal engineering note}
+}
+
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\title{Harness, Formalizer, and Agentic Prover Audit}
+\author{LeanEcon internal engineering note}
+\date{March 25, 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Executive Summary}
+
+LeanEcon's current backend is not architecturally broken. The benchmark harness,
+bounded formalizer, and agentic prover are separated cleanly enough that the
+system can be hardened in place. The main problems are not missing modules;
+they are missing context transfer, slow fallback paths, and expensive proving
+loops whose search quality is still weak relative to their runtime.
+
+The core diagnosis is straightforward:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item The formalizer is not receiving the full benefit of Lean-aware search.
+  Its retrieval layer is mostly prompt-time only, optional MCP search is off by
+  default in code, and the fast \texttt{lean\_run\_code} validation path is
+  effectively unavailable in the benchmark evidence.
+  \item The prover does real work, but it starts cold on every run and never
+  inherits the formalizer's structured retrieval context. It receives a theorem
+  stub, not the imports, identifiers, shape guidance, or diagnosis that led to
+  that stub.
+  \item The live Lovable integration adds a frontend handoff problem on top of
+  the backend issues: explicit preamble choices are not preserved consistently,
+  and the classify path can broaden a user-selected preamble into a noisier
+  request payload.
+\end{enumerate}
+
+This document isolates the engineering system behind the harness, formalizer,
+and prover; separates strengths from current limitations; explains the most
+likely causes of runtime slowness; and ends with a prioritized remediation
+stack.
+
+\section{System Boundary}
+
+\subsection*{Subsystem ownership}
+
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.18\textwidth} >{\raggedright\arraybackslash}p{0.34\textwidth} Y}
+\toprule
+Subsystem & Code ownership & Role in the system \\
+\midrule
+Benchmark harness & \texttt{src/benchmark\_harness.py} & Runs lane-based backend evaluations, aggregates latency, pass rates, stop reasons, partial runs, repair buckets, retrieval counts, semantic alignment, and provider telemetry. It measures backend behavior, not Lovable UI handoffs. \\
+Formalizer & \texttt{src/formalizer.py}, \texttt{src/formalization\_search.py} & Cleans natural-language claims, builds bounded retrieval context, selects preambles, prompts Leanstral, applies deterministic repairs, and validates theorem stubs with \texttt{sorry}. \\
+Agentic prover / verifier & \texttt{src/agentic\_prover.py}, \texttt{src/mcp\_runtime.py}, \texttt{src/lean\_verifier.py} & Drives tool-using proof search through Mistral Conversations plus \texttt{lean-lsp-mcp}, then performs the final truth check with local Lean compilation. \\
+\bottomrule
+\end{tabularx}
+
+\subsection*{Runtime path from Lovable UI to Lean kernel}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item The Lovable frontend sends a claim to \texttt{/api/v1/classify} or
+  skips directly to \texttt{/api/v1/formalize}.
+  \item The formalizer builds a bounded retrieval context from keyword-ranked
+  preambles, curated static hints, and optional MCP search hits.
+  \item Leanstral produces a theorem stub ending in \texttt{sorry}; the
+  formalizer may repair and revalidate it.
+  \item The API queues \texttt{/api/v1/verify}, which calls
+  \texttt{run\_pipeline(..., preformalized\_theorem=...)}.
+  \item The agentic prover creates a fresh working Lean file, a fresh Mistral
+  RunContext, and a fresh MCP client registration.
+  \item The prover iterates between tactic writes and Lean diagnostics until it
+  either reaches a proof, times out, or trips an internal budget guard.
+  \item Final truth comes from \texttt{lake env lean} on an isolated per-run
+  Lean file, not from MCP.
+\end{enumerate}
+
+\section{Strengths of the Current Design}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item The module boundaries are good. Classification, formalization,
+  retrieval, proving, verification, caching, and job orchestration are
+  separated rather than tangled together.
+  \item Final truth is anchored in local Lean compilation. MCP is advisory and
+  interactive; it is not the trust root.
+  \item Verification uses unique temporary Lean files rather than a shared
+  tracked module, which makes concurrent verify jobs far safer than the old
+  single-file path.
+  \item The harness is already more honest than many systems at this stage. It
+  splits lanes, records partial outcomes, exposes repair buckets, and tracks
+  provider telemetry rather than hiding weak paths behind one blended metric.
+  \item The prover is genuinely MCP-backed. This is not paper architecture:
+  tool traces, diagnostic checks, search budgets, and interruption handling all
+  exist in the implementation.
+  \item The preamble library, catalog generation, and bounded retrieval helpers
+  give the system a reusable domain substrate instead of asking the model to
+  reinvent all economics definitions from scratch every time.
+\end{itemize}
+
+\section{Limitations of the Current Design}
+
+\begin{itemize}[leftmargin=1.5em]
+  \item Formalization retrieval is shallow. The system can inject imports and
+  prompt hints, but it does not yet use retrieval as an active search-and-check
+  loop.
+  \item The formalizer and prover are loosely coupled. The pipeline hands the
+  prover only theorem text, so the prover must rediscover context the
+  formalizer already assembled.
+  \item Public API models strip away the deep telemetry needed to debug why a
+  given claim was slow or why retrieval was skipped. The code keeps that
+  telemetry internally, but the frontend cannot see it.
+  \item Preamble matching uses two different policies: a broad classifier-facing
+  matcher and a tighter formalizer auto-selection matcher. That mismatch creates
+  avoidable noise.
+  \item The benchmark harness measures backend lanes, but it does not cover the
+  Lovable UI branch logic that decides whether explicit preambles are preserved,
+  widened, or dropped before \texttt{/formalize}.
+  \item Agentic proof search still buys too little for what it costs on harder
+  claims. The current trace data shows many tool cycles ending in no verified
+  progress.
+\end{itemize}
+
+\section{Why the System Is Slow}
+
+\subsection*{1. Fast formalizer validation is not carrying the load}
+
+The intended fast path for \texttt{sorry}-validation is
+\texttt{lean\_run\_code} through MCP. In practice, the benchmark evidence says
+that the formalizer is almost always falling back to local
+\texttt{lake env lean} checks instead.
+
+The latest tier-1 formalizer-only report shows:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \texttt{validation\_method = lake\_env\_lean} on all 6 attempts
+  \item \texttt{validation\_fallback\_reason = lean\_run\_code\_unavailable} on all 6 attempts
+  \item a p50 formalizer latency of 18{,}431.8 ms and a p95 of 80{,}031.8 ms
+\end{itemize}
+
+This is consistent with the code comments in \texttt{src/lean\_verifier.py},
+the tests in \texttt{tests/test\_lean\_runner.py}, and multiple snapshot
+artifacts that record MCP-side failure text of the form ``No valid Lean project
+path found. Run another tool first to set it up.'' The result is that the
+formalizer is paying a full local compiler check far more often than intended.
+
+\subsection*{2. Formalization MCP retrieval is off by default}
+
+The retrieval helper in \texttt{src/formalization\_search.py} sets
+\texttt{LEANECON\_ENABLE\_FORMALIZATION\_MCP\_SEARCH} to false unless the
+environment overrides it. During this audit, the repo-local environment files
+did not define a formalization retrieval flag, so the code default is the
+effective default. Even when enabled, the search budget is narrow:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item at most 2 MCP search queries
+  \item a 5-second overall retrieval timeout
+  \item prompt-time hits only, not a persistent retrieval state carried into proving
+\end{itemize}
+
+So the system's ``Mathlib search engine'' is present in code but not operating
+as a first-class runtime assistant.
+
+\subsection*{3. Every proving job starts cold}
+
+The prover deliberately creates a fresh RunContext and a fresh MCP client for
+each run because the current SDK lifecycle does not safely support warm reuse.
+That is a pragmatic choice, but it means every verify job pays:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item working file initialization
+  \item MCP tool registration
+  \item MCP session startup and priming
+  \item a brand new Conversations loop
+\end{itemize}
+
+This startup cost matters because proving is already the slowest lane even when
+formalization is bypassed. In the latest tier-1 full benchmark report:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \texttt{theorem\_stub -> verify} had p50 174{,}297.9 ms and p95 180{,}402.5 ms
+  \item \texttt{raw\_lean -> verify} had p50 138{,}305.2 ms and p95 146{,}799.8 ms
+\end{itemize}
+
+Those numbers show that prover-plus-verifier latency is a major bottleneck even
+when the claim-shaping stage is skipped.
+
+\subsection*{4. \texttt{TIMEOUT\_MS} is not a true total proof wall-clock cap}
+
+This is a code-based inference, but it is an important one. In
+\texttt{src/agentic\_prover.py}, \texttt{TIMEOUT\_MS = 120\_000} is commented as
+``2 minutes for the full run\_async conversation.'' The implementation does not
+enforce it that way. Instead, the value is passed as \texttt{timeout\_ms} to
+each individual \texttt{conversations.start\_async} and
+\texttt{conversations.append\_async} request.
+
+There is no outer \texttt{asyncio.wait\_for(...)} or other wall-clock guard
+around the entire proving session. That means aggregate proof runtime can
+substantially exceed 120 seconds if the loop keeps making successful append
+calls. The benchmark latencies above are consistent with that reading.
+
+\subsection*{5. The prover spends too many append cycles for the progress it gets}
+
+The local trace summary from \texttt{logs/runs.jsonl} is stark:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item 86 runs parsed
+  \item 959 tool calls
+  \item 83 successful tactic applications
+  \item tool-call efficiency 0.087
+  \item tool-call waste ratio 0.913
+\end{itemize}
+
+The tool mix is also revealing:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item 293 writes
+  \item 312 diagnostics
+  \item 70 search
+  \item 40 blocked calls
+\end{itemize}
+
+This is not a picture of a search loop that is quickly converging on proofs. It
+is a picture of a loop that is spending many expensive interaction cycles to get
+very little verified proof progress.
+
+\subsection*{6. Interrupted runs still pay for final verification}
+
+On timeout and other interruption paths, the prover calls back into
+\texttt{verify(current\_code)} on the partial state before returning. This is
+useful for salvaging partial value, but it means the system can pay for a final
+Lean compilation even after the proving loop has already gone long.
+
+\section{Why It Feels Disconnected from Preamble and Mathlib Search}
+
+\subsection*{1. Retrieval is present, but mostly as prompt text}
+
+The current formalization retrieval stack consists of:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item keyword-ranked preambles from \texttt{src/preamble\_library.py}
+  \item curated static import and identifier hints from \texttt{src/formalization\_search.py}
+  \item optional MCP \texttt{lean\_local\_search} hits when retrieval is enabled
+\end{itemize}
+
+That context is inserted into the prompt, and preamble imports are injected into
+the theorem stub. What it does not become is a persistent structured object that
+the prover can continue using.
+
+\subsection*{2. The prover never receives the formalizer's retrieval state}
+
+The key pipeline break is that \texttt{prove\_and\_verify()} receives only
+\texttt{theorem\_with\_sorry}. It does not receive:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item selected preamble names
+  \item candidate imports
+  \item candidate identifiers
+  \item shape guidance
+  \item retrieval notes
+  \item formalization diagnosis or repair history
+\end{itemize}
+
+As a result, the prover starts from a string and a working file path. It has to
+re-infer proof structure from the generated theorem rather than inheriting the
+formalizer's rationale.
+
+\subsection*{3. The prover's search surface is much narrower than the formalizer's ideal search surface}
+
+The agentic prover prunes its tools down to:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \texttt{apply\_tactic}
+  \item \texttt{lean\_goal}
+  \item \texttt{lean\_diagnostic\_messages}
+  \item \texttt{lean\_multi\_attempt}
+  \item \texttt{lean\_code\_actions}
+  \item \texttt{lean\_state\_search}
+  \item \texttt{lean\_hammer\_premise}
+\end{itemize}
+
+Notably absent are the broader discovery tools that would make the system feel
+connected to a true Mathlib search workflow, such as \texttt{lean\_local\_search},
+completions, finder-style semantic search, or import discovery.
+
+\subsection*{4. The preamble policies are mismatched}
+
+This is one of the clearest design disconnects in the current system:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item \texttt{classify\_claim()} uses \texttt{find\_matching\_preambles()},
+  which is based on the broad \texttt{keywords} list.
+  \item \texttt{build\_formalization\_context()} uses
+  \texttt{rank\_matching\_preambles(auto=True)}, which uses tighter
+  \texttt{auto\_keywords} and caps automatic selection at 2 entries.
+\end{itemize}
+
+For CRRA-style claims, the broad classifier matcher can pull in
+\texttt{cara\_utility} because the keywords overlap on phrases such as
+``risk aversion'' and ``derivative.'' The formalizer's auto-selection path is
+tighter and, by test design, tries to avoid that noise.
+
+\subsection*{5. The public API hides the telemetry needed to debug retrieval}
+
+\texttt{FormalizeResponse} exposes \texttt{provider\_telemetry} but not the
+full \texttt{formalizer\_telemetry} object. \texttt{VerifyResponse} likewise
+omits deep trace fields such as \texttt{tool\_trace}, \texttt{tactic\_calls},
+and the agent summary that exist internally.
+
+This matters because a frontend engineer looking only at the public API cannot
+see:
+
+\begin{itemize}[leftmargin=1.5em]
+  \item whether MCP retrieval ran
+  \item why retrieval was skipped
+  \item which validation method was used
+  \item how many repair buckets fired
+  \item how much proof search was blocked or wasted
+\end{itemize}
+
+\subsection*{6. The Lovable handoff really is inconsistent}
+
+Live Playwright reproduction on \url{https://leanecon-demo.lovable.app/} on
+March 25, 2026 showed three different handoff behaviors:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Theorem-card \texttt{Pipeline}} initially populated the claim
+  text but did not visibly preload preamble context.
+  \item \textbf{\texttt{Use 1 in Pipeline}} visibly loaded exactly one explicit
+  preamble (\texttt{crra\_utility}) before the run started.
+  \item After clicking the normal classify path from that same one-preamble
+  starting point, the frontend sent \texttt{/formalize} a broadened payload of
+  three explicit preambles:
+  \texttt{crra\_utility}, \texttt{arrow\_pratt\_rra}, and \texttt{cara\_utility}.
+  \item After clicking \texttt{Skip classify} from both theorem-card and
+  one-preamble starting points, the frontend sent \texttt{/formalize} no
+  explicit \texttt{preamble\_names} at all and relied on backend auto-selection.
+\end{enumerate}
+
+That is not just a cosmetic UI inconsistency. It changes the actual backend
+request body and therefore changes prompt context and theorem shape.
+
+\section{Evidence}
+
+\subsection*{Benchmark lane summary}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.34\textwidth} >{\raggedleft\arraybackslash}p{0.12\textwidth} >{\raggedleft\arraybackslash}p{0.12\textwidth} >{\raggedleft\arraybackslash}p{0.12\textwidth} Y}
+\toprule
+Source & pass@1 & p50 ms & p95 ms & Main signal \\
+\midrule
+Tier-1 full: raw\_claim -> full API & 0.333 & 367266.9 & 428133.6 & Weakest lane; claim shaping plus proof search is still the unstable path. \\
+Tier-1 full: theorem\_stub -> verify & 1.000 & 174297.9 & 180402.5 & Even strong prove-only runs are very slow, so prover/verifier cost dominates. \\
+Tier-1 full: raw\_lean -> verify & 1.000 & 138305.2 & 146799.8 & Bypassing formalization helps, but verify remains expensive. \\
+Tier-1 formalizer-only gate & 0.833 & 18431.8 & 80031.8 & Formalization is improving, but still falls back to slow local validation. \\
+\bottomrule
+\end{tabularx}
+\caption{Latest benchmark evidence used in this audit.}
+\end{table}
+
+\subsection*{Trace summary from \texttt{logs/runs.jsonl}}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.42\textwidth} >{\raggedleft\arraybackslash}p{0.18\textwidth} Y}
+\toprule
+Metric & Value & Interpretation \\
+\midrule
+Runs parsed & 86 & Sufficient to show proving behavior is not a one-off anecdote. \\
+Total tool calls & 959 & The prover is doing a large amount of interactive work. \\
+Successful tactic applications & 83 & Only a small fraction of tool activity ends in successful tactic steps. \\
+Tool-call efficiency & 0.087 & The search loop is low-yield. \\
+Tool-call waste ratio & 0.913 & Most tool activity does not translate into successful tactic progress. \\
+Tool mix & 293 writes, 312 diagnostics, 70 search, 40 blocked & Diagnostics and loop control consume a large share of runtime. \\
+\bottomrule
+\end{tabularx}
+\caption{Trace evidence from \texttt{scripts/analyze\_traces.py --runs-file logs/runs.jsonl --format text}.}
+\end{table}
+
+\subsection*{Live Lovable reproduction}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.29\textwidth} >{\raggedright\arraybackslash}p{0.33\textwidth} Y}
+\toprule
+Observation & Concrete evidence & Implication \\
+\midrule
+One explicit preamble was not stable through classify & \texttt{Use 1 in Pipeline} loaded \texttt{crra\_utility}, but the subsequent \texttt{/formalize} request sent three explicit preambles. & Classify-path request assembly can widen user intent and inject noise. \\
+Skip classify dropped explicit preambles entirely & \texttt{/formalize} request body contained only \texttt{raw\_claim}, even when one preamble had been preloaded in the UI. & The explicit preamble handoff is broken on this branch. \\
+Proof search timed out on a mid-level CRRA case & Verify ended with \texttt{partial = true}, \texttt{stop\_reason = timeout}, \texttt{phase = proved}. & Timeouts are not limited to frontier claims. \\
+The timeout was expensive before failing & Live CRRA run used 37 Conversations API calls and about 42.2 s of provider latency inside a 75.9 s job. & A large fraction of wall-clock time is consumed before the final Lean rejection. \\
+\bottomrule
+\end{tabularx}
+\caption{Live observations from \url{https://leanecon-demo.lovable.app/} on March 25, 2026.}
+\end{table}
+
+\subsection*{Worked example: CRRA reproduction}
+
+The clearest live reproduction from this audit used the claim ``Under CRRA
+utility, relative risk aversion equals gamma.'' The request path and outcome
+were:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item The classify path forwarded three explicit preambles:
+  \texttt{crra\_utility}, \texttt{arrow\_pratt\_rra}, and
+  \texttt{cara\_utility}.
+  \item The verify job ended with \texttt{partial = true},
+  \texttt{stop\_reason = timeout}, \texttt{phase = proved}, and
+  \texttt{proof\_generated = true}.
+  \item The final kernel error was
+  \texttt{field\_simp made no progress on goal}.
+  \item The partial proof still contained a nested \texttt{sorry}, and the UI
+  warning reported that the prover stopped during Lean/MCP cleanup after a timeout.
+  \item Provider telemetry for that run reported 37 Conversations API calls:
+  1 start plus 36 append calls.
+\end{enumerate}
+
+This example is useful because it was not an exotic frontier theorem. It was a
+preamble-backed, mid-level economics claim that should have benefited from the
+system's domain substrate, yet the runtime still degraded into an expensive
+partial proof.
+
+\section{Strategy}
+
+The highest-ROI remediation stack is:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Restore a reliable fast formalizer validation path.} Make
+  \texttt{lean\_run\_code} dependable again or replace it with an equally fast
+  project-aware validator. Until that is fixed, the formalizer will keep paying
+  local compiler costs too early and too often.
+  \item \textbf{Make formalization retrieval truly active and measurable.}
+  Turn MCP retrieval on deliberately, expand beyond static hints when useful,
+  and expose whether it ran, what it returned, and why it was skipped.
+  \item \textbf{Pass structured formalizer context into the prover.} The prover
+  should inherit selected preambles, candidate identifiers, theorem-shape
+  guidance, and repair diagnosis rather than re-deriving them from raw text.
+  \item \textbf{Fix frontend preamble handoff and merge policy.} A user-selected
+  preamble should either be preserved exactly or deliberately merged according
+  to a documented policy. It should not silently disappear on one branch and
+  silently widen on another.
+  \item \textbf{Add a real proof wall-clock budget and an append-round cap.}
+  Keep per-request API timeouts, but add an outer cap on total proving time and
+  total model round-trips.
+  \item \textbf{Expose debugging telemetry in the public API and UI.} At
+  minimum, surface validation method, retrieval usage, stop reason, partial
+  proof metadata, and a compact trace summary.
+  \item \textbf{Tighten benchmark and trace regression gates.} Add explicit
+  regression targets for timeout frequency, partial proof rate, append-round
+  counts, and tool-call efficiency on preamble-backed claims.
+\end{enumerate}
+
+\section*{Bottom Line}
+
+LeanEcon's engineering foundation is good enough to improve in place. The
+system is slow and feels disconnected from its search and preamble assets not
+because those assets are absent, but because they are only partially activated,
+not carried across subsystem boundaries, and not surfaced clearly enough to the
+frontend. The path forward is to make retrieval real, make context persistent,
+and make proving budgets honest.
+
+\end{document}

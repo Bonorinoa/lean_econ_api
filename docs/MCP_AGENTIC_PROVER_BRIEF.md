@@ -10,7 +10,8 @@ For the current workflow and endpoint contract, use:
 
 - [`README.md`](../README.md)
 - [`docs/API.md`](./API.md)
-- [`docs/TECHNICAL_WHITEPAPER.md`](./TECHNICAL_WHITEPAPER.md)
+- [`docs/HARNESS_FORMALIZER_PROVER_REPORT.tex`](./HARNESS_FORMALIZER_PROVER_REPORT.tex)
+- [`docs/leanstral_architecture.html`](./leanstral_architecture.html) for archived historical context only
 
 ## Historical Context
 

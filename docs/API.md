@@ -4,14 +4,21 @@ LeanEcon exposes a versioned REST API for claim classification, formalization,
 direct Lean compilation, proof generation, final verification, explanation,
 cache inspection, and benchmark snapshots.
 
+> **LeanEcon v1 is in maintenance-only mode.**
+> Active development has moved to [LeanEcon v2](https://github.com/Bonorinoa/leanecon_v2).
+
 Some endpoints now include optional provider telemetry and conservative cost
 estimates when real usage data exists. These fields are for observability, not
 billing, do not imply stable provider pricing or a stably free Leanstral tier,
 and `/api/v1/lean_compile` remains local-only.
 
 This guide is the operational source of truth. For the architecture and trust
-model, see [`docs/TECHNICAL_WHITEPAPER.md`](./TECHNICAL_WHITEPAPER.md). For the
-project landing page, see [`README.md`](../README.md).
+model, see
+[`docs/HARNESS_FORMALIZER_PROVER_REPORT.tex`](./HARNESS_FORMALIZER_PROVER_REPORT.tex).
+The older
+[`docs/leanstral_architecture.html`](./leanstral_architecture.html) file is
+retained only as an archived historical note.
+For the project landing page, see [`README.md`](../README.md).
 
 OpenAPI schema: `/openapi.json`
 
@@ -87,6 +94,8 @@ Important response fields:
 - `error_code`: machine-readable classifier outcome
 - `definitions_needed`: supporting detail for `DEFINABLE` claims
 - `preamble_matches`: reusable LeanEcon preamble modules
+- `auto_preamble_matches`: the bounded preamble set the backend would
+  auto-select if you do not choose explicit preambles at formalize time
 - `suggested_reformulation`: optional rewrite hint
 
 Behavior notes:
@@ -126,6 +135,13 @@ Important request fields:
 - `raw_claim`: plain text, LaTeX, or raw Lean 4 input
 - `preamble_names`: optional explicit preamble module names
 
+Preamble policy:
+
+- explicit `preamble_names` are authoritative and exact
+- unknown preamble names now return HTTP `422` instead of being silently dropped
+- when `preamble_names` is empty, the formalizer may still add bounded auto-selected
+  preambles using retrieval and curated hints
+
 Integration note:
 
 - clients handing off preamble-backed theorem-library examples into
@@ -146,6 +162,9 @@ Important response fields:
 - `diagnosis`: failure analysis when repair attempts are exhausted
 - `suggested_fix`: concrete suggestion for fixing the formalization
 - `fixable`: whether a human edit is likely to help
+- `formalization_context`: structured handoff metadata for downstream `/verify`
+  calls, including selected preambles, candidate imports, identifiers, runtime
+  search directives, retrieval notes, MCP hits, and validation metadata
 
 Behavior notes:
 
@@ -155,8 +174,10 @@ Behavior notes:
   preambles using bounded retrieval
 - compile failures are bucketed into import/module, identifier, typeclass,
   syntax, or semantic classes before targeted repair
-- MCP-backed search is opportunistic only; when unavailable, the formalizer
-  falls back to curated hints plus local Lean compilation
+- the runtime formalize path now enables bounded MCP retrieval by default and
+  folds the results into `formalization_context.runtime_search_plan`
+- MCP-backed search stays health-gated; when unavailable, the formalizer falls
+  back to curated hints plus local Lean compilation
 - `provider_telemetry`, when present, is observability metadata for the
   formalizer call set rather than a public pricing commitment
 
@@ -210,7 +231,17 @@ Request:
 ```json
 {
   "theorem_code": "import Mathlib\nopen Real\n\ntheorem one_plus_one : 1 + 1 = 2 := by\n  sorry",
-  "explain": false
+  "explain": false,
+  "preamble_names": ["crra_utility"],
+  "formalization_context": {
+    "schema_version": 1,
+    "selected_preambles": ["crra_utility"]
+  },
+  "reasoning_preset": "medium",
+  "budget_overrides": {
+    "wall_clock_timeout_seconds": 180,
+    "append_round_cap": 24
+  }
 }
 ```
 
@@ -221,6 +252,15 @@ Important request rules:
 - `explain=true` asks LeanEcon to include an explanation in the final job result
 - for the fastest user-facing flow, keep `explain=false` and call
   `/api/v1/explain` after the job completes
+- `formalization_context` is optional but recommended when `/formalize` and
+  `/verify` are decoupled across client steps
+- when `formalization_context` is present, preserve it unchanged so the prover
+  receives the formalizer's runtime search plan and retrieval hits
+- explicit `preamble_names`, when provided to `verify`, are authoritative and
+  must exactly match `formalization_context.selected_preambles` if both are sent
+- `reasoning_preset` may be `normal`, `medium`, or `high`
+- `budget_overrides` exposes experimental low-level controls such as wall-clock,
+  per-request timeout, append-round, and tool-budget caps
 
 Queue response:
 
@@ -274,9 +314,6 @@ Important fields inside `result`:
 - `from_cache`: whether the result came from the verified-result cache
 - `partial`: whether the prover timed out and returned partial output
 - `stop_reason`: prover stop reason when reported
-- `tool_trace`: ordered deep-trace events from the proving run
-- `tactic_calls`: tactic attempts with triggering Lean errors when available
-- `trace_schema_version`: schema marker for `tool_trace` and `tactic_calls`
 - `axiom_info`: optional axiom-usage metadata from final verification
 - `explanation`: optional natural-language explanation when `explain=true`
 - `explanation_generated`: whether the explanation was model-generated
@@ -285,6 +322,10 @@ Important fields inside `result`:
   proving calls when usage payloads were available
 - `explanation_telemetry`: separate observability metadata for the optional
   explanation call
+- `formalization_context`: the structured formalizer handoff metadata actually
+  used for the verify run, including retrieval hints and runtime search plan
+- `budget`: resolved proving-budget settings plus compact usage telemetry such as
+  append rounds used, tool calls used, stop reason, and timeout scope
 
 `axiom_info` is best-effort. Cache hits, local fast-path successes, or timed-out
 MCP axiom checks may leave it as `null` even when verification succeeds. When
@@ -417,7 +458,7 @@ Example response:
 
 ```json
 {
-  "size": 4
+  "size": 0
 }
 ```
 
@@ -451,41 +492,46 @@ Example response:
 
 ## Current Measured Status
 
-As of the 2026-03-25 local release sweep:
+As of the 2026-03-28 documentation refresh:
 
 - `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
 - `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
-  `216 passed, 13 deselected`
-- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`:
-  exited `0` on 2026-03-25 after the tightened gate passed; `/health`,
-  `/openapi.json`, `/api/v1/metrics`, `/api/v1/cache/stats`, classify, and
-  formalize all returned success, and the sample verify job completed on the
-  first poll from cache with `current_stage = "cache"` and `partial = false`
+  `253 passed, 13 deselected`
+- `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`: exited `0`
+- `cd lean_workspace && lake build && cd ..`: passed
+- most recent Railway production smoke:
+  `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`
+  exited `0` on 2026-03-28 with `summary.overall_ok = true`
 - latest completed full tier-1 lane report:
-  [`benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md)
+  [`benchmarks/reports/tier1_core_selected_full_full_20260328T181026Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260328T181026Z.md)
   shows:
-  - `raw_claim -> full API`: `pass@1 = 0.333`
+  - `raw_claim -> full API`: `pass@1 = 0.000`
   - `theorem_stub -> verify`: `pass@1 = 1.000`
   - `raw_lean -> verify`: `pass@1 = 1.000`
 - latest completed tier-1 formalizer-only report:
-  [`benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md)
+  [`benchmarks/reports/tier1_core_formalizer_only_20260328T174455Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260328T174455Z.md)
   shows:
-  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.833`
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.667`
+  - semantic `>=4` rate: `0.750`
+- latest completed tier-2 frontier formalizer-only report:
+  [`benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md`](../benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md)
+  shows:
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.667`
   - semantic `>=4` rate: `1.000`
 
-The practical takeaway is unchanged: raw Lean and theorem-stub verification are
-the strongest lanes; raw-claim full-API evaluation is still the weakest lane,
-and the refreshed bounded formalizer-only gate is still volatile even on the
-tier-1 core slice.
+The practical takeaway is now sharper: theorem-stub verification and raw Lean
+verification remain the strongest lanes; `raw_claim -> full API` remains the
+weakest public lane; and frontier natural-language formalization remains mixed.
 
 ## Validation Workflow
 
 Use local checks as the release gate before considering a deploy:
 
 ```bash
-ruff check src tests scripts
-pytest -m "not live and not slow" --tb=short -q
+./leanEconAPI_venv/bin/ruff check src tests scripts
+./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q
 ./leanEconAPI_venv/bin/python src/mcp_smoke_test.py
+cd lean_workspace && lake build && cd ..
 ./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10
 docker build .
 ```

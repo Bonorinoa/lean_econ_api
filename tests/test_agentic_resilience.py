@@ -16,13 +16,20 @@ from mistralai.extra.run.context import RunContext
 import agentic_prover
 from agentic_prover import (
     CIRCUIT_BREAKER_WARNING,
+    DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS,
+    DEFAULT_MAX_SEARCH_TOOL_CALLS,
     DUPLICATE_READ_ONLY_WARNING,
     LOCAL_FAST_PATH_MAX_ATTEMPTS,
+    REASONING_PRESET_HIGH,
+    REASONING_PRESET_MEDIUM,
+    REASONING_PRESET_NORMAL,
     SEARCH_BUDGET_WARNING,
     SEARCH_PRECONDITION_WARNING,
     AgenticToolTracker,
     ToolBudgetExceededError,
     TraceRecorder,
+    _build_formalizer_handoff_block,
+    _build_instructions,
     _install_guarded_execute_function_calls,
     _is_cancel_scope_error,
     _is_code_3001_error,
@@ -33,6 +40,7 @@ from agentic_prover import (
     _parse_diagnostic_payload,
     _prune_agentic_tools,
     _try_local_tactic_fast_path,
+    resolve_budget_config,
 )
 from mcp_runtime import LEAN_WORKSPACE
 from proof_file_controller import ProofFileController
@@ -160,9 +168,74 @@ def test_prune_agentic_tools_removes_low_roi_tools() -> None:
         "apply_tactic",
         "lean_diagnostic_messages",
         "lean_goal",
+        "lean_loogle",
         "lean_state_search",
     ]
-    assert removed == ["lean_build", "lean_loogle"]
+    assert removed == ["lean_build"]
+
+
+def test_resolve_budget_config_scales_preset_and_overrides() -> None:
+    budget = resolve_budget_config(
+        reasoning_preset=REASONING_PRESET_HIGH,
+        budget_overrides={"append_round_cap": 9, "max_search_tool_calls": 7},
+    )
+
+    assert budget.reasoning_preset == REASONING_PRESET_HIGH
+    assert budget.append_round_cap == 9
+    assert budget.max_search_tool_calls == 7
+    assert budget.wall_clock_timeout_seconds == 300.0
+    assert budget.overrides_applied == {
+        "append_round_cap": 9,
+        "max_search_tool_calls": 7,
+    }
+
+
+def test_resolve_budget_config_uses_tighter_default_search_and_read_only_limits() -> None:
+    budget = resolve_budget_config(reasoning_preset=REASONING_PRESET_MEDIUM)
+
+    assert budget.max_search_tool_calls == DEFAULT_MAX_SEARCH_TOOL_CALLS
+    assert budget.max_consecutive_read_only_calls == DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS
+
+
+def test_resolve_budget_config_rejects_unknown_preset() -> None:
+    with pytest.raises(ValueError, match="Unsupported reasoning_preset"):
+        resolve_budget_config(reasoning_preset=f"{REASONING_PRESET_NORMAL}_plus")
+
+
+def test_resolve_budget_config_rejects_unknown_override_key() -> None:
+    with pytest.raises(ValueError, match="Unsupported budget_overrides field"):
+        resolve_budget_config(budget_overrides={"unknown_budget": 1})
+
+
+def test_formalizer_handoff_block_omits_runtime_search_hints() -> None:
+    block = _build_formalizer_handoff_block(
+        {
+            "selected_preambles": ["crra_utility"],
+            "preamble_imports": ["LeanEcon.Preamble.Consumer.CRRAUtility"],
+            "runtime_search_plan": [
+                {
+                    "tool": "lean_local_search",
+                    "query": "crra_utility",
+                    "reason": "Verify the exact declaration name.",
+                }
+            ],
+            "retrieval": {
+                "mcp_hits": [
+                    {
+                        "source": "lean_loogle",
+                        "query": "crra_utility",
+                        "text": "crra_utility : ...",
+                    }
+                ]
+            },
+        }
+    )
+
+    assert "Selected preambles: crra_utility" in block
+    assert "Preamble imports already in scope: LeanEcon.Preamble.Consumer.CRRAUtility" in block
+    assert "Suggested runtime query: lean_local_search `crra_utility`" not in block
+    assert "lean_loogle `crra_utility`: crra_utility : ..." not in block
+    assert "Additional retrieval/search telemetry was preserved outside this prompt" in block
 
 
 def test_local_fast_path_solves_trivial_theorem(monkeypatch, tmp_path) -> None:
@@ -255,6 +328,33 @@ theorem benchmark_budget_constraint
     assert tactics.index("exact hspend") < tactics.index("omega")
 
 
+def test_local_fast_path_adds_order_tactics_for_inequalities() -> None:
+    theorem = """\
+import Mathlib
+
+theorem nonnegative_square (x : ℝ) : 0 ≤ x * x := by
+  sorry
+"""
+
+    tactics = _local_fast_path_tactics(theorem)
+
+    assert "positivity" in tactics
+    assert "gcongr" in tactics
+
+
+def test_local_fast_path_adds_norm_cast_for_mixed_numeric_domains() -> None:
+    theorem = """\
+import Mathlib
+
+theorem nat_real_cast_demo (n : ℕ) : (n : ℝ) = n := by
+  sorry
+"""
+
+    tactics = _local_fast_path_tactics(theorem)
+
+    assert "norm_cast" in tactics
+
+
 def test_local_fast_path_respects_compile_budget(monkeypatch, tmp_path) -> None:
     theorem = """\
 import Mathlib
@@ -300,6 +400,23 @@ theorem one_plus_one : 1 + 1 = 2 := by
     assert len(attempted_tactics) == LOCAL_FAST_PATH_MAX_ATTEMPTS
     assert attempted_tactics == ["norm_num", "omega", "ring_nf", "ring"]
     assert controller.current_tactic_block == "sorry"
+
+
+def test_build_instructions_mentions_core_budget_guidance() -> None:
+    instructions = _build_instructions(
+        "LeanEcon/Test.lean",
+        4,
+        max_total_tool_calls=36,
+        max_search_tool_calls=4,
+        max_consecutive_read_only_calls=6,
+    )
+
+    assert "You may use search/suggestion tools at most 4 times." in instructions
+    assert "More than 6 consecutive read-only tool calls ends the run." in instructions
+    assert (
+        "Prefer the cheap loop: lean_goal → apply_tactic → lean_diagnostic_messages."
+        in instructions
+    )
 
 
 def test_local_fast_path_restores_initial_state_on_failure(monkeypatch, tmp_path) -> None:
@@ -388,6 +505,44 @@ def test_interrupted_run_logs_terminal_verify_stage_for_partial_success(monkeypa
         if entry["stage"] in {"agentic_run", "agentic_verify"} and entry["status"] != "running"
     ]
     assert all(isinstance(entry["elapsed_ms"], float) for entry in terminal_entries)
+
+
+def test_interrupted_run_can_recover_success_without_partial_flag(monkeypatch) -> None:
+    class StubController:
+        current_tactic_block = "exact trivial"
+        current_lean_code = "import Mathlib\n\ntheorem run_error_demo : True := by\n  trivial\n"
+
+    monkeypatch.setattr(
+        agentic_prover,
+        "verify",
+        lambda lean_code: {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "output_lean": lean_code,
+            "axiom_info": None,
+        },
+    )
+
+    result = agentic_prover._build_interrupted_run_result(
+        controller=StubController(),
+        model_text="recovered proof",
+        tool_trace_entries=[],
+        tactic_call_log=[],
+        steps_used=3,
+        start_time=time.time() - 0.1,
+        agentic_run_started_at=time.time() - 0.05,
+        interruption_message="run_async failed after the latest proof-state update.",
+        stop_reason=agentic_prover.STOP_RUN_ERROR,
+        agent_summary="run_async failed after the latest proof-state update.",
+        partial=False,
+        on_log=None,
+    )
+
+    assert result["success"] is True
+    assert result["partial"] is False
+    assert result["stop_reason"] == agentic_prover.STOP_PROOF_COMPLETE
+    assert "run_async failed after the latest proof-state update." in result["warnings"]
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
-mistralai
-python-dotenv
-mcp
-griffe>=1.7.3,<2.0
-fastapi
-uvicorn
-httpx
+mistralai==2.0.5
+python-dotenv==1.2.2
+mcp==1.26.0
+griffe==1.15.0
+fastapi==0.135.1
+uvicorn==0.42.0
+httpx==0.28.1

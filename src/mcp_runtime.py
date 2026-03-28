@@ -45,6 +45,10 @@ LEAN_MCP_CLIENT_NAME = "lean-lsp-mcp"
 DEFAULT_MCP_RUNTIME_ROOT = str(PROJECT_ROOT / ".tmp" / "lean-lsp-mcp")
 MCP_STARTUP_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_STARTUP_TIMEOUT_SECONDS", "30"))
 MCP_TOOL_TIMEOUT_SECONDS = float(os.environ.get("LEANECON_MCP_TOOL_TIMEOUT_SECONDS", "60"))
+FORMALIZATION_MCP_BOOTSTRAP_TIMEOUT_SECONDS = max(
+    MCP_TOOL_TIMEOUT_SECONDS,
+    float(os.environ.get("LEANECON_FORMALIZATION_MCP_BOOTSTRAP_TIMEOUT_SECONDS", "180")),
+)
 FORMALIZATION_MCP_CAPABILITY_VALIDATION = "validation"
 FORMALIZATION_MCP_CAPABILITY_RETRIEVAL = "retrieval"
 FORMALIZATION_MCP_CAPABILITIES = (
@@ -55,6 +59,7 @@ FORMALIZATION_MCP_COOLDOWN_SECONDS = float(
     os.environ.get("LEANECON_FORMALIZATION_MCP_COOLDOWN_SECONDS", "120")
 )
 FORMALIZATION_MCP_PRIMER_FILE = LEAN_WORKSPACE / "LeanEcon" / "McpSmoke.lean"
+FORMALIZATION_MCP_PRIMER_GOAL_LINE = 4
 _FORMALIZATION_MCP_DISABLED_UNTIL = {
     capability: 0.0 for capability in FORMALIZATION_MCP_CAPABILITIES
 }
@@ -175,8 +180,13 @@ def lean_workspace_relative_path(path: Path) -> str:
         raise ValueError(f"Path is outside lean_workspace/: {path}") from exc
 
 
-async def prime_lean_mcp_session(session: ClientSession) -> None:
+async def prime_lean_mcp_session(
+    session: ClientSession,
+    *,
+    timeout_seconds: float | None = None,
+) -> None:
     """Prime a fresh Lean MCP session with a cheap file-based lookup."""
+    timeout = timeout_seconds or FORMALIZATION_MCP_BOOTSTRAP_TIMEOUT_SECONDS
     try:
         result = await asyncio.wait_for(
             session.call_tool(
@@ -186,12 +196,10 @@ async def prime_lean_mcp_session(session: ClientSession) -> None:
                     "max_declarations": "1",
                 },
             ),
-            timeout=MCP_TOOL_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except asyncio.TimeoutError as exc:
-        raise RuntimeError(
-            f"Lean MCP session primer timed out after {MCP_TOOL_TIMEOUT_SECONDS:.1f}s"
-        ) from exc
+        raise RuntimeError(f"Lean MCP session primer timed out after {timeout:.1f}s") from exc
 
     if getattr(result, "isError", False):
         raise RuntimeError(
@@ -199,12 +207,49 @@ async def prime_lean_mcp_session(session: ClientSession) -> None:
         )
 
 
+async def bootstrap_formalization_validation_session(
+    session: ClientSession,
+    *,
+    timeout_seconds: float | None = None,
+) -> None:
+    """Run extra project-aware MCP queries before validation-oriented tools."""
+    timeout = timeout_seconds or FORMALIZATION_MCP_BOOTSTRAP_TIMEOUT_SECONDS
+    file_path = lean_workspace_relative_path(FORMALIZATION_MCP_PRIMER_FILE)
+    await prime_lean_mcp_session(session, timeout_seconds=timeout)
+
+    diagnostics = await asyncio.wait_for(
+        session.call_tool(
+            "lean_diagnostic_messages",
+            {"file_path": file_path},
+        ),
+        timeout=timeout,
+    )
+    if getattr(diagnostics, "isError", False):
+        raise RuntimeError(
+            "Lean MCP validation bootstrap failed during diagnostics: "
+            f"{extract_mcp_text(diagnostics) or diagnostics}"
+        )
+
+    goal = await asyncio.wait_for(
+        session.call_tool(
+            "lean_goal",
+            {"file_path": file_path, "line": FORMALIZATION_MCP_PRIMER_GOAL_LINE},
+        ),
+        timeout=timeout,
+    )
+    if getattr(goal, "isError", False):
+        raise RuntimeError(
+            "Lean MCP validation bootstrap failed during goal query: "
+            f"{extract_mcp_text(goal) or goal}"
+        )
+
+
 @asynccontextmanager
 async def open_lean_mcp_session() -> AsyncIterator[ClientSession]:
     """Open an initialized raw MCP client session for lean-lsp-mcp."""
     params = build_lean_lsp_stdio_params()
-    try:
-        async with AsyncExitStack() as stack:
+    async with AsyncExitStack() as stack:
+        try:
             read_stream, write_stream = await asyncio.wait_for(
                 stack.enter_async_context(stdio_client(params)),
                 timeout=MCP_STARTUP_TIMEOUT_SECONDS,
@@ -214,17 +259,17 @@ async def open_lean_mcp_session() -> AsyncIterator[ClientSession]:
                 timeout=MCP_STARTUP_TIMEOUT_SECONDS,
             )
             await asyncio.wait_for(session.initialize(), timeout=MCP_STARTUP_TIMEOUT_SECONDS)
-            yield session
-    except asyncio.TimeoutError as exc:
-        raise RuntimeError(
-            _mcp_startup_failure_message(
-                f"timed out after {MCP_STARTUP_TIMEOUT_SECONDS:.0f}s during MCP session startup"
-            )
-        ) from exc
-    except RuntimeError:
-        raise
-    except Exception as exc:
-        raise RuntimeError(_mcp_startup_failure_message(str(exc))) from exc
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                _mcp_startup_failure_message(
+                    f"timed out after {MCP_STARTUP_TIMEOUT_SECONDS:.0f}s during MCP session startup"
+                )
+            ) from exc
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(_mcp_startup_failure_message(str(exc))) from exc
+        yield session
 
 
 def build_mistral_mcp_client() -> MCPClientSTDIO:
