@@ -4,6 +4,10 @@ Thanks for helping improve LeanEcon. This repository is intentionally small and
 single-repo, so contributions work best when they stay focused and easy to
 review.
 
+LeanEcon v1 is now in maintenance-only mode. For new features, architecture
+changes, or provider-agnostic work, target
+`https://github.com/Bonorinoa/leanecon_v2` instead.
+
 ## Ground Rules
 
 - keep Apache-2.0 and `NOTICE` intact
@@ -11,15 +15,17 @@ review.
 - prefer small, scoped changes with clear validation
 - do not introduce capabilities that the API does not actually have
 - keep `README.md` as the landing page, `docs/API.md` as the operational guide,
-  and `docs/TECHNICAL_WHITEPAPER.md` as the architecture/trust-model doc
+  and `docs/HARNESS_FORMALIZER_PROVER_REPORT.tex` as the architecture/trust-model
+  doc
 
 ## Local Validation
 
 Run the baseline checks before opening a change:
 
 ```bash
-ruff check src tests scripts
-pytest -m "not live and not slow" --tb=short -q
+./leanEconAPI_venv/bin/ruff check src tests scripts
+./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q
+cd lean_workspace && lake build && cd ..
 ```
 
 For API-related changes, also run:
@@ -52,6 +58,7 @@ tests from `tests/` and `scripts/`.
   default workflow
 - keep `/api/v1/formalize` as the claim-shaping step
 - keep `/api/v1/verify` as the async proving path
+- keep maintenance-mode messaging accurate and point net-new development to v2
 
 ## Security And Hardening Changes
 

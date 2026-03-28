@@ -73,9 +73,9 @@ def test_main_success(capsys) -> None:
 
 def test_run_raw_queries_raises_runtime_error_on_tool_call_timeout(monkeypatch) -> None:
     """Slow tool calls in smoke test must raise RuntimeError, not hang."""
-    # mcp_smoke_test imports open_lean_mcp_session and MCP_TOOL_TIMEOUT_SECONDS by name,
+    # mcp_smoke_test imports open_lean_mcp_session and its smoke timeout by name,
     # so we must patch the smoke test module's own namespace, not mcp_runtime's.
-    monkeypatch.setattr(mcp_smoke_test, "MCP_TOOL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(mcp_smoke_test, "SMOKE_MCP_TOOL_TIMEOUT_SECONDS", 0.01)
 
     class _SlowSession:
         async def call_tool(self, *_args, **_kwargs):

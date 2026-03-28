@@ -147,6 +147,11 @@ LOCAL_FAST_PATH_ALGEBRA_TACTICS = (
     "nlinarith",
 )
 LOCAL_FAST_PATH_FIELD_TACTICS = ("field_simp\nring",)
+LOCAL_FAST_PATH_ORDER_TACTICS = (
+    "positivity",
+    "gcongr",
+)
+LOCAL_FAST_PATH_CAST_TACTICS = ("norm_cast",)
 NUMERIC_LITERAL_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 TACTIC_HYPOTHESIS_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_']*$")
 
@@ -734,6 +739,12 @@ def _local_fast_path_tactics(theorem_with_sorry: str) -> list[str]:
         tactics.extend(LOCAL_FAST_PATH_ALGEBRA_TACTICS)
     if "/" in theorem_surface or "⁻¹" in theorem_surface:
         tactics.extend(LOCAL_FAST_PATH_FIELD_TACTICS)
+    if any(token in theorem_surface for token in ("≤", "<", "≥", ">")):
+        tactics.extend(LOCAL_FAST_PATH_ORDER_TACTICS)
+    if any(token in theorem_surface for token in ("ℕ", "Nat")) and any(
+        token in theorem_surface for token in ("ℤ", "Int", "ℚ", "Rat", "ℝ", "Real")
+    ):
+        tactics.extend(LOCAL_FAST_PATH_CAST_TACTICS)
     tactics.extend(LOCAL_FAST_PATH_CORE_TACTICS)
     return list(dict.fromkeys(tactics))
 

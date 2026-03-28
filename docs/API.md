@@ -4,13 +4,20 @@ LeanEcon exposes a versioned REST API for claim classification, formalization,
 direct Lean compilation, proof generation, final verification, explanation,
 cache inspection, and benchmark snapshots.
 
+> **LeanEcon v1 is in maintenance-only mode.**
+> Active development has moved to [LeanEcon v2](https://github.com/Bonorinoa/leanecon_v2).
+
 Some endpoints now include optional provider telemetry and conservative cost
 estimates when real usage data exists. These fields are for observability, not
 billing, do not imply stable provider pricing or a stably free Leanstral tier,
 and `/api/v1/lean_compile` remains local-only.
 
 This guide is the operational source of truth. For the architecture and trust
-model, see [`docs/leanstral_architecture.html`](./leanstral_architecture.html).
+model, see
+[`docs/HARNESS_FORMALIZER_PROVER_REPORT.tex`](./HARNESS_FORMALIZER_PROVER_REPORT.tex).
+The older
+[`docs/leanstral_architecture.html`](./leanstral_architecture.html) file is
+retained only as an archived historical note.
 For the project landing page, see [`README.md`](../README.md).
 
 OpenAPI schema: `/openapi.json`
@@ -307,9 +314,6 @@ Important fields inside `result`:
 - `from_cache`: whether the result came from the verified-result cache
 - `partial`: whether the prover timed out and returned partial output
 - `stop_reason`: prover stop reason when reported
-- `tool_trace`: ordered deep-trace events from the proving run
-- `tactic_calls`: tactic attempts with triggering Lean errors when available
-- `trace_schema_version`: schema marker for `tool_trace` and `tactic_calls`
 - `axiom_info`: optional axiom-usage metadata from final verification
 - `explanation`: optional natural-language explanation when `explain=true`
 - `explanation_generated`: whether the explanation was model-generated
@@ -454,7 +458,7 @@ Example response:
 
 ```json
 {
-  "size": 4
+  "size": 0
 }
 ```
 
@@ -488,41 +492,46 @@ Example response:
 
 ## Current Measured Status
 
-As of the 2026-03-25 local release sweep:
+As of the 2026-03-28 documentation refresh:
 
 - `./leanEconAPI_venv/bin/ruff check src tests scripts`: passed
 - `./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q`:
-  `216 passed, 13 deselected`
-- `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`:
-  exited `0` on 2026-03-25 after the tightened gate passed; `/health`,
-  `/openapi.json`, `/api/v1/metrics`, `/api/v1/cache/stats`, classify, and
-  formalize all returned success, and the sample verify job completed on the
-  first poll from cache with `current_stage = "cache"` and `partial = false`
+  `253 passed, 13 deselected`
+- `./leanEconAPI_venv/bin/python src/mcp_smoke_test.py`: exited `0`
+- `cd lean_workspace && lake build && cd ..`: passed
+- most recent Railway production smoke:
+  `./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10`
+  exited `0` on 2026-03-28 with `summary.overall_ok = true`
 - latest completed full tier-1 lane report:
-  [`benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260325T151134Z.md)
+  [`benchmarks/reports/tier1_core_selected_full_full_20260328T181026Z.md`](../benchmarks/reports/tier1_core_selected_full_full_20260328T181026Z.md)
   shows:
-  - `raw_claim -> full API`: `pass@1 = 0.333`
+  - `raw_claim -> full API`: `pass@1 = 0.000`
   - `theorem_stub -> verify`: `pass@1 = 1.000`
   - `raw_lean -> verify`: `pass@1 = 1.000`
 - latest completed tier-1 formalizer-only report:
-  [`benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260325T181104Z.md)
+  [`benchmarks/reports/tier1_core_formalizer_only_20260328T174455Z.md`](../benchmarks/reports/tier1_core_formalizer_only_20260328T174455Z.md)
   shows:
-  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.833`
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.667`
+  - semantic `>=4` rate: `0.750`
+- latest completed tier-2 frontier formalizer-only report:
+  [`benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md`](../benchmarks/reports/tier2_frontier_formalizer_only_20260325T065620Z.md)
+  shows:
+  - `raw_claim -> formalizer-only gate`: `pass@1 = 0.667`
   - semantic `>=4` rate: `1.000`
 
-The practical takeaway is unchanged: raw Lean and theorem-stub verification are
-the strongest lanes; raw-claim full-API evaluation is still the weakest lane,
-and the refreshed bounded formalizer-only gate is still volatile even on the
-tier-1 core slice.
+The practical takeaway is now sharper: theorem-stub verification and raw Lean
+verification remain the strongest lanes; `raw_claim -> full API` remains the
+weakest public lane; and frontier natural-language formalization remains mixed.
 
 ## Validation Workflow
 
 Use local checks as the release gate before considering a deploy:
 
 ```bash
-ruff check src tests scripts
-pytest -m "not live and not slow" --tb=short -q
+./leanEconAPI_venv/bin/ruff check src tests scripts
+./leanEconAPI_venv/bin/python -m pytest -m "not live and not slow" --tb=short -q
 ./leanEconAPI_venv/bin/python src/mcp_smoke_test.py
+cd lean_workspace && lake build && cd ..
 ./leanEconAPI_venv/bin/python scripts/production_smoke.py --base-url https://leaneconapi-production.up.railway.app --poll-interval 1 --max-polls 10
 docker build .
 ```

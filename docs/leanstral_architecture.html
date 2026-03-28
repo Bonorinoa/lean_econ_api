@@ -75,6 +75,15 @@ h1 {
   max-width: 600px;
 }
 
+.archive-note {
+  margin-top: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--yellow-dim);
+  background: rgba(251, 191, 36, 0.08);
+  color: var(--text-bright);
+  border-radius: 12px;
+}
+
 .meta {
   margin-top: 20px;
   font-family: 'IBM Plex Mono', monospace;
@@ -268,6 +277,12 @@ em { color: var(--text-dim); font-style: italic; }
   <h1>LeanEcon: From Proof of Concept to Prototype</h1>
   <p class="subtitle">A formal verification pipeline for mathematical claims in economics, built on Lean 4, Mathlib, and Leanstral.</p>
   <p class="meta">v0.4 · March 19, 2026 · Internal working document</p>
+  <div class="archive-note">
+    Archived historical note. The current architecture and trust-model source
+    of truth is <code>docs/HARNESS_FORMALIZER_PROVER_REPORT.tex</code>. This
+    HTML file predates the Streamlit removal and keeps some obsolete component
+    names for historical context only.
+  </div>
 </div>
 
 <!-- SECTION 1: THE CORE IDEA -->

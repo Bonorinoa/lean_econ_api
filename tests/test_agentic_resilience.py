@@ -16,9 +16,12 @@ from mistralai.extra.run.context import RunContext
 import agentic_prover
 from agentic_prover import (
     CIRCUIT_BREAKER_WARNING,
+    DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS,
+    DEFAULT_MAX_SEARCH_TOOL_CALLS,
     DUPLICATE_READ_ONLY_WARNING,
     LOCAL_FAST_PATH_MAX_ATTEMPTS,
     REASONING_PRESET_HIGH,
+    REASONING_PRESET_MEDIUM,
     REASONING_PRESET_NORMAL,
     SEARCH_BUDGET_WARNING,
     SEARCH_PRECONDITION_WARNING,
@@ -26,6 +29,7 @@ from agentic_prover import (
     ToolBudgetExceededError,
     TraceRecorder,
     _build_formalizer_handoff_block,
+    _build_instructions,
     _install_guarded_execute_function_calls,
     _is_cancel_scope_error,
     _is_code_3001_error,
@@ -186,6 +190,13 @@ def test_resolve_budget_config_scales_preset_and_overrides() -> None:
     }
 
 
+def test_resolve_budget_config_uses_tighter_default_search_and_read_only_limits() -> None:
+    budget = resolve_budget_config(reasoning_preset=REASONING_PRESET_MEDIUM)
+
+    assert budget.max_search_tool_calls == DEFAULT_MAX_SEARCH_TOOL_CALLS
+    assert budget.max_consecutive_read_only_calls == DEFAULT_MAX_CONSECUTIVE_READ_ONLY_CALLS
+
+
 def test_resolve_budget_config_rejects_unknown_preset() -> None:
     with pytest.raises(ValueError, match="Unsupported reasoning_preset"):
         resolve_budget_config(reasoning_preset=f"{REASONING_PRESET_NORMAL}_plus")
@@ -317,6 +328,33 @@ theorem benchmark_budget_constraint
     assert tactics.index("exact hspend") < tactics.index("omega")
 
 
+def test_local_fast_path_adds_order_tactics_for_inequalities() -> None:
+    theorem = """\
+import Mathlib
+
+theorem nonnegative_square (x : ℝ) : 0 ≤ x * x := by
+  sorry
+"""
+
+    tactics = _local_fast_path_tactics(theorem)
+
+    assert "positivity" in tactics
+    assert "gcongr" in tactics
+
+
+def test_local_fast_path_adds_norm_cast_for_mixed_numeric_domains() -> None:
+    theorem = """\
+import Mathlib
+
+theorem nat_real_cast_demo (n : ℕ) : (n : ℝ) = n := by
+  sorry
+"""
+
+    tactics = _local_fast_path_tactics(theorem)
+
+    assert "norm_cast" in tactics
+
+
 def test_local_fast_path_respects_compile_budget(monkeypatch, tmp_path) -> None:
     theorem = """\
 import Mathlib
@@ -362,6 +400,23 @@ theorem one_plus_one : 1 + 1 = 2 := by
     assert len(attempted_tactics) == LOCAL_FAST_PATH_MAX_ATTEMPTS
     assert attempted_tactics == ["norm_num", "omega", "ring_nf", "ring"]
     assert controller.current_tactic_block == "sorry"
+
+
+def test_build_instructions_mentions_core_budget_guidance() -> None:
+    instructions = _build_instructions(
+        "LeanEcon/Test.lean",
+        4,
+        max_total_tool_calls=36,
+        max_search_tool_calls=4,
+        max_consecutive_read_only_calls=6,
+    )
+
+    assert "You may use search/suggestion tools at most 4 times." in instructions
+    assert "More than 6 consecutive read-only tool calls ends the run." in instructions
+    assert (
+        "Prefer the cheap loop: lean_goal → apply_tactic → lean_diagnostic_messages."
+        in instructions
+    )
 
 
 def test_local_fast_path_restores_initial_state_on_failure(monkeypatch, tmp_path) -> None:

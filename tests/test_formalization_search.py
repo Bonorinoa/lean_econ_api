@@ -32,6 +32,7 @@ def test_build_context_auto_selects_preambles_and_curated_hints() -> None:
     assert context.telemetry()["retrieval"]["source_counts"]["curated"] >= 1
     assert context.selection_mode == "auto"
     assert "extreme_value_theorem" in context.advisory_preamble_names
+    assert context.selected_preamble_details[0]["status"] == "strong"
     assert context.runtime_search_plan
     assert context.runtime_search_plan[0].tool == "lean_local_search"
 
@@ -46,6 +47,29 @@ def test_build_context_monotone_convergence_has_shape_guidance() -> None:
     assert "Real.tendsto_of_bddAbove_monotone" in context.candidate_identifiers
     assert "Real.tendsto_of_bddAbove_monotone" in context.search_terms
     assert any("Filter.Tendsto" in hint for hint in context.shape_guidance)
+
+
+def test_build_context_power_function_surfaces_rpow_guidance() -> None:
+    context = build_formalization_context(
+        "A real power function with exponent p has derivative p * x^(p - 1).",
+        enable_mcp_retrieval=False,
+    )
+
+    assert "Mathlib.Analysis.SpecialFunctions.Pow.Real" in context.candidate_imports
+    assert "Real.rpow_natCast" in context.candidate_identifiers
+    assert "Real.hasDerivAt_rpow_const" in context.candidate_identifiers
+    assert "Real.rpow_natCast" in context.search_terms
+
+
+def test_build_context_compact_continuity_uses_continuous_on_module() -> None:
+    context = build_formalization_context(
+        "A continuous function on a compact set attains a maximum.",
+        enable_mcp_retrieval=False,
+    )
+
+    assert "Mathlib.Topology.ContinuousOn" in context.candidate_imports
+    assert "ContinuousOn" in context.candidate_identifiers
+    assert "ContinuousOn" in context.search_terms
 
 
 def test_build_context_fixed_point_has_unique_shape_guidance() -> None:
@@ -96,6 +120,16 @@ def test_build_context_cobb_auto_selection_avoids_ces_noise() -> None:
     assert "ces_2factor" not in context.auto_preamble_names
 
 
+def test_build_context_demotes_compatibility_only_solow_to_advisory() -> None:
+    context = build_formalization_context(
+        "In the Solow model, the steady state depends on savings and depreciation.",
+        enable_mcp_retrieval=False,
+    )
+
+    assert "solow_steady_state" in context.advisory_preamble_names
+    assert "solow_steady_state" not in context.auto_preamble_names
+
+
 def test_build_context_skips_mcp_when_temporarily_unavailable() -> None:
     with patch(
         "formalization_search.formalization_mcp_available",
@@ -138,6 +172,7 @@ def test_formalization_context_artifact_preserves_selected_preambles_and_validat
     assert artifact["selected_preambles"] == ["crra_utility"]
     assert artifact["explicit_preambles"] == ["crra_utility"]
     assert artifact["selection_mode"] == "explicit"
+    assert artifact["selected_preamble_details"][0]["status"] == "strong"
     assert artifact["validation"]["method"] == "lean_run_code"
     assert artifact["repairs"]["repair_buckets"] == ["unknown_identifier"]
 
@@ -149,6 +184,15 @@ def test_build_explicit_preamble_artifact_is_minimal_but_preserves_intent() -> N
     assert artifact["explicit_preambles"] == ["crra_utility"]
     assert artifact["selection_mode"] == "explicit"
     assert artifact["preamble_imports"] == ["import LeanEcon.Preamble.Consumer.CRRAUtility"]
+    assert artifact["selected_preamble_details"][0]["status"] == "strong"
+
+
+def test_build_explicit_preamble_artifact_preserves_compatibility_only_entries() -> None:
+    artifact = build_explicit_preamble_artifact(["solow_steady_state"])
+
+    assert artifact["selected_preambles"] == ["solow_steady_state"]
+    assert artifact["explicit_preambles"] == ["solow_steady_state"]
+    assert artifact["selected_preamble_details"][0]["status"] == "compatibility-only"
 
 
 def test_merge_explicit_preamble_artifact_rejects_mismatch() -> None:

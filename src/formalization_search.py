@@ -17,10 +17,11 @@ from mcp_runtime import (
 )
 from preamble_library import (
     DEFAULT_AUTO_PREAMBLE_LIMIT,
-    build_preamble_block,
     build_preamble_imports,
+    build_preamble_prompt_block,
     normalize_preamble_names,
     select_preamble_plan,
+    serialize_preamble_entry,
     validate_preamble_names,
 )
 
@@ -92,6 +93,8 @@ class FormalizationContext:
     auto_preamble_names: list[str] = field(default_factory=list)
     preamble_names: list[str] = field(default_factory=list)
     advisory_preamble_names: list[str] = field(default_factory=list)
+    selected_preamble_details: list[dict[str, Any]] = field(default_factory=list)
+    advisory_preamble_details: list[dict[str, Any]] = field(default_factory=list)
     selection_mode: str = "none"
     preamble_block: str = ""
     preamble_imports: list[str] = field(default_factory=list)
@@ -114,16 +117,35 @@ class FormalizationContext:
         lines = ["RETRIEVAL CONTEXT (bounded Lean-aware hints):"]
         if self.claim_components:
             lines.append(f"- Claim components: {', '.join(self.claim_components)}")
-        if self.preamble_names:
+        if self.selected_preamble_details:
             preamble_label = (
                 "Selected preambles"
                 if self.selection_mode == "explicit"
                 else "Auto-selected preambles"
             )
-            lines.append(f"- {preamble_label}: {', '.join(self.preamble_names)}")
-        if self.advisory_preamble_names and self.advisory_preamble_names != self.preamble_names:
+            rendered = [
+                f"{detail['name']} [{detail['status']}]"
+                for detail in self.selected_preamble_details[:8]
+            ]
+            lines.append(f"- {preamble_label}: {', '.join(rendered)}")
+        elif self.preamble_names:
+            lines.append(f"- Selected preambles: {', '.join(self.preamble_names)}")
+        if (
+            self.advisory_preamble_details
+            and self.advisory_preamble_names != self.preamble_names
+        ):
+            rendered = [
+                f"{detail['name']} [{detail['status']}]"
+                for detail in self.advisory_preamble_details[:8]
+            ]
+            lines.append(f"- Other advisory preambles: {', '.join(rendered)}")
+        elif (
+            self.advisory_preamble_names
+            and self.advisory_preamble_names != self.preamble_names
+        ):
             lines.append(
-                f"- Other advisory preambles: {', '.join(self.advisory_preamble_names[:8])}"
+                "- Other advisory preambles: "
+                f"{', '.join(self.advisory_preamble_names[:8])}"
             )
         if self.candidate_imports:
             lines.append(f"- Candidate imports: {', '.join(self.candidate_imports[:8])}")
@@ -155,6 +177,8 @@ class FormalizationContext:
             "explicit_preambles": list(self.explicit_preamble_names),
             "auto_preambles": list(self.auto_preamble_names),
             "advisory_preambles": list(self.advisory_preamble_names),
+            "selected_preamble_details": list(self.selected_preamble_details),
+            "advisory_preamble_details": list(self.advisory_preamble_details),
             "selection_mode": self.selection_mode,
             "retrieval": {
                 "source_counts": dict(self.source_counts),
@@ -205,6 +229,8 @@ class FormalizationContext:
             "explicit_preambles": list(self.explicit_preamble_names),
             "auto_preambles": list(self.auto_preamble_names),
             "advisory_preambles": list(self.advisory_preamble_names),
+            "selected_preamble_details": list(self.selected_preamble_details),
+            "advisory_preamble_details": list(self.advisory_preamble_details),
             "selection_mode": self.selection_mode,
             "preamble_imports": list(self.preamble_imports),
             "candidate_imports": list(self.candidate_imports),
@@ -252,10 +278,52 @@ CURATED_HINTS: tuple[CuratedHint, ...] = (
     ),
     CuratedHint(
         label="derivatives",
-        keywords=("derivative", "deriv", "marginal product", "elasticity"),
+        keywords=(
+            "derivative",
+            "deriv",
+            "differentiable",
+            "marginal product",
+            "elasticity",
+        ),
         imports=("Mathlib.Analysis.Calculus.Deriv.Basic",),
         identifiers=("HasDerivAt", "deriv", "DifferentiableAt"),
+        search_terms=("HasDerivAt", "deriv", "DifferentiableAt"),
+        shape_guidance=(
+            "Prefer `HasDerivAt f f' x` in theorem statements when the claim is local.",
+            "Use `deriv f x` when the English claim names the derivative value directly.",
+        ),
         notes=("Prefer `HasDerivAt` for theorem statements over raw `deriv` when possible.",),
+    ),
+    CuratedHint(
+        label="power_functions",
+        keywords=("rpow", "power function", "real power", "exponent"),
+        imports=(
+            "Mathlib.Analysis.SpecialFunctions.Pow.Real",
+            "Mathlib.Analysis.SpecialFunctions.Pow.Deriv",
+        ),
+        identifiers=(
+            "Real.rpow",
+            "Real.rpow_natCast",
+            "Real.hasDerivAt_rpow_const",
+        ),
+        search_terms=(
+            "Real.rpow_natCast",
+            "Real.hasDerivAt_rpow_const",
+        ),
+        shape_guidance=(
+            "If the exponent is a known natural number, prefer `x ^ n` over `Real.rpow x n`.",
+            "Use `Real.rpow` only when the exponent is genuinely real-valued.",
+        ),
+        notes=(
+            (
+                "Power-function claims are less brittle when natural-number "
+                "exponents stay in `x ^ n` form."
+            ),
+            (
+                "For derivative lemmas about `Real.rpow`, keep the side "
+                "condition such as `x ≠ 0 ∨ 1 ≤ p`."
+            ),
+        ),
     ),
     CuratedHint(
         label="frechet",
@@ -282,8 +350,28 @@ CURATED_HINTS: tuple[CuratedHint, ...] = (
     CuratedHint(
         label="continuity",
         keywords=("continuous", "continuity"),
-        imports=("Mathlib.Topology.ContinuousFunction.Basic",),
+        imports=("Mathlib.Topology.ContinuousOn",),
         identifiers=("Continuous", "ContinuousOn"),
+    ),
+    CuratedHint(
+        label="compact_continuity",
+        keywords=("continuous", "compact", "compact set", "continuous on"),
+        imports=(
+            "Mathlib.Topology.ContinuousOn",
+            "Mathlib.Topology.Order.Basic",
+        ),
+        identifiers=("Continuous", "ContinuousOn", "IsCompact"),
+        search_terms=("ContinuousOn", "IsCompact"),
+        shape_guidance=(
+            "Compact-set claims usually need both `IsCompact s` and `ContinuousOn f s`.",
+            (
+                "For existence claims on compact sets, pair continuity facts "
+                "with `IsCompact.exists_isMaxOn` or `IsCompact.exists_isMinOn`."
+            ),
+        ),
+        notes=(
+            "Reach for `Mathlib.Topology.ContinuousOn` when the claim is local to a set.",
+        ),
     ),
     CuratedHint(
         label="metric_fixed_point",
@@ -614,17 +702,45 @@ def build_formalization_context(
         auto_limit=MAX_AUTO_PREAMBLES,
     )
     preamble_entries = list(selection.selected_entries)
+    selected_preamble_details = [
+        serialize_preamble_entry(
+            entry,
+            selection_role=("explicit" if selection.selection_mode == "explicit" else "auto"),
+        )
+        for entry in preamble_entries
+    ]
+    advisory_preamble_details = [
+        serialize_preamble_entry(entry, selection_role="advisory")
+        for entry in selection.advisory_entries
+    ]
 
     curated_hints = _matching_curated_hints(claim_text)
-    candidate_imports = _dedupe_preserve([item for hint in curated_hints for item in hint.imports])
+    preamble_candidate_imports = [
+        item for entry in preamble_entries for item in entry.candidate_imports
+    ]
+    preamble_candidate_identifiers = [
+        item for entry in preamble_entries for item in entry.candidate_identifiers
+    ]
+    preamble_search_terms = [
+        item for entry in preamble_entries for item in entry.retrieval_anchors
+    ]
+    preamble_shape_guidance = [item for entry in preamble_entries for item in entry.theorem_shapes]
+    preamble_notes = [item for entry in preamble_entries for item in entry.retrieval_notes]
+
+    candidate_imports = _dedupe_preserve(
+        preamble_candidate_imports + [item for hint in curated_hints for item in hint.imports]
+    )
     candidate_identifiers = _dedupe_preserve(
-        [item for hint in curated_hints for item in hint.identifiers]
+        preamble_candidate_identifiers
+        + [item for hint in curated_hints for item in hint.identifiers]
     )
-    search_terms = _search_terms(curated_hints)
+    search_terms = _dedupe_preserve(preamble_search_terms + _search_terms(curated_hints))
     shape_guidance = _dedupe_preserve(
-        [item for hint in curated_hints for item in hint.shape_guidance]
+        preamble_shape_guidance + [item for hint in curated_hints for item in hint.shape_guidance]
     )
-    retrieval_notes = _dedupe_preserve([item for hint in curated_hints for item in hint.notes])
+    retrieval_notes = _dedupe_preserve(
+        preamble_notes + [item for hint in curated_hints for item in hint.notes]
+    )
     runtime_search_plan = _build_runtime_search_plan(
         search_terms,
         candidate_identifiers,
@@ -649,8 +765,10 @@ def build_formalization_context(
         ),
         preamble_names=selection.selected_preamble_names,
         advisory_preamble_names=selection.advisory_preamble_names,
+        selected_preamble_details=selected_preamble_details,
+        advisory_preamble_details=advisory_preamble_details,
         selection_mode=selection.selection_mode,
-        preamble_block=build_preamble_block(preamble_entries),
+        preamble_block=build_preamble_prompt_block(preamble_entries),
         preamble_imports=build_preamble_imports(preamble_entries),
         candidate_imports=candidate_imports,
         candidate_identifiers=candidate_identifiers,
@@ -690,8 +808,15 @@ def build_explicit_preamble_artifact(
         auto_preamble_names=[],
         preamble_names=selection.selected_preamble_names,
         advisory_preamble_names=selection.advisory_preamble_names,
+        selected_preamble_details=[
+            serialize_preamble_entry(entry, selection_role="explicit") for entry in selected_entries
+        ],
+        advisory_preamble_details=[
+            serialize_preamble_entry(entry, selection_role="advisory")
+            for entry in selection.advisory_entries
+        ],
         selection_mode=selection.selection_mode,
-        preamble_block=build_preamble_block(selected_entries),
+        preamble_block=build_preamble_prompt_block(selected_entries),
         preamble_imports=build_preamble_imports(selected_entries),
         candidate_imports=[],
         candidate_identifiers=[],
@@ -738,6 +863,22 @@ def merge_explicit_preamble_artifact(
     merged.setdefault("source", source)
     merged.setdefault("claim_text", "")
     merged.setdefault("claim_components", [])
+    selection = select_preamble_plan(
+        merged.get("claim_text", ""),
+        explicit_preamble_names=explicit_names,
+        auto_limit=MAX_AUTO_PREAMBLES,
+    )
+    merged["selected_preambles"] = list(selection.selected_preamble_names)
+    merged["explicit_preambles"] = list(selection.explicit_preamble_names)
+    merged["selection_mode"] = selection.selection_mode
+    merged["selected_preamble_details"] = [
+        serialize_preamble_entry(entry, selection_role="explicit")
+        for entry in selection.selected_entries
+    ]
+    merged["advisory_preamble_details"] = [
+        serialize_preamble_entry(entry, selection_role="advisory")
+        for entry in selection.advisory_entries
+    ]
     merged.setdefault("candidate_imports", [])
     merged.setdefault("candidate_identifiers", [])
     merged.setdefault("search_terms", [])
